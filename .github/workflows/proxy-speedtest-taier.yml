@@ -42,7 +42,7 @@ on:
           - '四川电信'
           - '湖北电信'
       mode:
-        description: '测速模式：single = 单连接流水线（默认；jh.13 双在途 POST 消除确认空转，上传读数 = 链路持续满窗容量）；multi = 下8+上8 连接聚合（speedtest 式满血口径）；both = 两者对照（耗时翻倍）'
+        description: '测速模式：single = 下行单连接；上行仍是引擎双槽流水线（2 个在途 8MiB POST，jh.13 起，非严格单流）（默认）；multi = 下8+上4 连接聚合（speedtest 式满血口径）；both = 两者对照（耗时翻倍）'
         required: false
         type: choice
         default: 'single'
@@ -50,15 +50,6 @@ on:
           - 'single'
           - 'multi'
           - 'both'
-      up_threads:
-        description: '多线程上传连接数（jh.13 起每线程为双槽流水线、各槽独立会话：实测 up 峰值 4→268 / 8→706 / 16→1785 Mbps，up>0 率 8 连接最优 96%；schedule 默认 8，16 作人工峰值测量档）'
-        required: false
-        type: choice
-        default: '8'
-        options:
-          - '4'
-          - '8'
-          - '16'
       duration:
         description: '每个方向测速秒数（上游二进制硬钳制 5-13，>13 会被压到 13）'
         required: false
@@ -153,6 +144,39 @@ on:
         description: '通知标题前缀，用于区分同一套测速的不同来源（留空则不显示）'
         required: false
         type: string
+    # ⚠️ 编排层（proxy-speedtest-gistnodes）自 2026-11-13 起改为**显式传 secrets**
+    # （不再 inherit）。显式传入的每个名字都必须在这里声明，否则整个 run 在启动阶段
+    # 直接失败（startup_failure、jobs 为空）—— 实测 run 43457889463 / 43561712476
+    # 连续两轮。声明列表必须与 gistnodes 里 speedtest-taier job 的 secrets 映射逐名
+    # 对齐；改任一侧都要回看另一侧。
+    secrets:
+      GITHUB_TOKEN:
+        description: '内置 token（GitHub API 匿名限流的认证回退）'
+        required: false
+      PAT:
+        description: 'gist 读写 PAT（结果订阅上传 / 源订阅 raw URL 解析）'
+        required: false
+      PROXY_SPEEDTEST_GISTNODES_GIST_ID:
+        description: '编排层的源订阅/结果 Gist id（编排触发时使用）'
+        required: false
+      PROXY_SPEEDTEST_SUB_URLS:
+        description: '默认订阅源（编排层不传 sub_urls 时的兜底）'
+        required: false
+      PROXY_SPEEDTEST_TAIER_GIST_ID:
+        description: '本工作流自己的结果 Gist id（表达式兜底分支仍会读）'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: '普通通知 bot'
+        required: false
+      TELEGRAM_BOT_TOKEN_ALERT:
+        description: '告警通知 bot（熔断/异常兜底，无回落）'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: '普通通知会话'
+        required: false
+      TELEGRAM_CHAT_ID_ALERT:
+        description: '告警通知会话'
+        required: false
 
 permissions:
   contents: read
@@ -250,8 +274,10 @@ jobs:
           # 默认 single（2026-10-11 定案）：单流读数贴近真实体验（本机直连实测
           # single 117~156Mbps vs multi×8 887~1143Mbps，前者才是「用起来」的口径）。
           # multi/both 可显式选（dispatch 下拉或 workflow_call 传参）。
+          # ⚠️ single 的「单流」只指**下行**；上行仍是引擎双槽流水线（2 个在途 8MiB
+          # POST，jh.13 起），是 2 流聚合而非严格单流。要严格单流上行须由引擎侧设
+          # TAIER_UPLOAD_PIPELINE=0（跨洋链路会系统性低估，不建议 schedule 用）。
           TAIER_MODE: ${{ inputs.mode || github.event.inputs.mode || 'single' }}
-          TAIER_UP_THREADS: ${{ inputs.up_threads || '8' }}
           # 默认 13（上游硬钳上限）：每方向采样 13 秒、单节点 ≈31 秒，读数最稳。
           # 2026-09-24 从 5 上调——此前压到 5 是为了「同等预算多覆盖节点」，而真正的耗时
           # 大头（死节点各吃一个测速窗口）已由测活层筛掉，不再需要拿 duration 换覆盖数。

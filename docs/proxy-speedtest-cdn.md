@@ -48,18 +48,18 @@
    `curl` 在窗口到点截断时退出码是 28，且 `-w` 仍输出真实字节数与耗时，所以判据是
    **`exit_code ∈ {0, 28}` 且 `http_code < 400` 且 `size ≥ min_bytes`**（见
    `download_measurement`，回归钉在 `tests/test_download_window.py`）。
-3. **上行**（`PROXY_SPEEDTEST_ENABLE_PUSH=1` 时）：经共享实现
-   `speedtest_gitee.upload_speedtest` 单流上传测速文件到 Gitee 私有仓库。可用
-   `PROXY_SPEEDTEST_UPLOAD_VIA_PROXY=0` 切成**直连**（测 runner 直连出口而非节点上行；**不是**家庭宽带）；
-4. **runner 直连基线**（`PROXY_SPEEDTEST_DIRECT_BASELINE=1`，默认开）：不经代理 push 一次，
-   给出「runner 直连 vs 节点」的可比数字。失败**不打死整轮**，只记
-   `direct_baseline.ok=false`；
-5. 每节点结果写 JSON/HTML，全部完成后 Telegram 推 `✅ CDN 测速完成`（TOP5），
+3. **上行已停用**（2026-11-14）：此前经共享实现 `speedtest_gitee.upload_speedtest`
+   单流 push 10MiB 到 Gitee 私有仓库。但 Gitee 端是瓶颈（run 43543281199：上传
+   p50 0.99 MiB/s、50/336 个 null，runner 直连基线 5 次 push 全超时），节点间差异
+   被 Gitee 上限抹平、没有分辨力；上行口径由 taier（泰尔三网测速点）覆盖。订阅判定
+   随之改按 **download**（本套自己的主指标，276/289 过线）。runner 直连基线也随之上行
+   停用（它本身就是 Gitee push 基线）；
+4. 每节点结果写 JSON/HTML，全部完成后 Telegram 推 `✅ CDN 测速完成`（TOP5），
    达标节点订阅导出到本工作流专属 Gist。
 
-上行与 runner 直连基线的实现**与 Gitee 共用同一份**（2026-09-17 统一，此前 CDN 自带
-`gitee_push_speedtest`/`_gitee_push_direct` 两份等价实现）。开关名、默认值、计时口径
-两套完全一致，详见 [gitee 文档 · 上行测速已统一](proxy-speedtest-gitee.md#上行测速cdn-与-gitee-已统一2026-09-17)。
+上行的共享实现仍保留在脚本里（`PROXY_SPEEDTEST_ENABLE_PUSH` 脚本默认即 0），但本
+workflow 已显式写 0，不再作为活跃指标；历史开关说明见
+[gitee 文档 · 上行测速已统一](proxy-speedtest-gitee.md#上行测速cdn-与-gitee-已统一2026-09-17)。
 
 ### 下载测速点自动发现（规避版本号失效）
 
@@ -89,9 +89,9 @@
 | `PROXY_SPEEDTEST_SUB_URLS` | 订阅源（三套共用） |
 | `PROXY_SPEEDTEST_CDN_GIST_ID` | 本工作流专属订阅 Gist 的 id；留空首跑自动新建（TG 给链接），回填避免每轮新建 |
 | `PAT` | gist 写权限（默认 GITHUB_TOKEN 无 gist scope 会 403） |
-| `GITEE_PRIVATE_TOKEN` | 上行测速 push 用（`ENABLE_PUSH=1` 时必需） |
-| `PROXY_SPEEDTEST_GITEE_OWNER` | Gitee 私有仓库属主 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 通知 |
+
+> 上行停用后不再需要 `GITEE_PRIVATE_TOKEN` / `PROXY_SPEEDTEST_GITEE_OWNER`（2026-11-14）。
 
 被 `proxy-speedtest-gistnodes` 当子流程调用时，结果 Gist 与通知标题可被入参覆盖：
 `gist_id` / `gist_filename` / `gist_description` 把结果写进调用方的 Gist，
@@ -109,17 +109,15 @@
 | `PROXY_SPEEDTEST_DOWNLOAD_MIN_MIB` | 0.5 | 有效样本下限：传输字节少于此值不算读数（错误页/刚建连就断） |
 | `PROXY_SPEEDTEST_DOWNLOAD_TOTAL_SECONDS` | 12 | **单节点**下载总预算（多个 URL 串行取最优的上界；窗口只约束单个 URL） |
 | `PROXY_SPEEDTEST_DOWNLOAD_TIMEOUT` | 30 | curl 硬超时（窗口 + 握手余量），只防 DNS/连接挂起 |
-| `PROXY_SPEEDTEST_ENABLE_PUSH` | 1（workflow 注入） | 是否测经代理上行 |
-| `PROXY_SPEEDTEST_UPLOAD_VIA_PROXY` | 1 | 1=经代理（节点上行）；0=直连（runner 直连出口上行）。与 gitee 同名同默认 |
-| `PROXY_SPEEDTEST_DIRECT_BASELINE` | 1 | 是否跑 runner 直连基线（不是家庭宽带对照）。失败不影响整轮 |
-| `PROXY_SPEEDTEST_DIRECT_BASELINE_TIMEOUT` / `_MAX_ATTEMPTS` | 60 / 5 | 基线单次超时 / 重试次数（与 gitee 同名同默认） |
+| `PROXY_SPEEDTEST_ENABLE_PUSH` | 0（workflow 注入） | 上行测速开关；2026-11-14 起固定 0（停用），脚本侧能力保留 |
+| `PROXY_SPEEDTEST_DIRECT_BASELINE` | 0（workflow 注入） | runner 直连基线（Gitee push）。随上行停用一并关闭 |
 | `PROXY_SPEEDTEST_SWITCH_SETTLE_SECONDS` | 1.5 | 切节点后等待 |
 | `PROXY_SPEEDTEST_MAX_NODES` | 0 | 0 = 不限 |
 | `PROXY_SPEEDTEST_BUDGET_SECONDS` | `18000` | **墙钟预算**（秒，`0` = 不限），从进程启动起算。到点不再开下一个节点，拿已测节点照常出订阅（退出码 0）。**与 job 的 `timeout-minutes` 成对**：默认 5 小时 < 360 分钟。workflow 里写死，不接仓库 Variables |
 | `PROXY_SPEEDTEST_NPMMIRROR_ENABLED` | 1 | 是否合并 npmmirror 最新版测速点 |
 | `PROXY_SPEEDTEST_GIST_FILENAME` / `_DESCRIPTION` | 见 workflow | Gist 文件名/描述（三套区分） |
 | `PROXY_SPEEDTEST_MIN_MEGABIT` | 10 | 达标阈值（兆），三套共用 |
-| `PROXY_SPEEDTEST_SPEED_METRIC` | upload | 判定指标 `upload`/`download`；主指标凑不够一份订阅且另一指标能凑够时自动改用另一指标 |
+| `PROXY_SPEEDTEST_SPEED_METRIC` | download（本 workflow 注入） | 判定指标 `upload`/`download`；本套 2026-11-14 起固定下载（上行已停用） |
 | `PROXY_SPEEDTEST_MIN_NODES` | 10 | 上传订阅的最少节点数，不足则不上传；**同时充当判定指标的回退门槛**（2026-11-12 合并） |
 
 订阅导出策略（阈值/判定指标/最少节点数，含回退规则）详见

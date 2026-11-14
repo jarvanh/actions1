@@ -39,13 +39,13 @@ def check(cond, label):
 
 
 def node(up_mbps, down_mbps, with_proxy=True, ok=True):
-    """按 taier 的单位换算构造一条结果：Mbps / 8.388608 = MiB/s（与 taier_speedtest 一致）。
+    """按 taier 的单位换算构造一条结果：Mbps / 8（共享层 ×8 还原为精确 Mbps）。
 
     ok=True 是默认：达标判定（2026-10-12 起）要求 ok=True，构造的这些是成功节点。
     """
     return {'name': 'n', 'ok': ok,
             'source_entry': {'proxy': {'type': 'vless'}} if with_proxy else {},
-            'upload_mibs': up_mbps / 8.388608, 'download_mibs': down_mbps / 8.388608}
+            'upload_mibs': up_mbps / 8, 'download_mibs': down_mbps / 8}
 
 
 def main():
@@ -153,7 +153,7 @@ def main():
         return {'name': 'n', 'source_entry': {}, 'ok': ok,
                 'proxy_obj': {'type': 'vless', 'server': 'x.com', 'port': 443}
                 if has_proxy_obj else {},
-                'upload_mibs': up_mbps / 8.388608, 'download_mibs': down_mbps / 8.388608}
+                'upload_mibs': up_mbps / 8, 'download_mibs': down_mbps / 8}
 
     orch = [orch_node(245.24, 130.53) for _ in range(206)]
     check(C.count_qualified_nodes(orch, 'upload', 10) == 206,
@@ -205,7 +205,7 @@ def main():
     both = {'name': 'n',
             'source_entry': {'proxy': {'type': 'trojan', 'server': 'from-entry.com', 'port': 443}},
             'proxy_obj': {'type': 'vless', 'server': 'from-obj.com', 'port': 80},
-            'ok': True, 'upload_mibs': 20.0 / 8.388608, 'download_mibs': 20.0 / 8.388608}
+            'ok': True, 'upload_mibs': 20.0 / 8, 'download_mibs': 20.0 / 8}
     picked = C.node_proxy_config(both)
     check(picked.get('server') == 'from-entry.com',
           f'source_entry 存在时用它（实际 {picked.get("server")}）')
@@ -232,7 +232,7 @@ def main():
                                   'mptcp': False, 'smux': False, 'interface': '',
                                   'routing-mark': 0, 'dialer-proxy': '', 'extra': {},
                                   'provider-name': 'gist'},
-                    'ok': True, 'upload_mibs': 50.0 / 8.388608, 'download_mibs': 50.0 / 8.388608}
+                    'ok': True, 'upload_mibs': 50.0 / 8, 'download_mibs': 50.0 / 8}
     check(C.node_proxy_config(runtime_only) == {}, '运行时对象不算可导出配置（返回空字典）')
     check(C.is_exportable_proxy({'type': 'trojan', 'server': 'a.com', 'port': 443}),
           'server + port 齐全 ⇒ 可导出')

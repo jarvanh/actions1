@@ -1540,6 +1540,54 @@ def _proxied_egress_ip(proxy_env, timeout=8):
     return ''
 
 
+# push/clone 的**瞬时**网络错误判据（2026-11-14 加，处理 gitee 轮 50% 失败）。
+# 背景：run 43539525606（336 节点）失败 168 个，原因分布——87 个 GnuTLS recv -110、
+# 12 个 push 60s 超时、6 个 TLS 握手失败、clone 90s 超时、HTTP 502 等；失败散布在
+# 整轮中段而不是尾部聚集，更像逐连接抖动而非累计限流。这类错误重试一次就能救回
+# 读数；而鉴权类（could not read Username）与确定性失败重试纯属浪费时间，直接抛。
+_TRANSIENT_GIT_ERROR_RE = re.compile(
+    r'timed out'
+    r'|GnuTLS'
+    r'|non-properly terminated'
+    r'|connection reset'
+    r'|Connection was reset'
+    r'|recv failure'
+    r'|early EOF'
+    r'|unexpected disconnect'
+    r'|invalid index-pack'
+    r'|HTTP 50[234]'
+    r'|connect(?:ion)? refused'
+    r'|SSL.*(?:error|routines)',
+    re.IGNORECASE,
+)
+
+
+def retry_transient_git(label: str, func, attempts: int = 2, backoff_seconds: float = 3.0):
+    """对 push/clone 的瞬时网络错误做有限次重试（默认共 2 次尝试 = 重试 1 次）。
+
+    为什么只重试瞬时类：见 `_TRANSIENT_GIT_ERROR_RE` 的说明。`attempts` 是**总次数**
+    （不是重试次数），退避按 attempt 线性递增；非瞬时错误与次数耗尽都原样抛出，
+    绝不吞异常 —— 失败要留给上层落账（main 的失败结果 / 仓库重建判据都靠它）。
+
+    为什么放在这一层而不是 `git_force_push_testfile` / `git_clone_testbranch` 内部：
+    那两个函数的失败语义已被调用方各自依赖（size-limit 重建、直连基线自己的 5 次
+    重试），在共享函数里再叠一层重试会让两套语义打架。
+    """
+    last_error = None
+    total = max(1, int(attempts))
+    for attempt in range(1, total + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_error = e
+            if attempt >= total or not _TRANSIENT_GIT_ERROR_RE.search(str(e)):
+                raise
+            log_progress(f'{label}_transient_retry', attempt=attempt,
+                         attempts=total, error=str(e)[:200])
+            time.sleep(backoff_seconds * attempt)
+    raise last_error  # pragma: no cover —— 循环每轮必 return 或 raise
+
+
 def speedtest_single_item(env, gitee, item: dict, test_file: pathlib.Path, push_timeout: int, clone_timeout: int, switch_settle_seconds: float, speedtest_mode: str, via_proxy: bool = True, direct_ip: str = ''):
     name = item['name']
     local_env = build_proxy_env(env)
@@ -1577,11 +1625,24 @@ def speedtest_single_item(env, gitee, item: dict, test_file: pathlib.Path, push_
             'exit_ip': direct_ip,
             'error': f'疑似未走代理：出口 IP 与 runner 直连出口相同（{direct_ip}），测速流量未进节点',
         }
-    # 上行经共享实现（与 CDN 同一份）；`via_proxy=False` 时测的是 runner 直连出口上行
-    upload_s, total = upload_speedtest(
-        env=env, gitee=gitee, test_file=test_file, push_timeout=push_timeout,
-        branch_name=branch_name, via_proxy=via_proxy, repo_dir=repo_dir)
-    size_mib = total / 1024 / 1024
+    # ── 上行/下行解耦（2026-11-14）＋ 瞬时错误重试 ──
+    # 旧实现 upload 抛异常直接冒泡（clone 也不做）、clone 抛异常让整条结果变失败
+    # （已测出的 upload_mibs 一并丢弃）——run 43539525606 的 168 个失败里大量是
+    # clone 的 GnuTLS -110，等于一半节点的上传白测。现在两个方向独立测量、独立记账：
+    #   - 任一方向测出 ⇒ ok=True，失败方向字段缺省并带 *_error，原因进 progress 日志；
+    #   - 两个方向全失败 ⇒ 照旧抛异常，维持 main 的「重建仓库重试」与失败落账。
+    # push 与 clone 各自先过一次瞬时错误重试（见 retry_transient_git）。
+    upload_error = ''
+    upload_s, total = 0.0, 0
+    try:
+        upload_s, total = retry_transient_git(
+            'upload_push',
+            lambda: upload_speedtest(
+                env=env, gitee=gitee, test_file=test_file, push_timeout=push_timeout,
+                branch_name=branch_name, via_proxy=via_proxy, repo_dir=repo_dir))
+    except Exception as e:
+        upload_error = str(e)
+        log_progress('node_upload_failed', name=name, error=upload_error[:200])
     result = {
         'name': name,
         'provider': item['provider'],
@@ -1589,7 +1650,7 @@ def speedtest_single_item(env, gitee, item: dict, test_file: pathlib.Path, push_
         'share_link': item.get('share_link', ''),
         'share_link_match': item.get('share_link_match', ''),
         'proxy_obj': deep_copy_json(item.get('proxy_obj') or {}),
-        'ok': True,
+        'ok': False,
         'bypass': False,
         'exit_ip': exit_ip,
         'branch_name': branch_name,
@@ -1597,23 +1658,42 @@ def speedtest_single_item(env, gitee, item: dict, test_file: pathlib.Path, push_
         'mode': speedtest_mode,
         'latency': latency,
         'latency_ms': latency.get('median_ms') if latency.get('ok') else None,
-        'upload_mibs': round(size_mib / upload_s, 2),
-        'upload_seconds': round(upload_s, 3),
     }
+    if upload_s > 0:
+        size_mib = total / 1024 / 1024
+        result['upload_mibs'] = round(size_mib / upload_s, 2)
+        result['upload_seconds'] = round(upload_s, 3)
+    if upload_error:
+        result['upload_error'] = upload_error[:300]
     if speedtest_mode != 'push-only':
-        download_s, pulled = git_clone_testbranch(
-            clone_dir=clone_dir,
-            remote=gitee['remote_with_token'],
-            env=local_env,
-            timeout=clone_timeout,
-            branch_name=branch_name,
-            target_filename=target_filename,
-        )
-        size_mib = pulled.stat().st_size / 1024 / 1024
-        result.update({
-            'download_mibs': round(size_mib / download_s, 2),
-            'download_seconds': round(download_s, 3),
-        })
+        download_error = ''
+        download_s, pulled = 0.0, None
+        try:
+            download_s, pulled = retry_transient_git(
+                'download_clone',
+                lambda: git_clone_testbranch(
+                    clone_dir=clone_dir,
+                    remote=gitee['remote_with_token'],
+                    env=local_env,
+                    timeout=clone_timeout,
+                    branch_name=branch_name,
+                    target_filename=target_filename,
+                ))
+        except Exception as e:
+            download_error = str(e)
+            log_progress('node_download_failed', name=name, error=download_error[:200])
+        if pulled is not None:
+            size_mib = pulled.stat().st_size / 1024 / 1024
+            result['download_mibs'] = round(size_mib / download_s, 2)
+            result['download_seconds'] = round(download_s, 3)
+        if download_error:
+            result['download_error'] = download_error[:300]
+    result['ok'] = upload_s > 0 or result.get('download_mibs') is not None
+    if not result['ok']:
+        # 两个方向都失败：合并原因抛出，main 侧的仓库重建判据（'timed out' 等关键字
+        # 匹配）与失败落账路径保持不变
+        raise RuntimeError(' | '.join(
+            x for x in (upload_error, result.get('download_error', '')) if x)[:500])
     return result
 
 def resolve_push_target_info(remote_url: str):
@@ -2136,7 +2216,10 @@ def main():
                     aborted_due_to_runtime = True
                     runtime_abort_reason = err_text
         speed_results.append(result)
-        if result.get('ok'):
+        # 只有 push 成功才推进 ok_pushes（2026-11-14 解耦后 ok 可由 clone 单独撑起）：
+        # 这个计数器唯一的用途是 main 的「仓库重建」判据（连续 push 全挂 ⇒ 重建一次），
+        # 统计口径必须是 push，不是「节点有任一读数」。
+        if result.get('upload_mibs') is not None:
             ok_pushes += 1
         log_progress('node_done', index=index, total=len(alive_items), name=item['name'], ok=bool(result.get('ok')), error=result.get('error', ''), upload_mibs=result.get('upload_mibs'), download_mibs=result.get('download_mibs'))
         # 日志只输出脱敏摘要：节点名/分享链接/原始代理配置/订阅来源一律打码，防止 Actions 日志泄漏

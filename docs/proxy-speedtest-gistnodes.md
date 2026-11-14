@@ -576,6 +576,12 @@ fail-open（正则非法 / 过滤后为空 → 原样放行），词表写错不
 | `PROXY_SPEEDTEST_GISTNODES_GIST_ID` | 本工作流专属 Gist 的 id。留空则首次运行自动新建，job 摘要给链接，拿到 id 后回填 |
 | 其余 | 由被复用的测速工作流自己读（走 gistnodes 源时它改为按本 Gist 的 id 现取 raw URL，见「为什么不能把 gist id 塞进 job output」） |
 
+⚠️ 2026-11-13 起编排层对三个被调 workflow 改用**显式 `secrets:` 映射**（不再
+`inherit`）。显式传入的每个名字必须在被调 workflow 的 `on.workflow_call.secrets`
+里声明，否则整个 run 在**启动阶段**判 `startup_failure`（jobs 为空、页面无细节；
+实测 run 43457889463 / 43561712476）。三套已补声明；映射与声明必须逐名对齐，
+静态校验见 `tests/test_gistnodes_secrets.py`。
+
 Gist 分工：`gitee` / `cdn` / `taier` 三套各自的 Gist 只装**它们定时轮**的测速结果；
 本工作流专属的那个 Gist 装**这一轮 gist 抓取的全部产物**，靠文件名区分，互不覆盖：
 

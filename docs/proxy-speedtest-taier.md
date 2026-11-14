@@ -256,8 +256,8 @@ gitee 读快照 `23:32:05.426` → 首个 `node_start` `23:32:48.907`（43 秒�
 
 `PROXY_SPEEDTEST_GIST_FILENAME` = `proxy_speedtest_taier_subscription.yaml`、
 `PROXY_SPEEDTEST_GIST_DESCRIPTION` = `proxy speedtest subscription (taier 三网)`。
-导出字段单位是 MiB/s，taier 数值为 Mbps，脚本内 ÷8.388608 换算（节点名前缀"↓xx兆"与
-真实 Mbps 基本一致）。
+导出字段沿用共享层的 `*_mibs` 命名；taier 存「Mbps ÷ 8」，共享层 ×8 还原为引擎原始
+Mbps（2026-11-14 与通知侧统一，节点名前缀"↑xx兆" = 引擎原始 Mbps）。
 
 ## Telegram 通知
 

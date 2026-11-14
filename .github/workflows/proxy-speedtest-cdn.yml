@@ -8,8 +8,10 @@ name: proxy-speedtest-cdn
 #   proxy-speedtest-taier = 测速点泰尔三网（电信/联通/移动）：taierspeedtest + mihomo TUN
 #   proxy-speedtest-gistnodes = 编排层，自己不测速：先从 gist.github.com 抓公开节点交给
 #                            Sub-Store 去重出 mihomo YAML，再按 env/vars 选择上面三套之一来测
-# 本工作流：测量节点延迟 + 下载速度 + 经代理上行速度，生成可交互 HTML 报告。
-# 上行测速复用 speedtest_gitee 的「经 mihomo 代理 git push」方案向 Gitee 私有仓库推送测速文件。
+# 本工作流：测量节点延迟 + 下载速度，生成可交互 HTML 报告。
+# 上行测速已于 2026-11-14 停用：与 gitee 工作流同源的「经 mihomo 代理 git push 到
+# Gitee」是瓶颈（上传 p50 0.99 MiB/s、50/336 个 null，直连基线 5 次 push 全超时），
+# 节点间差异被 Gitee 上限抹平、没有分辨力；上行口径由 taier 覆盖。订阅判定改按 download。
 on:
   schedule:
     # 每天 4 次、间隔 4 小时：UTC 22:00, 02:00, 06:00, 10:00（北京 06:00, 10:00, 14:00, 18:00）。
@@ -67,6 +69,36 @@ on:
         description: '通知标题前缀，用于区分同一套测速的不同来源（留空则不显示）'
         required: false
         type: string
+    # ⚠️ 编排层（proxy-speedtest-gistnodes）自 2026-11-13 起改为**显式传 secrets**
+    # （不再 inherit）。显式传入的每个名字都必须在这里声明，否则整个 run 在启动阶段
+    # 直接失败（startup_failure、jobs 为空）—— 实测 run 43457889463 / 43561712476
+    # 连续两轮。声明列表必须与 gistnodes 里 speedtest-cdn job 的 secrets 映射逐名
+    # 对齐；改任一侧都要回看另一侧。
+    secrets:
+      PAT:
+        description: 'gist 读写 PAT（结果订阅上传 / 源订阅 raw URL 解析）'
+        required: false
+      PROXY_SPEEDTEST_CDN_GIST_ID:
+        description: '本工作流自己的结果 Gist id（表达式兜底分支仍会读）'
+        required: false
+      PROXY_SPEEDTEST_GISTNODES_GIST_ID:
+        description: '编排层的源订阅/结果 Gist id（编排触发时使用）'
+        required: false
+      PROXY_SPEEDTEST_SUB_URLS:
+        description: '默认订阅源（编排层不传 sub_urls 时的兜底）'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: '普通通知 bot'
+        required: false
+      TELEGRAM_BOT_TOKEN_ALERT:
+        description: '告警通知 bot（熔断/异常兜底，无回落）'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: '普通通知会话'
+        required: false
+      TELEGRAM_CHAT_ID_ALERT:
+        description: '告警通知会话'
+        required: false
 
 permissions:
   contents: read
@@ -135,7 +167,7 @@ jobs:
           fi
           echo "PROXY_SPEEDTEST_SUB_URLS=$url" >> "$GITHUB_ENV"
 
-      - name: Run node speedtest (latency + download + upload)
+      - name: Run node speedtest (latency + download)
         # 订阅源**不在 env 里设**：上面那步已经把最终值写进 $GITHUB_ENV，这里再设一次会
         # 把它覆盖掉（步骤级 env 优先级高于 GITHUB_ENV）。
         env:
@@ -180,33 +212,19 @@ jobs:
           # 默认 18000 秒 = 5 小时，比硬上限少 1 小时留给前置准备与收尾。**与 job 的
           # timeout-minutes 成对，改一个要回看另一个。**
           PROXY_SPEEDTEST_BUDGET_SECONDS: '18000'
-          # 上行测速：默认开启，复用 speedtest_gitee 的「经 mihomo 代理 git push」方案，
-          # 携带代理环境变量向 Gitee 私有仓库 push 测速文件（反映代理节点上行带宽）。
-          # 需先在仓库 Secrets 配置 GITEE_PRIVATE_TOKEN 与 PROXY_SPEEDTEST_GITEE_OWNER，
-          # 并准备可写的私有仓库（默认 proxy-speedtest-temp）；仓库体积超限会自动重建。
-          # 设 ENABLE_PUSH=0 可关闭；设 UPLOAD_VIA_PROXY=0 则退化为直连 Gitee（runner 直连出口上行）。
-          PROXY_SPEEDTEST_ENABLE_PUSH: '1'
-          # 上行是否经代理：1=经代理（代理节点上行质量）；0=直连 Gitee（runner 直连出口上行）
-          PROXY_SPEEDTEST_UPLOAD_VIA_PROXY: '1'
-          GITEE_PRIVATE_TOKEN: ${{ secrets.GITEE_PRIVATE_TOKEN }}
-          PROXY_SPEEDTEST_GITEE_OWNER: ${{ secrets.PROXY_SPEEDTEST_GITEE_OWNER }}
-          # ⚠️ CDN 用**自己的**仓库（2026-11-10 隔离）：此前与 proxy-speedtest-gitee 共用
-          # `proxy-speedtest-temp` + 同一分支 master，而两边定时点只差 1 小时、单轮跑
-          # 3~3.5 小时 ⇒ 实际并发 force-push 同一分支，日志里已有
-          # `! [remote rejected] ... (shallow update not allowed)`，且会把对方的 blob
-          # 变成自己 push 的 delta base（上传读数的真假因此混合、事后无法分辨）。
-          # 仓库不存在时会由 ensure_gitee_remote 自动创建（私有）。
-          PROXY_SPEEDTEST_GITEE_REPO: proxy-speedtest-temp-cdn
-          # 上行超时（2026-11-11 从 30 上调到 60）：与 gitee 同因——上传改成真传
-          # 10MiB 后，push 耗时 = 10MiB ÷ 真实上行（本链路实测 p50 0.62 MiB/s ≈ 16 秒，
-          # 慢节点 30 秒以上）。run 42829363686 的 82 个上传 null 里多数是 30 秒超时。
-          PROXY_SPEEDTEST_PUSH_TIMEOUT: '60'
-          # runner 直连基线（**不是**家庭宽带对照，2026-09-17 与 gitee 统一）：不经代理 push 一次，
-          # 给出「runner 直连 vs 节点」的可比数字——只看节点带宽无法判断节点是否还不如直连。
-          # 失败不打死整轮（基线是参考值）：拿不到只记 direct_baseline.ok=false。
-          PROXY_SPEEDTEST_DIRECT_BASELINE: '1'
-          PROXY_SPEEDTEST_DIRECT_BASELINE_TIMEOUT: '60'
-          PROXY_SPEEDTEST_DIRECT_BASELINE_MAX_ATTEMPTS: '5'
+          # ── 上行测速停用（2026-11-14 定案）──
+          # 此前复用 speedtest_gitee 的「经 mihomo 代理 git push 到 Gitee」测上行，与
+          # gitee 工作流完全同源。停用理由（run 43543281199 实测）：
+          #   1. Gitee 端是瓶颈：上传 p50 0.99 MiB/s、max 1.97，50/336 个节点 null；
+          #      节点间差异被 Gitee 上限抹平，读数没有分辨力。
+          #   2. runner 直连基线 5 次 push 全部 60s 超时，连对照数字都拿不到。
+          #   3. 上行口径已由 taier 覆盖（泰尔三网测速点，p50 37 Mbps），同一订阅源
+          #      每天 4 轮，信息不丢。
+          # 订阅判定随之改按 download（本套自己的主指标，run 43543281199：276/289 过线）。
+          # 脚本侧 push 能力保留（speedtest.py 的 ENABLE_PUSH 默认即 0），这里显式写 0
+          # 防止将来默认值漂移；DIRECT_BASELINE 走的也是 Gitee push，一并关掉。
+          PROXY_SPEEDTEST_ENABLE_PUSH: '0'
+          PROXY_SPEEDTEST_DIRECT_BASELINE: '0'
           # 订阅导出策略（四套共用，脚本默认值；各脚本消费）：
           #   PROXY_SPEEDTEST_MIN_MEGABIT  达标阈值（兆，默认 10）
           #   PROXY_SPEEDTEST_SPEED_METRIC 判定指标 upload|download（默认 upload 按上行判定；
@@ -221,7 +239,9 @@ jobs:
           # 10 兆（run 43069430512：258/342 过线）。低水位轮次（如 run 42990195749 仅
           # 19/393 过线）靠「primary < min_nodes ⇒ 回退 download」兜底，不会再静默停更。
           PROXY_SPEEDTEST_MIN_MEGABIT: '10'
-          PROXY_SPEEDTEST_SPEED_METRIC: 'upload'
+          # 2026-11-14 起本套显式按 download 判定（上行已停用，见上）；共享层默认仍是
+          # upload，这里不依赖默认值。最近一轮：276/289 个有下载读数的节点过线。
+          PROXY_SPEEDTEST_SPEED_METRIC: 'download'
           PROXY_SPEEDTEST_MIN_NODES: '10'
           # 订阅导出 + 上传 Gist：脚本复用 speedtest_gitee 的 build_subscription_yaml_text /
           # update_gist，把达标节点整理成可用订阅并发布到 GitHub 私有 Gist。

@@ -600,6 +600,11 @@ def to_gist_result_row(r):
     / `gist_skipped`。taier 轮自 10-12 03:39 起每 4 小时一轮全部白跑，
     至 10-18 已六天。
     speedtest.py 投影同病同修；回归钉在 tests/test_projection_ok_field.py。
+
+    ⚠️ 单位换算（2026-11-14 与通知侧统一为 ÷8）：引擎值是十进制 Mbps，
+    共享层「兆」= MiB/s × 8 取整。此前本函数 ÷8.388608 ⇒ 导出 ×8 后 ≈ 引擎值
+    的 95.4%（十进制/二进制往返损失 4.6%），订阅名里的兆数与通知 TOP5 对不上、
+    达标阈值实际是 ~10.49Mbps 而非 10Mbps。改 ÷8 后 Gist 前缀与通知同值同阈值。
     """
     return {
         'name': r.get('name', ''),
@@ -611,8 +616,8 @@ def to_gist_result_row(r):
         # speedtest_common.node_proxy_config 与 speedtest_gitee.build_source_mapping 的说明。
         'proxy_obj': r.get('proxy_obj') or {},
         'mode': 'download',
-        'download_mibs': (r.get('down') or 0) / 8.388608,
-        'upload_mibs': (r.get('up') or 0) / 8.388608,
+        'download_mibs': (r.get('down') or 0) / 8,
+        'upload_mibs': (r.get('up') or 0) / 8,
         'latency_ms': _rtt_to_ms(r.get('rtt')),
         'ok': bool(r.get('ok')),
         # bypass 必须一并投影（2026-11-10）：共享层据此过滤「流量没进节点」的读数。
@@ -836,12 +841,10 @@ def build_telegram_lines(results, meta, direct_ip, bypass_hits, gist_res, bundle
     lines.append('')
     if top:
         # TOP 条目仍复用共享的 build_node_metric_prefix 渲染（树形/省略/延迟语义不重写），
-        # 但**喂进原始 Mbps**（×8 折算 MiB/s）而非引擎值 ÷8.388608 —— 口径对齐 speedtest.net：
+        # 喂原始 Mbps（÷8 进共享层、×8 取整出）—— 口径对齐 speedtest.net：
         # 引擎 calcMbps 是十进制 Mbps（与 speedtest.net 同单位），共享层「兆」= mibs×8 取整，
-        # 走 ÷8.388608→×8 往返会把 591.86Mbps 显示成 564兆（4.6% 缩水）；×8 后 591.86→592，
-        # 通知数值与 speedtest.net 客户端读数同口径可直接对比（2026-10-11 用户口径要求）。
-        # ⚠️ 仅通知侧如此；Gist 订阅导出（下方 gist_results）仍按 MiB/s 口径，
-        # 客户端「兆」显示 = MiB/s×8.388608 反推 Mbps，链路自洽。
+        # 591.86Mbps → 592兆。⚠️ 2026-11-14 起 Gist 投影（to_gist_result_row）同为 ÷8，
+        # 通知与订阅数值/阈值完全同口径，不再有 ÷8.388608 的 4.6% 往返损失。
         _top_mode = 'push-only' if bundle.get('metric', 'upload') == 'upload' else 'download'
         has_up = any((r.get('up') or 0) > 0 for r in top)
         legend = '↑上传 · ↓下载 · 延迟ms（兆=Mbps，同 speedtest 口径）' if has_up else '↓下载 · 延迟ms（兆=Mbps）'
@@ -1249,8 +1252,9 @@ def _run():
     stop_mihomo_tun()
 
     # 订阅导出到本工作流专属 Gist（secret: PROXY_SPEEDTEST_TAIER_GIST_ID）——
-    # 三个测速工作流各用各的 Gist，互不覆盖。taier 数值是 Mbps，导出字段是 MiB/s（÷8.388608），
-    # 阈值/前缀沿用 speedtest_gitee 的 ×8 折算，展示值与 Mbps 基本一致。
+    # 三个测速工作流各用各的 Gist，互不覆盖。taier 数值是 Mbps，导出字段是 MiB/s（÷8，
+    # 2026-11-14 与通知侧统一，见 to_gist_result_row），阈值/前缀沿用 speedtest_gitee 的 ×8
+    # 折算，展示值 = 引擎原始 Mbps。
     # 达标策略（阈值 / 判定指标 / 最少节点数）与四套共用，见 resolve_subscription_policy：
     # 默认按上行判定；上行达标数 < 回退门槛（默认 3）且下行更多时自动改用下行。
     gist_res = None

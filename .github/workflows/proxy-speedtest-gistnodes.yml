@@ -316,7 +316,17 @@ jobs:
       # 各阶段耗时）都已经在 job 摘要与 progress 日志里，不必再单独留一份含凭据的快照。
 
   # 三个引擎各一个条件 job：GitHub 不支持动态的 uses:，只能写三条并按 engine 选一条。
-  # secrets: inherit 把仓库 secrets 透传给被调工作流（它们内部照旧读自己的 secret）。
+  # ⚠️ secrets 自 2026-11-13（5cefe6df）起从 `inherit` 改为下面的**显式映射**
+  # （least-privilege）。显式映射有两条硬约束，缺一条就是 startup_failure——整个 run
+  # 不启动、jobs 为空，且页面只显示一条无细节的失败（实测 run 43457889463 /
+  # 43561712476 连续两轮，commit 之后立刻发生）：
+  #   1. 被调 workflow 必须在自己的 `on.workflow_call.secrets` 里**逐名声明**；
+  #      三个测速 workflow 已补声明，列表与本处映射逐名对齐，改任一侧都要回看另一侧。
+  #   2. 映射里的名字理论上还须真实存在于仓库 secrets（空值可以，未定义的名字会让
+  #      声明匹配失败）；新增/改名 secret 时三处（仓库 secret、本处映射、被调声明）
+  #      要同步。
+  # 校验方式：tests.yml 的 proxy-speedtest 域静态检查会解析四个 workflow 并核对
+  # 映射 ⊆ 声明（见 tests/test_gistnodes_secrets.py）。
   #
   # ⚠️ 这里**不能**再传 `sub_url` / `gist_id`：gist id 是注册过的 secret
   # （`PROXY_SPEEDTEST_GISTNODES_GIST_ID`），GitHub 见到 job output 里出现与已注册 secret
@@ -434,11 +444,10 @@ jobs:
       gist_description: 'proxy speedtest result (gist 抓节点 · cdn 镜像站)'
       label: 'gist 节点'
     secrets:
-      GITEE_PRIVATE_TOKEN: ${{ secrets.GITEE_PRIVATE_TOKEN }}
+      # 上行测速已停用（2026-11-14），cdn 不再需要 Gitee 凭据
       PAT: ${{ secrets.PAT }}
       PROXY_SPEEDTEST_CDN_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_CDN_GIST_ID }}
       PROXY_SPEEDTEST_GISTNODES_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GISTNODES_GIST_ID }}
-      PROXY_SPEEDTEST_GITEE_OWNER: ${{ secrets.PROXY_SPEEDTEST_GITEE_OWNER }}
       PROXY_SPEEDTEST_SUB_URLS: ${{ secrets.PROXY_SPEEDTEST_SUB_URLS }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}

@@ -34,9 +34,9 @@ commit 等一律排除，见下方「下载计时」）。
 | **下载** | curl **单流定窗 8s**（Range 上界 10MiB，到点截断，**只计传输段、不含 TTFB**），多镜像取最优 | `--no-checkout` clone，**只计整段网络传输**（不含本地 checkout 解包） | 同一次引擎调用的「↓」列 | — |
 | **单位** | MiB/s | MiB/s | 原始 Mbps | — |
 
-⚠️ **taier 的单位陷阱**：引擎输出 Mbps，导出时 ÷8.388608 转 MiB/s、展示时 ×8 转回「兆」，
-净效果 ≈ ×0.9537 ⇒ **展示值基本等于引擎原始 Mbps**。所以 taier 通知里的「兆」与 CDN/Gitee
-的 MiB/s 不能直接比，跨套比较要先统一到 MiB/s。
+⚠️ **taier 的单位**（2026-11-14 统一）：引擎输出十进制 Mbps，导出与展示一律 ÷8/×8 折算，
+「兆」= 引擎原始 Mbps，taier 通知与订阅前缀同值同阈值。但 taier 的「兆」= Mbps，与
+CDN/Gitee 的「兆」= MiB/s×8 仍是两种单位口径，跨套比较要先统一到 MiB/s。
 
 ## 双重角色
 
@@ -150,6 +150,24 @@ commit 等一律排除，见下方「下载计时」）。
 ⚠️ **`strip_proxy_env` 必须剥净 6 个变量**（含小写的 `all_proxy`/`http_proxy`/`https_proxy`）：
 漏一个就会「直连」其实还在走代理，测出来是节点带宽而非家庭宽带，**且看不出任何异常**。
 测试第 10 组对此有专门断言，并已反向验证（漏掉 `all_proxy` 即变红）。
+
+## 失败处理：瞬时重试 + 上下行解耦（2026-11-14）
+
+run 43539525606：336 个节点 168 个失败，87 个是 `GnuTLS recv error (-110)`、
+12 个 `git push ... timed out after 60 seconds`、6 个 TLS 握手失败、clone 90s 超时、
+HTTP 502 等；失败散布在整轮中段而非尾部聚集，更像逐连接抖动而非累计限流。
+
+`speedtest_single_item` 现在做两层处理：
+
+1. **瞬时错误重试一次**：`_TRANSIENT_GIT_ERROR_RE` 只匹配超时 / GnuTLS / 连接重置 /
+   early EOF / 502 等网络抖动；鉴权失败（`could not read Username`）与确定性失败
+   不重试。共 2 次尝试、退避 3s，避免把整轮拖长。
+2. **上下行独立记账**：push 成功但 clone 失败 ⇒ 保留 `upload_mibs`、节点仍算
+   `ok=True`，原因进 `download_error` + `node_download_failed`；push 失败但 clone
+   成功同理保留下载。两个方向全失败才抛异常，维持 main 的仓库重建判据与失败落账。
+   此前 clone 失败会把已测出的上传一起丢掉，等于一半节点的上传白测。
+
+回归：`tests/test_gitee_transient_retry.py`。
 
 ## Gist 约定（三套各用各的）
 
