@@ -189,6 +189,19 @@ add_preview_pair() {
   local dst_json="" _dst_try _dst_t0
   local _pv_tmo_s="${OPENLIST_PREVIEW_LISTING_TIMEOUT:-240s}"
   _pv_tmo_s="${_pv_tmo_s%s}"; [[ "$_pv_tmo_s" =~ ^[0-9]+$ ]] || _pv_tmo_s=240
+  # ===== 列举前刷新目标端缓存（2026-11-15 加，环境变量门控）=====
+  # 为什么必须刷新: OpenList 的 WebDAV **读**走它自己的目录缓存，而预览容器拉的是
+  #   dropbox 里的 data.db 快照。两次预览之间若没有同步轮完成 Persist，DB 相同
+  #   ⇒ 目标端列举完全相同 ⇒ 两轮"未同步量"逐字节一致（实测 13 个可比对里
+  #   12 个一模一样，只有 1 个因缓存未命中变了 2.756 GiB）。那样的数字测的是
+  #   "DB 快照"，不是"后端真值"，无法用来判断收敛。
+  # 默认关闭: 主 workflow 的预览 pass 行为不变（且每对要付 ~40-90s 刷新）；
+  #   独立预览工作流设 PREVIEW_REFRESH_CACHE=1 打开。
+  if [ "${PREVIEW_REFRESH_CACHE:-0}" = "1" ] \
+     && declare -F _refresh_openlist_cache >/dev/null 2>&1; then
+    echo "  刷新目标端缓存后列举: ${dest_path}" >&2
+    _refresh_openlist_cache "$dest_path" || true
+  fi
   for _dst_try in 1 2 3; do
     _dst_t0=$SECONDS
     dst_json=$(_get_listing_json "$dest_path" "${FILTER_ARGS[@]}")

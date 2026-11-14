@@ -107,6 +107,12 @@ jobs:
           OPENLIST_CHECKERS: ${{ inputs.list_checkers }}
           OPENLIST_TRANSFERS: ${{ inputs.list_checkers }}
           OPENLIST_SUBDIR_LIST_PARALLEL: ${{ inputs.list_checkers }}
+          # 列举前刷新目标端缓存（2026-11-15）: 不刷新时 OpenList 的 WebDAV 读
+          # 会用容器 DB 快照里的旧目录树 ⇒ 两轮数字可能逐字节相同（实测 12/13 对
+          # 完全相同），测到的是"DB 快照"而不是"后端真值"，无法判断收敛。
+          PREVIEW_REFRESH_CACHE: "1"
+          # 递归刷新等待给到 90s（默认 40s 是给同步主流程省时间用的；预览要准）
+          OPENLIST_FS_REFRESH_SLEEP: "90"
         run: |
           set -uo pipefail
           source "$GITHUB_WORKSPACE/.github/scripts/openlist/load_all.sh"
