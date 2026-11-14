@@ -111,6 +111,23 @@ jobs:
           set -uo pipefail
           source "$GITHUB_WORKSPACE/.github/scripts/openlist/load_all.sh"
 
+          # ===== 初始化预览全局变量（2026-11-14 修，run 43572054748 实证）=====
+          # 主 workflow 不开 set -u，未初始化只是空串；本 workflow 开了 set -u，
+          # 而 PREVIEW_PAIR_COUNT 等标量**只在 flush_task_preview 里初始化**（line 478）
+          # —— 本工作流为避免 Telegram 刷屏**刻意不调 flush** ⇒ 首次自增即
+          # "unbound variable" 崩溃。故在此把全部预览标量补齐（与 flush 的初始化同值）。
+          PREVIEW_PAIR_COUNT=0
+          PREVIEW_PAIRS_TSV=""
+          PREVIEW_TOTAL_SYNC_BYTES=0
+          PREVIEW_TOTAL_SYNC_COUNT=0
+          PREVIEW_TOTAL_NEW_COUNT=0
+          PREVIEW_TOTAL_UPD_COUNT=0
+          PREVIEW_FAIL_PAIRS=""
+          PREVIEW_FAIL_SRC_PAIRS=""
+          PREVIEW_TASK_NAME=""
+          # PREVIEW_SRC_LIST_CACHE / PREVIEW_PENDING_MAP 是关联数组，已在
+          # task_preview.sh 顶层 declare -A，无需重复。
+
           # 降低对后端的冲击（与主轮同步并行，不能把它拖垮）。
           # 只调并发，不声称限速 —— 本仓无 tpslimit 参数通道。
           export OPENLIST_CHECKERS="${OPENLIST_CHECKERS:-2}"
