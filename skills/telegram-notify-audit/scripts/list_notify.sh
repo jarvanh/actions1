@@ -39,9 +39,11 @@ CURL_ALLOW = {
 }
 
 ANY_SEND = re.compile(
-    r"(?<![\w-])(send_tg_chunked|send_tg|send_telegram_message|send_telegram_chunked|send_telegram)\b"
-    r"|(?<![\w-])Send-TgMessage\b"
-    r"|(?<![\w-])gw_send\b"
+    # 排除 `.` 与反引号前缀：`inputs.send_tg`（workflow 输入名）与 docstring 里的
+    # `` `send_telegram(...)` `` 是散文/配置键，不是发送点（曾把枚举数虚高 5 处）
+    r"(?<![\w.`-])(send_tg_chunked|send_tg|send_telegram_message|send_telegram_chunked|send_telegram)\b"
+    r"|(?<![\w.`-])Send-TgMessage\b"
+    r"|(?<![\w.`-])gw_send\b"
 )
 NOTIFY_LINE = re.compile(r"tg_add_|tg_append|send_tg|send_telegram|Send-TgMessage")
 # 真实调用（带变量/实参），用于排除 docstring 里「提到函数名」的散文
@@ -161,6 +163,15 @@ def inventory(filt):
                 titles.append((path, i + 1, mt.group(1).strip()[:110]))
                 continue
 
+            # docstring 里的示意调用（`send_telegram(...)`，实参写成省略号）不算发送点
+            if re.search(r"send_telegram\w*\s*\(\s*\.\.\.\s*\)", raw):
+                continue
+            # docstring/注释里用反引号提到的调用（`send_telegram(...)`）不算发送点
+            if "`" in raw and re.search(r"`[^`]*\b(?:send_tg|send_telegram|Send-TgMessage|gw_send)[^`]*`", raw):
+                continue
+            # workflow_dispatch 输入名（`send_tg:`）不是发送点
+            if re.match(r"^\s*send_tg:\s*$", raw):
+                continue
             if not ANY_SEND.search(raw):
                 continue
             if "Get-Command" in raw or path in LIB_SKIP:
@@ -519,21 +530,20 @@ def check():
                 bad.append(f"{p}:{i+1}: {l.strip()[:80]}")
     add(10, "分节后跟列表带计数", bad)
 
-    # 11 助手速查表存在性
+    # 11 助手速查表存在性（表在 send skill 的 api-reference，规范只留规则）
     bad = []
     try:
-        doc = open("docs/telegram-notify.md", encoding="utf-8").read()
-        # 章节边界用「下一个标题」，不能用 "---"：表格自身的 |---|---| 分隔行会把
-        # 整个表切断，导致本项解析出 0 行、恒绿（实测发现的假绿）
-        sec = re.split(r"\n#{2,4} ", doc.split("### 5.3 助手速查")[1])[0]
+        doc = open("skills/telegram-notify-send/references/api-reference.md", encoding="utf-8").read()
+        # 只取「三套实现对照」的四列表（bash / pwsh / python 三列）；
+        # 2 列表（折叠助手、签名说明）不参与——第 2 列不是实现列
         rows = []
-        for l in sec.split("\n"):
+        for l in doc.split("\n"):
             if not l.startswith("|"):
                 continue
             if re.match(r"^\|[\s:|-]+\|?$", l):   # |---|---| 分隔行
                 continue
             cells = [c.strip() for c in l.strip("|").split("|")]
-            if len(cells) > 1 and "`" in cells[1]:  # 跳过表头（第一列是「用途」）
+            if len(cells) >= 4 and "`" in cells[1]:
                 rows.append(l)
         srcs = {
             "bash": open(".github/scripts/telegram/tg_notify.sh", encoding="utf-8").read(),
@@ -573,9 +583,9 @@ def check():
                     else:
                         ok = re.search(rf"^def {name}\b", srcs[kind], re.M) or name == "TG_SEP"
                     if not ok:
-                        bad.append(f"5.3 表 {kind} 列: {name} 在真源不存在")
+                        bad.append(f"api-reference 表 {kind} 列: {name} 在真源不存在")
     except Exception as e:
-        bad.append(f"解析 5.3 表失败: {e}")
+        bad.append(f"解析 api-reference 表失败: {e}")
     add(11, "助手速查表与真源一致", bad)
 
     # 12 函数体内 source 真源（按 YAML run 块 / heredoc 分作用域：
