@@ -325,8 +325,11 @@ jobs:
   #   2. 映射里的名字理论上还须真实存在于仓库 secrets（空值可以，未定义的名字会让
   #      声明匹配失败）；新增/改名 secret 时三处（仓库 secret、本处映射、被调声明）
   #      要同步。
+  #   3. **不要传/声明 `GITHUB_TOKEN`**：它是系统保留名，写进 `workflow_call.secrets`
+  #      会让整个 workflow 解析失败（422 "... would collide with system reserved name"，
+  #      2026-11-15 实测）。被调 workflow 会自动拿到 `secrets.GITHUB_TOKEN`，无需传。
   # 校验方式：tests.yml 的 proxy-speedtest 域静态检查会解析四个 workflow 并核对
-  # 映射 ⊆ 声明（见 tests/test_gistnodes_secrets.py）。
+  # 映射 ⊆ 声明（见 tests/test_gistnodes_secrets.py，含保留名断言）。
   #
   # ⚠️ 这里**不能**再传 `sub_url` / `gist_id`：gist id 是注册过的 secret
   # （`PROXY_SPEEDTEST_GISTNODES_GIST_ID`），GitHub 见到 job output 里出现与已注册 secret
@@ -392,7 +395,6 @@ jobs:
       gist_description: 'proxy speedtest result (gist 抓节点 · taier 三网)'
       label: 'gist 节点'
     secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PAT: ${{ secrets.PAT }}
       PROXY_SPEEDTEST_GISTNODES_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GISTNODES_GIST_ID }}
       PROXY_SPEEDTEST_SUB_URLS: ${{ secrets.PROXY_SPEEDTEST_SUB_URLS }}
@@ -418,7 +420,6 @@ jobs:
       label: 'gist 节点'
     secrets:
       GITEE_PRIVATE_TOKEN: ${{ secrets.GITEE_PRIVATE_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PAT: ${{ secrets.PAT }}
       PROXY_SPEEDTEST_GISTNODES_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GISTNODES_GIST_ID }}
       PROXY_SPEEDTEST_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GIST_ID }}

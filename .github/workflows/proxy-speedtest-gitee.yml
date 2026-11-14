@@ -64,12 +64,13 @@ on:
     # 直接失败（startup_failure、jobs 为空）—— 实测 run 43457889463 / 43561712476
     # 连续两轮。声明列表必须与 gistnodes 里 speedtest-gitee job 的 secrets 映射逐名
     # 对齐；改任一侧都要回看另一侧。
+    # ⚠️ 不要在这里声明 `GITHUB_TOKEN`：它是 GitHub 的**系统保留名**，声明会让
+    # `workflow_call` 解析直接失败（422: "secret name GITHUB_TOKEN ... would collide
+    # with system reserved name"）。被调 workflow 会自动拿到 `secrets.GITHUB_TOKEN`，
+    # 无需声明、也无需由编排层显式传入。
     secrets:
       GITEE_PRIVATE_TOKEN:
         description: 'Gitee 私有仓 token（push 上行测速 / 建仓与超限重建）'
-        required: false
-      GITHUB_TOKEN:
-        description: '内置 token（GitHub API 匿名限流的认证回退）'
         required: false
       PAT:
         description: 'gist 读写 PAT（结果订阅上传 / 源订阅 raw URL 解析）'

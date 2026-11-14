@@ -21,6 +21,10 @@ REPO = pathlib.Path(__file__).resolve().parents[4]
 WORKFLOWS = REPO / '.github' / 'workflows'
 GISTNODES = WORKFLOWS / 'proxy-speedtest-gistnodes.yml'
 
+# 系统保留名：不能出现在 workflow_call.secrets 的声明或调用方映射里，否则整个
+# workflow 解析失败（实测 422 "would collide with system reserved name"）。
+RESERVED_SECRETS = {'GITHUB_TOKEN'}
+
 FAILURES = []
 
 
@@ -70,6 +74,9 @@ def main():
         undeclared = sorted(passed - declared)
         check(not undeclared,
               f'{job_name}: 传入的 secret 全部已声明（未声明：{undeclared}）')
+        reserved = sorted((passed | declared) & RESERVED_SECRETS)
+        check(not reserved,
+              f'{job_name}: 不得声明/传入系统保留名（实际 {reserved}）')
         missing = sorted(declared - passed)
         if missing:
             # 只是提示：声明了但本轮不传是合法的（空值），不判失败
