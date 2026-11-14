@@ -1169,7 +1169,18 @@ jobs:
         if: ${{ always() && inputs.handoff_of == '' && steps.ts_ssh.outcome == 'success' }}
         env:
           TS_CERT_GPG_KEY: ${{ secrets.TS_CERT_GPG_KEY }}
-        run: bash -eo pipefail "$GITHUB_WORKSPACE/.github/scripts/openclaw/ts-cert-cache.sh" stash
+        run: |
+          set -uo pipefail
+          # 2026-11-15：让位轮会把本轮（可能已退化成 openclaw-1）的证书回存进共享
+          # 缓存，之后每轮 restore-keys 都取到它 —— 实测本机缓存里已混进
+          # openclaw-1 证书（run 43613385818 的 install 打印 CN=openclaw-1）。
+          # install 的 24h 校验只看 *.crt 的 head -1（字母序先命中 openclaw-1），
+          # 一旦它先到期，会把仍然有效的 openclaw 证书一并丢弃去现签，白撞 LE 限频。
+          if [ -f /tmp/openclaw-guard-declined ]; then
+            echo "ℹ️ 本轮由 handoff guard 让位取消，跳过证书回存"
+            exit 0
+          fi
+          bash -eo pipefail "$GITHUB_WORKSPACE/.github/scripts/openclaw/ts-cert-cache.sh" stash
 
       - name: Save Tailscale certs cache
         if: ${{ always() && inputs.handoff_of == '' && steps.ts_certs_stash.outputs.saved == 'true' }}
@@ -2623,6 +2634,14 @@ jobs:
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # 2026-11-15：handoff guard 让位的 cron 轮也会跑到这一步 —— 它从未部署
+          # 任何服务，VM 数分钟后销毁，通知里的主机名（还会因撞名退化成
+          # openclaw-1）当场变成死链（run 43613385818 实测：00:07 发出，00:07:17
+          # 被取消）。与收尾两步同口径：落了让位标记就静默跳过。
+          if [ -f /tmp/openclaw-guard-declined ]; then
+            echo "ℹ️ 本轮由 handoff guard 让位取消（从未部署服务），跳过 SSH 入口通知"
+            exit 0
+          fi
           # runner 就绪后推送 SSH 入口 + 当前生效 AI 网关；通知失败不影响主流程
           # 注：本步骤位于 AI 网关启动步骤之后，以便读取 /tmp/active-ai-backend.env
           . "$HOME/ts.env"
@@ -2744,6 +2763,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # 让位轮同样不该为「从未部署」的环境发入口失败告警（同 2026-11-15 入口通知）
+          if [ -f /tmp/openclaw-guard-declined ]; then
+            echo "ℹ️ 本轮由 handoff guard 让位取消，跳过入口失败通知"
+            exit 0
+          fi
           if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
             source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
             msg=""
