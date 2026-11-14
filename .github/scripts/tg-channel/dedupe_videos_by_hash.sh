@@ -48,7 +48,7 @@ _grp_fold() {
   return 0
 }
 # rclone 的 t 是 runner 本地（UTC）时间；通知展示统一东八区（规范 · 日期与相对时间）。
-# 解析失败保留原值，不吞信息。
+# 解析失败写「未知」，原始值只留日志。
 _bj_time() {
   local raw="$1" out=""
   [ -n "$raw" ] || return 0

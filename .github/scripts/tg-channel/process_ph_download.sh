@@ -76,7 +76,8 @@ if [ -n "$SOFTWARE_CREATED_AT" ] && [ "$SOFTWARE_CREATED_AT" != "0" ]; then
 else
   SOURCE_CREATED_ISO=""
 fi
-# caption 第三行展示时间（东八区）；取不到时回退到 ISO 原值
+# caption 第三行展示时间（东八区）；取不到写「未知」，原始值只留日志
+# （通知不直出 ISO/UTC，规范 · 日期与相对时间）
 CAPTION_MODTIME=""
 if [ -n "$SOFTWARE_MODIFIED_AT" ] && [ "$SOFTWARE_MODIFIED_AT" != "0" ]; then
   CAPTION_MODTIME=$(TZ=Asia/Shanghai date -d "@${SOFTWARE_MODIFIED_AT}" '+%Y-%m-%d %H:%M' 2>/dev/null || true)

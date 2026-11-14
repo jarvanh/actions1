@@ -612,7 +612,8 @@ jobs:
             tg_add_title msg "⚠️ ZCode 数据提前恢复失败"
             tg_add_kv msg "原因" "$reason"
             tg_add_kv msg "影响" "客户端侧栏可能为空；网关与 OpenClaw 不受影响"
-            tg_add_path msg "Run" "$TG_RUN_URL"
+            # run 做成可点链接（与交接通知同口径）；收尾区已有「运行日志」，这里给短号
+            tg_add_link msg "Run" "$TG_RUN_URL" "run ${GITHUB_RUN_ID:-}"
             tg_add_footer msg
             send_tg "$msg" alert || true
           }
@@ -2292,7 +2293,7 @@ jobs:
                 tg_add_title msg "⚠️ 辅助 CLI 安装失败"
                 tg_add_kv msg "原因" "$reason"
                 tg_add_kv msg "影响" "clawhub 未装，相关技能降级；网关与 ZCode 数据不受影响"
-                tg_add_path msg "Run" "$TG_RUN_URL"
+                tg_add_link msg "Run" "$TG_RUN_URL" "run ${GITHUB_RUN_ID:-}"
                 tg_add_footer msg
                 send_tg "$msg" alert || true
               }

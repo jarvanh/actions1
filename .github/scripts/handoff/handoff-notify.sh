@@ -48,7 +48,7 @@ case "$stage" in
   ready)
     tg_add_title msg "✅ OpenClaw 交接 · 继任者已就绪"
     tg_add_kv msg "阶段" "基座已恢复，等待旧轮交出"
-    [ -n "${KV[elapsed]:-}" ] && tg_add_kv msg "准备耗时" "$(tg_format_ms "${KV[elapsed]}")"
+    [ -n "${KV[elapsed]:-}" ] && tg_add_kv msg "准备耗时" "$(tg_format_duration "${KV[elapsed]}")"
     [ -n "${KV[new_run]:-}" ] && tg_add_link msg "继任" \
       "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-jarvanh/actions}/actions/runs/${KV[new_run]}" "run ${KV[new_run]}"
     tg_add_note msg "服务仍在线；旧轮按死线停止网关后即完成移交。"
@@ -66,7 +66,7 @@ case "$stage" in
     # 之前写「新轮已上线」会让人误以为 AI 网关也好了。两个指标分开说。
     tg_add_title msg "🚀 OpenClaw 交接 · 聊天入口已恢复"
     tg_add_kv msg "阶段" "继任者 OpenClaw 网关已健康（18789 /health=200），聊天可用"
-    [ -n "${KV[downtime]:-}" ] && tg_add_kv msg "聊天下线" "$(tg_format_ms "${KV[downtime]}")"
+    [ -n "${KV[downtime]:-}" ] && tg_add_kv msg "聊天下线" "$(tg_format_duration "${KV[downtime]}")"
     [ -n "${KV[new_run]:-}" ] && tg_add_link msg "继任" \
       "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-jarvanh/actions}/actions/runs/${KV[new_run]}" "run ${KV[new_run]}"
     [ -n "${KV[ai]:-}" ] && tg_add_kv msg "AI 数据" "${KV[ai]}"
@@ -75,9 +75,9 @@ case "$stage" in
   full)
     tg_add_title msg "🏁 OpenClaw 交接完成"
     tg_add_kv msg "结果" "全部服务可用（含 AI 网关）"
-    [ -n "${KV[downtime]:-}" ] && tg_add_kv msg "整体下线" "$(tg_format_ms "${KV[downtime]}")"
-    [ -n "${KV[ai_ready]:-}" ] && tg_add_kv msg "AI 网关恢复" "$(tg_format_ms "${KV[ai_ready]}")"
-    [ -n "${KV[chat]:-}" ] && tg_add_kv msg "聊天入口" "$(tg_format_ms "${KV[chat]}")"
+    [ -n "${KV[downtime]:-}" ] && tg_add_kv msg "整体下线" "$(tg_format_duration "${KV[downtime]}")"
+    [ -n "${KV[ai_ready]:-}" ] && tg_add_kv msg "AI 网关恢复" "$(tg_format_duration "${KV[ai_ready]}")"
+    [ -n "${KV[chat]:-}" ] && tg_add_kv msg "聊天入口" "$(tg_format_duration "${KV[chat]}")"
     [ -n "${KV[ai]:-}" ] && tg_add_kv msg "AI 数据" "${KV[ai]}"
     if [ -n "${KV[run]:-}" ]; then
       _run_text="run ${KV[run]##*/}"

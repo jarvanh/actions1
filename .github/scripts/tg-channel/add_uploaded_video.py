@@ -19,7 +19,7 @@ JSON 结构与 sync_to_tg.sh 保持一致 v1 版本：
     "filename": {
       "uploaded_at": "2025-08-11T10:00:00Z",
       "size_bytes": 119600942,
-      "size": "114.06MB",
+      "size": "114.060 MiB",
       "source_created_at": "2017-01-10T08:27:22Z",
       "source_modified_at": "2017-01-10T08:27:22Z"
     }

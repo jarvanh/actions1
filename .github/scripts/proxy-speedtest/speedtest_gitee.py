@@ -1805,9 +1805,10 @@ def build_summary_lines(*, started_at, ended_at, duration_text, alive_probe_coun
         # 是因为它修饰的正是上面那行「共 N 个 · 可用 M 个」的读数。
         *([f'⚠️ 本轮已中止：{esc(runtime_abort_reason)}'] if aborted_due_to_runtime else []),
         # bypass 校验命中分节（与 taier/CDN 同款）：出口 IP == runner 直连出口
-        # = 流量没进节点，结果不可信，必须让读者一眼看到
-        *([f'⚠️ 疑似未走代理'] if bypass_hits else []),
-        *([f'<code>  └─ </code>{bypass_hits} 个节点的出口 IP 与 runner 直连出口'
+        # = 流量没进节点，结果不可信，必须让读者一眼看到。
+        # 计数上提到标题（规范 · 分节：分节后跟条目必须带计数），条目正文不再重复
+        *([f'⚠️ 疑似未走代理 · {bypass_hits}'] if bypass_hits else []),
+        *([f'<code>  └─ </code>出口 IP 与 runner 直连出口'
            f'（{tg_entry(direct_ip)}）相同，节点切换可能未生效，结果不可信'] if bypass_hits else []),
         '',
     ]
@@ -1838,13 +1839,14 @@ def build_summary_lines(*, started_at, ended_at, duration_text, alive_probe_coun
             summary_lines.append(f'<code>  {connector} </code>' + tg_entry(item['name'], prefix))
         summary_lines.append('')
     elif alive_probe_count > 0:
+        # 结论行不是条目列表：不带树形前缀（否则看起来像只有一个条目的清单）
         summary_lines.append('⚠️ 没有节点测速成功')
-        summary_lines.append('<code>  └─ </code>provider 健康检查有节点通过，但正式 Gitee 推送/拉取测速全部失败')
+        summary_lines.append('provider 健康检查有节点通过，但正式 Gitee 推送/拉取测速全部失败')
         summary_lines.append('')
     else:
         # 健康检查结论不再决定放行，所以这里说的是「本轮没有可达节点」，不是「被预筛挡掉了」
         summary_lines.append('⚠️ 没有节点测速成功')
-        summary_lines.append('<code>  └─ </code>provider 健康检查无节点通过，且逐节点实测也无成功')
+        summary_lines.append('provider 健康检查无节点通过，且逐节点实测也无成功')
         summary_lines.append('')
     # 失败节点明细（与 taier 对齐：原因可见，便于区分拒测/超时/鉴权失败）
     _failed = [r for r in speed_results if not r.get('ok')]
@@ -1895,19 +1897,17 @@ def finalize_gist_and_notify(env, summary, summary_lines, subscription_text, bun
     # 误导性的 ⚠️（抽样未开始也显示成 0/0「一个都不通」）。而「导出的 YAML 可解析」
     # 在导出端已由 build_mihomo_yaml_text 保证（proxies 为空直接不上传）。
     summary_lines.append('📦 订阅 · Gist')
+    # 订阅结果是状态说明而非条目列表：不加树形前缀、不写计数（规范 · 分节 / 条目与树形）
     if gist_res.get('ok'):
         action = '新建' if gist_res.get('created') else '更新'
         html_url = gist_res.get('html_url') or ''
-        gist_lines = [f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{html.escape(metric_label)}）']
+        summary_lines.append(f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{html.escape(metric_label)}）')
         if html_url:
-            gist_lines.append(f'🔗 <a href="{html.escape(html_url)}">订阅源 YAML</a>')
-        for _i, _l in enumerate(gist_lines):
-            _c = '└─' if _i == len(gist_lines) - 1 else '├─'
-            summary_lines.append(f'<code>  {_c} </code>{_l}')
+            summary_lines.append(f'🔗 <a href="{html.escape(html_url)}">订阅源 YAML</a>')
     elif (gist_res.get('reason') or '').startswith('empty subscription'):
-        summary_lines.append(f'<code>  └─ </code>⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆（按{html.escape(metric_label)}）· 未更新订阅')
+        summary_lines.append(f'⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆（按{html.escape(metric_label)}）· 未更新订阅')
     else:
-        summary_lines.append(f"<code>  └─ </code>⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
+        summary_lines.append(f"⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
     # 统一收尾区（收尾区与正文间固定一个空行；与 tg_add_footer 同形态同降级链）
     # 必须在所有正文段之后追加（「📦 订阅 · Gist」是正文的最后一段）——此前在
     # build_summary_lines 里加，被此段挤到正文中间，消息末尾反而没有收尾行（规范 · 收尾区）

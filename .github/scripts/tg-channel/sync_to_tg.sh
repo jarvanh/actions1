@@ -101,8 +101,10 @@ def shorten_name(name: str, max_len: int = 60) -> str:
     return f"{name[:keep]}...{name[-keep:]}"
 
 
-# 分隔线与 tg_notify.sh 的 TG_SEP 同形（18 个全角横线）。python 侧按规范
-# 只出结构化数据、不自造版式，这里仅为多 处失败通知复用同一常量（勿手写散置）
+# 分隔线与 tg_notify.sh 的 TG_SEP 同形（18 个全角横线）。本文件是内嵌 python 段，
+# 无法 import 共享层：转义 / 条目 / <pre> 等涉及动态内容的助手必须在此同义实现；
+# 标题、kv、分隔线这类单行构件允许手拼，但形态必须与真源逐字一致
+# （规范 · 内嵌 python 段）。
 TG_SEP = "━" * 18
 
 
@@ -110,7 +112,7 @@ def esc(s) -> str:
     """动态内容进 HTML 消息前必须转义。
 
     quote=True 与 python 共享层 speedtest_common 的 html.escape 默认口径一致
-    （规范 · 助手速查：内嵌段与共享层同义实现、三处定义保持一致）。此前本函数用
+    （规范 · 内嵌 python 段：内嵌段与共享层同义实现、口径保持一致）。此前本函数用
     quote=False，只转义 & < >——输出只进正文时够用，但若哪天被拼进 HTML 属性值
     （如 <a href="…">）就会漏；统一取更严格的一侧（2026-09-12 收敛）。
     """
@@ -324,7 +326,7 @@ def tail_file(path: str, n: int = 15) -> str:
 
 def human_size(num):
     """1024 进制、GiB/MiB/KiB/B，与真源 format_bytes 同口径：整体统一优先于个性
-    （规范 · 入口与凭据）。openlist 域经 load_all.sh 注入 format_bytes；本域
+    （规范 · 大小）。openlist 域经 load_all.sh 注入 format_bytes；本域
     dedupe_*.sh 直接调用同一真源——python 内嵌段拿不到 bash 函数，保留同义实现。
 
     此前是 du -h 风格（1G / 512M），与全库「1.200 GiB」形态不一致。
@@ -355,10 +357,10 @@ def get_video_list():
         notify("\n".join([
             "❌ 获取远端文件列表失败",
             TG_SEP,
-            f"📦 分组：{tg_entry(CAPTION_PREFIX)}",  # 机器值 → <code>（规范 · 取值行口径）
-            f"⚠️ 原因：rclone lsjson 退出码 {result.returncode}",
+            f"分组：{tg_entry(CAPTION_PREFIX)}",  # 机器值 → <code>（规范 · 取值行口径）
+            f"原因：列出远端文件失败 · 退出码 {result.returncode}",
             # 多行日志走 <pre>（与下载失败通知同款口径：规范 · 失败与异常要求给出原始输出）
-            f"📄 stderr：\n{tg_pre_block((result.stderr or '(无错误输出)')[-500:].strip())}",
+            f"错误输出：\n{tg_pre_block((result.stderr or '(无错误输出)')[-500:].strip())}",
         ]))
         return [], []
 
@@ -376,8 +378,8 @@ def get_video_list():
         notify("\n".join([
             "❌ 获取远端文件列表失败",
             TG_SEP,
-            f"📦 分组：{tg_entry(CAPTION_PREFIX)}",  # 机器值 → <code>（规范 · 取值行口径）
-            f"⚠️ 原因：lsjson 输出解析失败：<code>{esc(e)}</code>",
+            f"分组：{tg_entry(CAPTION_PREFIX)}",  # 机器值 → <code>（规范 · 取值行口径）
+            f"原因：远端文件列表解析失败：<code>{esc(e)}</code>",
         ]))
         return [], []
 
@@ -499,7 +501,7 @@ def main():
                 [
                     f"大小：{human_size(size)}",
                     # 多行日志走 <pre>（与「输出尾部」同款，避免裸换行破坏排版）
-                    "\n📄 rclone stderr\n" + tg_pre_block(result.stderr[-500:].strip() if result.stderr else "(无错误输出)"),
+                    "\n错误输出：\n" + tg_pre_block(result.stderr[-500:].strip() if result.stderr else "(无错误输出)"),
                 ],
             ))
             continue
@@ -590,9 +592,11 @@ def main():
                 notify(build_fail_notify(
                     "⏭️ 损坏视频已标记跳过",
                     file, up_elapsed,
+                    # ⚠️/🔄 是行首说明标记，不是标签（规范 · kv 行：标签裸文本、无前缀）——
+                    # 这里作为附加说明行而非 kv，保留行首 emoji 引导视线
                     [
-                        "⚠️ 原因：源文件损坏，无法读取视频信息（moov atom 缺失）",
-                        "🔄 后续：不再重复尝试，远端文件被替换后自动重试",
+                        "原因：源文件损坏，无法读取视频信息（moov atom 缺失）",
+                        "后续：不再重复尝试，远端文件被替换后自动重试",
                     ],
                 ))
             else:
@@ -601,7 +605,7 @@ def main():
                     "❌ 处理/上传失败",
                     file, up_elapsed,
                     # 多行块统一用 tg_pre_block（转义 + <pre> 包裹）
-                    [f"\n📄 输出尾部\n{tg_pre_block(err_tail)}"] if err_tail else ["📄 无详细输出，见 Actions 日志"],
+                    [f"\n错误输出：\n{tg_pre_block(err_tail)}"] if err_tail else ["错误输出：无详细内容，见运行日志"],
                 ))
 
         # 清理工作目录
@@ -628,7 +632,7 @@ def main():
         "skipped_count": len(skipped),
         "skipped_summary": skipped_summary,
         # 跳过明细: 每行 "<中文原因>\t<路径>"，由 bash 侧按原因分组渲染树形。
-        # 此处不拼 HTML —— 版式统一交给 tg_* 助手（），
+        # 此处不拼 HTML —— 版式统一交给 bash 侧的 tg_* 助手，
         # 避免 python 侧自造标签与全库版式漂移
         "skipped_details": "\n".join(
             f"{skip_labels.get(reason, reason)}\t{path}" for reason, path in skipped),
@@ -708,7 +712,7 @@ _render_skipped_groups() {
     _items=$(printf '%s\n' "$_in" | awk -F'\t' -v g="$_g" '$1==g {print $2}')
     _total=$(printf '%s\n' "$_items" | grep -c . || true)
     [ "${_total:-0}" -le 0 ] && continue
-    # 多组列表的组与组之间空行（4.10 第 5 条）：只在前面已有组时才补，首组前不补
+    # 多组列表的组与组之间空行（规范 · 空行 第 5 条）：只在前面已有组时才补，首组前不补
     # （dedupe_*.sh 同款条件；此前两组原因直接相邻，看不出分组边界）
     [ -n "$_out" ] && _out+=$'\n'
     _out+="$(escape_html "$_g") · ${_total}"$'\n'
@@ -730,11 +734,13 @@ msg=""
 # 状态图标随结论降级（规范 · 状态图标）：本次全部失败 → ❌；部分失败 → ⚠️；否则 📺
 # （此前恒 📺，任何失败都不降级，读者会把「一条没传成功」误读为正常）
 if [ "${FAILED:-0}" -gt 0 ] && [ "${SENT:-0}" -eq 0 ]; then
-  tg_add_title msg "❌ ${CAPTION_PREFIX}"
+  # 标题 = emoji + 来源前缀 + 「谁 + 怎么了」；来源前缀由调用方传入（ph / 91），
+  # 同一套流程被两个 workflow 复用，不带来源读者分不清是哪一轮（规范 · 标题与分隔线）
+  tg_add_title msg "❌ ${CAPTION_PREFIX} 频道同步失败"
 elif [ "${FAILED:-0}" -gt 0 ]; then
-  tg_add_title msg "⚠️ ${CAPTION_PREFIX}"
+  tg_add_title msg "⚠️ ${CAPTION_PREFIX} 频道同步部分失败"
 else
-  tg_add_title msg "📺 ${CAPTION_PREFIX}"
+  tg_add_title msg "📺 ${CAPTION_PREFIX} 频道同步完成"
 fi
 tg_add_kv msg "视频文件" "${TOTAL_VIDEOS} 条"
 tg_add_kv msg "库存状态" "已上传 ${UPLOADED_TOTAL} · 待上传 ${REMAINING}"

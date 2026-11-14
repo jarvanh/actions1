@@ -94,7 +94,7 @@ caption = sys.argv[3] if len(sys.argv) > 3 else ""
 # 媒体上传不走 sendMessage 发送层（固有例外），但 caption 必须转义 + 显式 HTML
 # parse_mode（规范 · 发送层）：文件名来自远端列表，可含 & < > 与 markdown 语法字符
 # （_ * [ ]），不转义会在 HTML 解析下 400、在 Telethon 默认 markdown 下破版。
-# 与 python 共享层 speedtest_common.py 同为 html.escape(quote=True) 口径（规范 · 助手速查）。
+# 与 python 共享层 speedtest_common.py 同为 html.escape(quote=True) 口径（规范 · 发送层要求）。
 if caption:
     caption = html.escape(caption, quote=True)
 
@@ -166,6 +166,11 @@ async def main():
             except Exception as e:
                 last_error = e
                 print(f"\nAttempt {attempt}/{MAX_RETRIES} failed: {e}", file=sys.stderr)
+                # 400 解析失败不重发（规范 · 发送层）：caption 转义坏了重试多少次都是
+                # 同一条坏消息，白等退避还把 bug 藏起来——直接退出暴露
+                if 'could not parse' in str(e).lower() or 'parse entities' in str(e).lower():
+                    print("Caption/HTML parse error — not retrying (fix caption escaping).", file=sys.stderr)
+                    sys.exit(2)
                 if attempt < MAX_RETRIES:
                     backoff = INITIAL_BACKOFF * (2 ** (attempt - 1))
                     # 429 限流按服务端 retry_after 等待（与 sendMessage 发送层同口径）：

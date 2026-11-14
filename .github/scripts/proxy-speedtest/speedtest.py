@@ -1296,8 +1296,9 @@ def build_telegram_lines(results, *, meta, gist_res, bundle=None,
     # bypass 校验命中分节（与 taier 同款）：有可用节点但全部命中 bypass 时降 ⚠️ 的逻辑
     # 放在标题 emoji 处；这里负责正文交代「多少个节点疑似未走代理」
     if bypass_hits:
-        lines.append('⚠️ 疑似未走代理')
-        lines.append(f"<code>  └─ </code>{bypass_hits} 个节点的出口 IP 与 runner 直连出口"
+        # 分节后跟条目必须带计数（规范 · 分节）：计数上提到标题，条目正文不再重复
+        lines.append(f'⚠️ 疑似未走代理 · {bypass_hits}')
+        lines.append(f"<code>  └─ </code>出口 IP 与 runner 直连出口"
                      f"（{tg_entry(direct_ip)}）相同，节点切换可能未生效，结果不可信")
         lines.append('')
 
@@ -1316,24 +1317,23 @@ def build_telegram_lines(results, *, meta, gist_res, bundle=None,
         lines.append('')
 
     lines.append('📦 订阅 · Gist')
+    # 订阅结果是状态说明而非条目列表：不加树形前缀、不写计数（规范 · 分节 / 条目与树形）。
+    # 此前用 ├─/└─ 排出两行伪列表，既没有计数语义，也让人以为下面还有明细。
     if gist_res and gist_res.get('ok'):
         action = '新建' if gist_res.get('created') else '更新'
         # 该链接指向 Gist 上的订阅文件（YAML），不是测速报告；
         # HTML 报告只写在运行机本地（含节点凭据，不外传），故无可分享链接。
         raw_url = ((gist_res.get('yaml') or {}).get('raw_url') or '').strip()
         html_url = (gist_res.get('html_url') or '').strip()
-        gist_lines = [f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{esc(metric_label)}）']
+        lines.append(f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{esc(metric_label)}）')
         if raw_url:
-            gist_lines.append(f'🔗 <a href="{esc(raw_url)}">订阅源 YAML</a>')
+            lines.append(f'🔗 <a href="{esc(raw_url)}">订阅源 YAML</a>')
         elif html_url:
-            gist_lines.append(f'🔗 <a href="{esc(html_url)}">Gist 页面</a>')
-        for _i, _l in enumerate(gist_lines):
-            _c = '└─' if _i == len(gist_lines) - 1 else '├─'
-            lines.append(f'<code>  {_c} </code>{_l}')
+            lines.append(f'🔗 <a href="{esc(html_url)}">Gist 页面</a>')
     elif gist_res:
-        lines.append(f"<code>  └─ </code>⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
+        lines.append(f"⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
     else:
-        lines.append(f'<code>  └─ </code>⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆（按{esc(metric_label)}）· 未更新订阅')
+        lines.append(f'⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆（按{esc(metric_label)}）· 未更新订阅')
 
     # 统一收尾区（收尾区与正文间固定一个空行；与 tg_add_footer 同形态同降级链）
     # 注: 正文的「耗时 X」是测速自身耗时，收尾区的「已运行 X」是 run 已运行时长，两者语义不同

@@ -211,12 +211,12 @@ def main():
 
     # 负向对照先行：不传标志时必须**没有**中止行、标题是 ✅——否则下面的断言可能恒真
     plain = render(ok_node)
-    check(plain[0] == '✅ 泰尔三网测速', f'未中止 → 标题 ✅（实际 {plain[0]}）')
+    check(plain[0] == '✅ 泰尔三网测速完成', f'未中止 → 标题 ✅（实际 {plain[0]}）')
     check(not any('本轮已中止' in str(x) for x in plain),
           '未中止 → 正文不出现「本轮已中止」（负向对照）')
 
     aborted = render(ok_node, aborted_due_to_runtime=True, runtime_abort_reason=reason)
-    check(aborted[0] == '⚠️ 泰尔三网测速',
+    check(aborted[0] == '⚠️ 泰尔三网测速完成',
           f'有可用节点但到点收摊 → 标题降 ⚠️（实际 {aborted[0]}）')
     joined = '\n'.join(str(x) for x in aborted)
     check(f'⚠️ 本轮已中止：{reason}' in joined,
@@ -226,7 +226,7 @@ def main():
           '中止行紧跟「📊 节点」行（先看到测了多少，再看到为什么停）')
 
     empty = render([])
-    check(empty[0] == '⚠️ 泰尔三网测速', f'0 可用节点 → 标题 ⚠️（实际 {empty[0]}）')
+    check(empty[0] == '⚠️ 泰尔三网测速完成', f'0 可用节点 → 标题 ⚠️（实际 {empty[0]}）')
 
     print('== 4. 默认值与 job 上限的关系 ==')
     budget = t.CONFIG['TAIER_BUDGET_SECONDS']

@@ -812,7 +812,9 @@ def build_telegram_lines(results, meta, direct_ip, bypass_hits, gist_res, bundle
     _label = (merged_env().get('PROXY_SPEEDTEST_LABEL') or '').strip()
     _title_prefix = f'{esc(_label)} · ' if _label else ''
     lines = [
-        f'{_title_emoji} {_title_prefix}泰尔三网测速',
+        # 标题与 cdn / gitee 两套同形（「…测速完成」）：三套是同一份交付物，标题缺后缀会让
+        # 读者以为报告还没跑完（规范 · 标题与分隔线）
+        f'{_title_emoji} {_title_prefix}泰尔三网测速完成',
         sep,
         # 展示时间统一东八区（规范 · 日期与相对时间）；meta 里的 started_text/ended_text 是机器值，勿改
         f"🗓 起止：{esc(tg_format_time_bj(meta['started_text']))} ~ {esc(tg_format_time_bj(meta['ended_text']))}（东八区） · 耗时 {esc(meta['duration_text'])}",
@@ -861,8 +863,9 @@ def build_telegram_lines(results, meta, direct_ip, bypass_hits, gist_res, bundle
         lines.append('')
 
     if bypass_hits:
-        lines.append('⚠️ 疑似未走代理')
-        lines.append(f"<code>  └─ </code>{bypass_hits} 个节点的出口 IP 与 runner 直连出口（{tg_entry(direct_ip)}）相同，"
+        # 分节后跟条目必须带计数（规范 · 分节）：计数上提到标题，条目正文不再重复
+        lines.append(f'⚠️ 疑似未走代理 · {bypass_hits}')
+        lines.append(f"<code>  └─ </code>出口 IP 与 runner 直连出口（{tg_entry(direct_ip)}）相同，"
                      'TUN 进程规则可能未生效，结果不可信')
         lines.append('')
 
@@ -889,23 +892,22 @@ def build_telegram_lines(results, meta, direct_ip, bypass_hits, gist_res, bundle
         lines.append('')
 
     lines.append('📦 订阅 · Gist')
+    # 订阅结果是状态说明而非条目列表：不加树形前缀、不写计数（规范 · 分节 / 条目与树形）。
+    # 此前用 ├─/└─ 排出伪列表，既没有计数语义，也让人以为下面还有明细。
     if gist_res and gist_res.get('ok'):
         action = '新建' if gist_res.get('created') else '更新'
         raw_url = ((gist_res.get('yaml') or {}).get('raw_url') or '').strip()
         # 措辞与 cdn / gitee 统一为「达标 N 个节点 · ≥X兆」（此前本处多「阈值」二字、少「节点」二字）
-        gist_lines = [f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{esc(metric_label)}）']
+        lines.append(f'✅ 已{action}，达标 {qualified_count} 个节点 · ≥{min_megabit}兆（按{esc(metric_label)}）')
         if gist_res.get('created'):
-            gist_lines.append(f'⚠️ 请把 Gist id 回填到 Secrets {tg_entry("PROXY_SPEEDTEST_TAIER_GIST_ID")}，避免每轮新建')
+            lines.append(f'⚠️ 请把 Gist id 回填到 Secrets {tg_entry("PROXY_SPEEDTEST_TAIER_GIST_ID")}，避免每轮新建')
         if raw_url:
-            gist_lines.append(f'🔗 <a href="{esc(raw_url)}">订阅源 YAML</a>')
-        for _i, _l in enumerate(gist_lines):
-            _c = '└─' if _i == len(gist_lines) - 1 else '├─'
-            lines.append(f'<code>  {_c} </code>{_l}')
+            lines.append(f'🔗 <a href="{esc(raw_url)}">订阅源 YAML</a>')
     elif gist_res:
-        lines.append(f"<code>  └─ </code>⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
+        lines.append(f"⚠️ 上传失败：{tg_entry(gist_res.get('reason', ''))}")
     elif gist_error:
         # 上传阶段抛异常（HTTP 4xx 等）≠ 没有达标节点，文案必须区分
-        lines.append(f'<code>  └─ </code>⚠️ 上传失败：{tg_entry(gist_error[:120])}')
+        lines.append(f'⚠️ 上传失败：{tg_entry(gist_error[:120])}')
     else:
         # ⚠️ 「没上传」有三种完全不同的原因，混成一句会误导（2026-09-16 run 35116972319：
         # 206 个节点实测有速度、最高 245 Mbps，却报「达标不足 1 个」，读者只会去怀疑节点）。
@@ -923,10 +925,10 @@ def build_telegram_lines(results, meta, direct_ip, bypass_hits, gist_res, bundle
         _measured = [r for r in results
                      if (r.get('up') or 0) > 0 or (r.get('down') or 0) > 0]
         if qualified_count <= 0 and _measured and _no_config and len(_no_config) >= len(_measured):
-            lines.append(f'<code>  └─ </code>⚠️ 未更新订阅：本有节点测出速度，但缺少可导出配置'
+            lines.append(f'⚠️ 未更新订阅：本有节点测出速度，但缺少可导出配置'
                          f'（达标判定按{esc(metric_label)} ≥{min_megabit}兆）')
         else:
-            lines.append(f'<code>  └─ </code>⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆'
+            lines.append(f'⚠️ 达标不足 {min_nodes} 个 · 阈值 ≥{min_megabit}兆'
                          f'（按{esc(metric_label)}）· 未更新订阅{esc(_scope)}')
     # 统一收尾区（收尾区与正文间固定**一个**空行）：此前连写两个 append('') 变双空行
     lines.append('')
