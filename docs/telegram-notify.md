@@ -8,7 +8,10 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh          # 全部发送
 bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个域
 ```
 
-域级出口与档位路由见 [`telegram-notify-registry.md`](telegram-notify-registry.md)（下称「台账」）。
+- 域级出口与默认档位：[`telegram-notify-registry.md`](telegram-notify-registry.md)（下称「台账」）。
+- 函数签名与三套实现对照：`skills/telegram-notify-send/references/api-reference.md`。
+- 各域非显然的字段约定：跟域文档走（`openclaw.md` 九、`emby.md` 起播等待、`proxy-speedtest-*.md`、`self-retrigger.md`）。
+
 写新通信用 `skills/telegram-notify-send`，核对版式用 `skills/telegram-notify-audit`。
 
 **硬约束只有四处**：规范 · 收尾区、规范 · 接线、规范 · 发送层要求、规范 · 验证与交付。
@@ -69,7 +72,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 |---|---|
 | 后端写熔断，未探测 | 存储端本轮整体故障，未试写 |
 | 短哈希目录 / base64URL 目录 | 备用目录 / 编码目录 |
-| 已重启容器复核 | 已复核确认 |
+| stderr / lsjson 退出码 | 错误输出 / 退出码 2 |
 
 判据是「这句话给实现者排查用，还是给读者做判断用」：`rc=1`、`HTTP_CODE:200`、容器重启、
 方法名一律留运行日志，通知只给结论与下一步。把日志原样搬进通知（尤其搬成条目子行）
@@ -80,7 +83,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 ## 2. 版式构件
 
-每个构件给出形态、助手与要点；跨语言对照见规范 · 助手速查。
+每个构件给出形态、助手与要点；三套实现的助手名对照见
+`skills/telegram-notify-send/references/api-reference.md`。
 
 ### 2.1 标题与分隔线
 
@@ -91,11 +95,11 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 - 助手：`tg_add_title`；pwsh / python 用 `TG_SEP` 手拼。
 - emoji + 短语，状态与细节下沉到 kv；标题后紧跟分隔线，不空行。
-- 分隔线恒为 18 条全角横线；bash / pwsh / python / `sync_to_tg.sh` 内嵌四份同值，不要自造。
-- 同一套流程被不同来源触发时，标题要能区分来源：`{emoji} {来源标签} · {原标题}`。
-  标签由触发方经环境变量传入，留空时标题保持原样。现有实例：测速三套的
-  `PROXY_SPEEDTEST_LABEL`（被 gistnodes 调用时传 `gist 节点`）。标签只拼主报告标题；
-  ❌ / ⛔ 兜底标题不带 label。
+- 分隔线恒为 18 条全角横线；bash / pwsh / python / 内嵌段四份同值，不要自造。
+- 同一套流程被不同来源触发时，标题要能区分来源：标签由触发方经环境变量传入，
+  留空时标题保持原样。两种合规形态——并入短语 `❌ ph 频道同步失败`，
+  或以 ` · ` 分隔 `⚠️ gist 节点 · CDN 测速完成`。现有实例：测速三套的
+  `PROXY_SPEEDTEST_LABEL`、tg-channel 汇总的频道前缀。`❌` / `⛔` 兜底标题同样要带来源前缀。
 
 ### 2.2 kv 行
 
@@ -104,7 +108,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 ```
 
 - 助手：`tg_add_kv`（值自动转义）。
-- 全角冒号；一行多字段用 ` · ` 连接，并以全角冒号标签打头作锚点（`规格：` / `链路：`），
+- 全角冒号；标签前不加 emoji（emoji 属于标题与分节）。
+- 一行多字段用 ` · ` 连接，并以全角冒号标签打头作锚点（`规格：` / `链路：`），
   避免无锚点的裸 ` · ` 串。
 
 ### 2.3 机器值
@@ -115,6 +120,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 - 助手：`tg_add_path`；需要可点击时用 `tg_add_link`。
 - 路径 / 文件名 / 命令 / 密码 / IP / ID / 端口 / 原始异常串一律等宽。判据见规范 · 取值行口径。
+- URL 一律用 `<a>`（可点），不要用 `<code>` 包整条 URL——既不可点又与收尾区的
+  运行日志链接重复。
 
 ### 2.4 分节
 
@@ -124,6 +131,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 - 助手：`tg_add_section`（段前自动空行；紧跟分隔线时自动不空行）。
 - **分节后跟条目列表时带计数 ` · N`**；后面是 kv 行、`<pre>` 或单段说明时可以不带。
+- 计数位置只放数字（或计数变量），不要写成「· 按大小前 5」这类夹杂说明的形式。
 - 反例：`❌ 失败清单`（后面 3 条条目却没有计数）。
 
 ### 2.5 条目与树形
@@ -160,8 +168,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
   | 性质 | 超上限怎么办 | 例 |
   |---|---|---|
-  | 流水 / 日志（单条价值低） | 折叠为「还有 N 条…」 | 已上传文件、重复文件、排除规则 |
-  | 结构性（读者要逐条核对） | 全量展示 | 任务预览同步对、进度面板任务列表、批次统计、归档明细 |
+  | 流水 / 日志（单条价值低） | 折叠为「还有 N 条…」 | 已上传文件、重复文件、失败节点 |
+  | 结构性（读者要逐条核对） | 全量展示 | 同步对、进度面板任务列表、归档明细 |
 
   判据是「折叠掉后半段会不会让读者误判」，不是列表长不长。结构性清单很长时靠分节计数
   交代规模即可。
@@ -186,6 +194,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 ```
 
 - 助手：`tg_add_note`（段前自动空行；整段转义，**段内不能带 HTML 标签**）。
+- 说明段放**结论与下一步**，不要当 kv 用（数据行走 `tg_add_kv`）。
 
 ### 2.9 收尾区（硬要求）
 
@@ -202,9 +211,9 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
   测试覆写）→ runner 开机时刻兜底 → 取不到则不显示时长；`TG_RUN_URL` 缺失则整行跳过。
 - 常驻服务（无 run 上下文，如看板、网关哨兵、健康看门狗）的「已运行」会把主机开机
   时长误报成服务时长，收尾区固定为报告时刻 `🕒 2026-11-06 19:32（东八区）`。
-  `🕒` 只用于此处，不与 `⏱` 混用。
+  `🕒` 只用于此处，不与 `⏱` 混用；没有对应助手，由调用方手拼（唯一的收尾区手拼例外）。
 
-**接线（硬要求）**：发通知的 step 必须注入 `TG_RUN_URL`：
+**接线（硬要求）**：发通知的 step 必须能拿到 `TG_RUN_URL`（step 级或 job 级注入均可）：
 
 ```yaml
 env:
@@ -223,6 +232,8 @@ env:
   | 长驻循环内的逐事件通知 | 不拆（循环没起来就没有事件） |
 
 反例：给整个业务 step 加 `if: always()` 让它失败后重跑——挂载失败了还照常跑下载 / 去重。
+另有**跨步覆盖**要当心：兜底 step 只看最后一个业务步的 `outcome` 时，前面步骤失败会让
+后面步骤被跳过、兜底反而判定「没失败」——所有可能失败的业务步都要纳入判据。
 
 ### 2.10 空行的来源
 
@@ -250,6 +261,7 @@ env:
 | 失败与异常兜底 | 未捕获异常、信号终止、可控失败 | 极简形态，必须留痕，先恢复环境再发 |
 | 告警通知 | 归档失败、网关启动失败、存储失效 | 对象机器值 + 结论原因裸文本 + `<pre>` |
 | 入口与凭据 | Runner 就绪推 SSH / RDP / 出口网络、改密回执 | 按套分节，整节同为等宽机器值 |
+| 网关就绪报告 | AI 网关 / 反代起服后的可用性播报 | 先回答「能不能用」，再列数据段；数据缺失不编造 |
 | 进度面板 | openlist 同步进度原地刷新 | 唯一需要 message_id 的场景 |
 | 生命周期播报 | 交接五态、停机倒计时、新 run 启动 | 标题写阶段，kv 说服务是否可用与预计时间；普通档 |
 | 常驻服务报告 | 健康看门狗、看板、网关哨兵 | 无 run 上下文，收尾区用 `🕒` 报告时刻 |
@@ -285,8 +297,9 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 ```
 
 要点：状态图标随结论降级（0 成功、数据缺失、中止 → ⚠️ / ❌，不要恒 ✅）；降级依据是
-**本轮发生的事**，不是历史累计数（累计数放 kv 并标注「（累计）」）；发送失败用
-`|| echo "::warning::…"` 或 `|| true` 留痕，不要吞掉。
+**本轮发生的事**，不是历史累计数（累计数放 kv 并标注「（累计）」）；被吞掉的下游失败
+（如下载命令 `|| true`）同样要参与降级，否则「0 个新增」与「下载失败」写成同一句话。
+发送失败用 `|| echo "::warning::…"` 或 `|| true` 留痕，不要吞掉。
 
 ### 3.2 清单明细
 
@@ -320,8 +333,8 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 <pre>gh workflow run openlist.yml -f run_mode=同步 -f force_sync=true</pre>
 ```
 
-参数值要按实际匹配逻辑核实（例如 `restore_task` 按 marker 文件名首个 `_` 前缀匹配，
-填完整任务名反而匹配不到）。多行命令用 `\` 续行，整块可直接复制。
+参数值要按实际匹配逻辑核实（任务名 / 前缀键是否精确匹配、是否需要全量），别把
+「照抄标题」当成可执行参数。多行命令用 `\` 续行，整块可直接复制。
 
 ### 3.4 失败与异常
 
@@ -335,7 +348,7 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 文件：<code>video_a.mp4</code>
 耗时：12.34 秒
 
-📄 rclone stderr
+错误输出：
 <pre>ERROR : Failed to copy: connection reset</pre>
 
 请检查源端可用性后重跑本任务。
@@ -362,12 +375,12 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 形态固定为「对象（机器值）+ 结论 / 原因（裸文本）+ 原始输出（`<pre>` 分节）」：
 
 ```
-⚠️ 归档告警 · OpenClaw 主包
+⚠️ 归档告警 · 主包
 ━━━━━━━━━━━━━━━━━━
 对象：<code>openclaw.tar.gz</code>
 结论：上传失败 · 退出码 2
 原因：rclone 上传失败
-Run ID：<code>12345678</code>
+Run：<a href="https://…/runs/12345678">run 12345678</a>
 
 🧾 原始输出
 <pre>2026/09/12 09:00:00 ERROR : Failed to copy: connection reset</pre>
@@ -376,6 +389,7 @@ Run ID：<code>12345678</code>
 ```
 
 分节后跟 `<pre>` 时**不带** ` · N`；`<pre>` 是正文最后一块，其后只跟收尾区。
+Run 一律写可点短号（`<a href>`），不要贴整条 URL、也不要省成纯文本。
 
 ### 3.6 入口与凭据
 
@@ -410,10 +424,10 @@ Telegram 收到，放弃重试只会让凭据丢失。
 
 ### 3.7 进度面板（原地刷新）
 
-- 标题：刷新态 `🔄 同步进度`；终态按严重度——`⛔ 同步中断`（注册前即死）>
-  `⏸️ 同步轮次收摊`（预算到站 / 撞 6h，剩余下轮接力）> `⚠️ 同步完成`（有失败）>
-  `✅ 同步全部完成`。收摊排在失败之前：收摊伴生的失败只是「没跑完」的副产物。
-- 五组任务列表（进行中 / 待处理 / 已完成 / 已跳过 / 失败）**全量展示不折叠**。
+- 标题：刷新态 `🔄`；终态按严重度——中断（注册前即死）> 收摊（预算到站 / 撞 6h，
+  剩余下轮接力）> 完成但有失败 > 全部完成。收摊排在失败之前：收摊伴生的失败只是
+  「没跑完」的副产物。
+- 任务列表按状态分组（进行中 / 待处理 / 已完成 / 已跳过 / 失败）**全量展示不折叠**。
 - 阶段行与批次历史行整行用 `<code>` 包裹（计数列要对齐）；这是面板特有的取舍。
 - 时长只从收尾区出。
 
@@ -452,10 +466,9 @@ video_2026.mp4
 ```
 
 它不走 sendMessage 发送层（媒体上传固有例外），但同样**必须转义并显式 HTML
-parse_mode**；429 重试与发送层同口径（最多 5 次）。`sendDocument` 发送日志文件同理，
-caption 用单行 `📁 任务 · 错误日志`。
-
----
+parse_mode**；429 按 `retry_after` 重试（最多 5 次），**400 解析失败不重试**——
+坏 caption 重发多少次都是同一条坏消息。`sendDocument` 发送日志文件同理，caption 用
+单行 `📁 任务 · 错误日志`（现有实现见 openlist 同步失败通知）。
 
 ### 3.10 生命周期播报
 
@@ -473,10 +486,10 @@ caption 用单行 `📁 任务 · 错误日志`。
 ⏱ 已运行 3 小时 20 分 · 🔗 运行日志
 ```
 
-- 阶段推进用不同 emoji（🤝 准备 / ✅ 就绪 / ⏳ 已交出 / 🚀 入口恢复 / 🏁 全部完成），
-  同一条通知内不复用。
+- 阶段推进用不同 emoji，同一条通知内不复用。
 - 「服务是否可用」必须写清楚：可用 / 下线窗口 / 已恢复。
-- 预计时间用「约 N 分钟后」，已发生用 `tg_format_ms`；不要混用。
+- 预计时间用「约 N 分钟后」；已发生时长的三段式用 `tg_format_duration`，
+  正文单条耗时用 `tg_format_ms`；不要混用，也不要拿毫秒口径渲染几分钟的时长。
 
 ### 3.11 常驻服务报告
 
@@ -497,6 +510,18 @@ caption 用单行 `📁 任务 · 错误日志`。
 - 报告时刻用东八区，格式 `YYYY-MM-DD HH:MM（东八区）`。
 - 恢复通知与故障通知分开发；故障 alert、恢复普通（见台账）。
 
+### 3.12 网关就绪报告
+
+网关 / 反代起服后的可用性播报：**先回答「现在能不能用」，再列数据段**。
+
+- 标题用状态 emoji 表达可用性（就绪 / 降级但可用 / 需人工介入 / 失败），细节下沉 kv。
+- 数据段（账号池、模型倍率、资产、用量）一律「数据缺失就说缺失」，**绝不编造模型名 /
+  额度 / 时刻**；取不到时整段降级或跳过，不写半截。
+- 分节与条目遵循通用规则（计数、树形、折叠判据）；账号池这类结构性清单全量不折叠。
+- 逐域字段口径（列序、冷却怎么写、数据源是哪个接口）属域细节，见 `openclaw.md` 九。
+
+---
+
 ## 4. 表达约定
 
 ### 4.1 时长
@@ -511,8 +536,8 @@ caption 用单行 `📁 任务 · 错误日志`。
 | 4 | `X 毫秒`（整数） | < 1 秒 | `27 毫秒`、`340 毫秒` |
 | 5 | `⏱mm:ss`（定宽） | 面板批次行 | `⏱01:15` |
 
-- 第 1–3 层由三套收尾区实现，逐字一致；正文单条耗时（毫秒 / 秒双档）用 `tg_format_ms`。
-- 正文需要三段式时长（如趋势的「历时」）用 `tg_format_duration`（bash）/
+- 第 1–3 层由三套收尾区实现，逐字一致；已发生时长（交接、下线、准备耗时）同样走这三层。
+- 正文单条耗时（毫秒 / 秒双档）用 `tg_format_ms`；三段式用 `tg_format_duration`（bash）/
   `tg_format_elapsed`（python），不要自造同义实现。
 - 第 3 层固定两位小数（整数秒写 `12.00 秒`）；第 4 层专用于 < 1 秒，避免退化成
   `0.00 秒`；第 5 层只用于面板对齐。
@@ -526,9 +551,9 @@ caption 用单行 `📁 任务 · 错误日志`。
 
 - **例外**：进度面板批次行用紧凑 `4.79G`（定宽对齐、不走 `format_bytes`），只此一处。
 - bash 侧唯一实现：真源 `format_bytes`（source 真源后直接用）。
-- python 侧两份同口径 `human_size`：`sync_to_tg.sh` 内嵌（进入通知）与
-  `add_uploaded_video.py`（只写台账 / 日志）。改口径要同步。
-- openlist 的 `format_bytes_iec` 与 workflow 内联 `numfmt` **只进日志 / env，不进通知**。
+- 无法 import 共享层时（python / 内嵌段）允许同义实现，但口径必须与 `format_bytes`
+  逐字一致；改口径时把同义实现一起改（清单见各域文件头）。
+- 只进日志 / env 的大小格式化函数（如 `format_bytes_iec`、`numfmt`）不参与通知口径。
 
 ### 4.3 日期与相对时间
 
@@ -538,8 +563,9 @@ caption 用单行 `📁 任务 · 错误日志`。
 时间：2026-09-07 19:34（东八区） · 3 小时前
 ```
 
-不要直出 ISO 时间戳，也不要写 UTC：**展示时间一律东八区**。机器值（marker / JSON /
-日志 / run 时间戳）仍按 UTC 存，两者不要混用。
+- 展示时间精确到分钟，不写秒：起止时间、报告时刻、凭据有效期同一口径。
+- 不要直出 ISO 时间戳，也不要写 UTC：**展示时间一律东八区**。机器值（marker / JSON /
+  日志 / run 时间戳）仍按 UTC 存，两者不要混用。
 
 ### 4.4 计数与量化
 
@@ -548,8 +574,8 @@ caption 用单行 `📁 任务 · 错误日志`。
 - 错误码中文化：`退出码 45` 而不是 `exit=45`。
 - 文件数行：`源端 X / 目标 Y` 恒定；源端比目标多时前置 `差异 N · `，目标端更多时不前置
   （会渲染出负数的「差异 -1」）；两端一致写 `X · 一致`。
-- 面板批次行定宽：`✅00 🔧00 ❗33 ⏭️22 ♻️22 ⏱01:15 ⬆️4.79G`（计数补零、上传量 GiB
-  两位小数、最近 6 条滚动）。
+- 面板批次行定宽（计数补零、时长 `mm:ss`、上传量紧凑 G），最多保留最近 6 条；
+  具体字段表见该域实现与域文档。
 
 ### 4.5 状态图标语义
 
@@ -562,10 +588,10 @@ caption 用单行 `📁 任务 · 错误日志`。
 | `🔴` | 需人工解封（上游风控停用账号池） |
 | `🟠` | 需人工介入（介于警告与失败之间） |
 | `🟡` | 降级但服务在（通道缺失 / 额度耗尽，等即可） |
-| `⛔` | 中断（注册前即死） |
-| `⏸️` | 轮次收摊（预算到站，预期内，只用于同步面板终态） |
+| `⛔` | 中断 / 即将停机（注册前即死、停机倒计时） |
+| `⏸️` | 预期内收摊（预算到站，轮次剩余下轮接力） |
 | `⏭️` | 跳过 |
-| `⏳` | 待处理 |
+| `⏳` | 等待（待处理 / 等待交出） |
 | `🔄` | 进行中 / 接力启动 |
 | `🚨` | 危险警告 |
 | `🆘` | 灾难恢复 |
@@ -576,8 +602,9 @@ caption 用单行 `📁 任务 · 错误日志`。
 | `🕒` | 报告时刻（只用于常驻服务收尾区） |
 
 这张表只定义**状态语义**。域图标（📺 频道、🎬 播放、🔍 去重、☁️ iCloud、🗑️ 损坏、
-🏁 交接完成等）由各域自定、不登记，只要求与结论不矛盾、同一条通知里不让同一个 emoji
-承担两种角色。不要用 `⭐` / `🥇` 这类无状态含义的前缀。
+🏁 交接完成、💳 账号池等）与行首装饰符（如组头 `🔖`）由各域自定、不登记，只要求与
+结论不矛盾、同一条通知里不让同一个 emoji 承担两种角色。不要用 `⭐` / `🥇` 这类无状态
+含义的前缀。
 
 ---
 
@@ -590,7 +617,7 @@ caption 用单行 `📁 任务 · 错误日志`。
 | Linux / macOS runner 的 bash step | `telegram/tg_notify.sh` | 助手最全：排版、条目、树形、折叠、收尾、日志截断、发送（含分片） |
 | Windows runner（pwsh） | `telegram/tg_notify.ps1` | **只有** `$TG_SEP` / `Esc-Html` / `Format-TgDuration` / `Get-TgFooter` / `Send-TgMessage`；无 kv / 条目助手、无分片 |
 | python 脚本 | `proxy-speedtest/speedtest_common.py` | 镜像函数（返回字符串，自己 join）、发送与分片、`TG_SEP`、时间换算；无 `tg_add_*`、无大小助手 |
-| bash 内嵌 python 段 | 无法 import 共享层 | 在本文件内同义实现用到的助手 |
+| bash 内嵌 python 段 | 无法 import 共享层 | 在本文件内同义实现用到的助手（见规范 · 内嵌 python 段） |
 
 ### 5.2 接线（硬要求）
 
@@ -620,40 +647,15 @@ caption 用单行 `📁 任务 · 错误日志`。
 - pwsh step 要 `shell: pwsh`，dot-source 后加 `Get-Command Send-TgMessage` 自检——
   调用未定义函数是终止错误，带 `continue-on-error` 时表现为通知静默消失。
 
-### 5.3 助手速查
+### 5.3 内嵌 python 段
 
-| 用途 | bash 真源 | pwsh | python |
-|---|---|---|---|
-| 标题 / 分节 | `tg_add_title` / `tg_add_section` | `$TG_SEP` 手拼 | 手拼 + `TG_SEP` |
-| kv / 机器值 | `tg_add_kv` / `tg_add_path` | 手拼 | 手拼 |
-| 链接 | `tg_add_link` | 手拼 `<a>` | 手拼 |
-| 条目（单主体） | `tg_entry` / `tg_add_entry` | — | `tg_entry(subject, *meta)` |
-| 条目（文字主体） | `tg_entry_text` / `tg_add_entry_text` | — | `tg_entry(..., code=False)` |
-| 条目（双机器值 `→`） | `tg_entry_pair` / `tg_add_entry_pair` | — | `tg_entry_pair(a, b, *meta)` |
-| 条目（双机器值 `·`） | `tg_entry_codes` / `tg_add_entry_codes` | — | `tg_entry_codes(a, b, *meta)` |
-| 多行块 | `tg_add_pre`；已含标签的片段用 `tg_add_block` | — | `tg_pre_block(text)` |
-| 说明段 | `tg_add_note` | 手拼 | 手拼 |
-| 树形 / 折叠 | `tree_conn` `tree_sub` `tree_lines` `tree_code_fold`（裸文本）/ `tree_fold`（条目流）；前缀自带 `<code>` | 手拼（前缀同样包 `<code>`） | 手拼（同左） |
-| 大小格式化 | `format_bytes` | 手算 | 无共享函数：`sync_to_tg.sh` 内嵌 `human_size` 同口径 |
-| 耗时（正文单条） | `tg_format_ms` | — | — |
-| 时长三段式 | `tg_format_duration` | `Format-TgDuration` | `tg_format_elapsed` |
-| 日志尾部安全截断 | `tg_tail_safe` / `tg_tail_file_safe` | — | — |
-| 日期换算（东八区） | `TZ=Asia/Shanghai date` | 手拼 | `tg_format_time_bj` |
-| 转义 | `escape_html` | `Esc-Html` | `html.escape` |
-| 收尾 | `tg_add_footer` | `Get-TgFooter` | `tg_footer_line` |
-| 发送 | `send_tg` / `send_tg_chunked` | `Send-TgMessage`（无分片） | `send_telegram` / `send_telegram_chunked` |
-| 原始追加（不转义） | `tg_append` | — | — |
+bash 里 `python3 - <<'PY'` 无法 import 共享层。**涉及动态内容的助手必须在本文件内同义
+实现**（`esc` / `tg_entry` / `tg_pre_block` / 折叠），且与共享层逐字一致——漏实现会
+`NameError` → 脚本提前退出 → 连整轮汇总通知一起丢，代码审查很难看出来，改完务必实跑一次。
+标题 / kv / 分隔线这类单行构件允许手拼，但形态必须与真源一致（全角冒号、`TG_SEP` 同值、
+值一律转义）。
 
-`tg_add_*` 的第一参是**变量名**。`tg_add_entry` 收裸主体，内部才包 `<code>` 并转义——
-预先包好再传会二次转义。
-
-### 5.4 内嵌 python 段
-
-bash 里 `python3 - <<'PY'` 无法 import 共享层，用到的助手必须在本文件内同义实现，且与
-共享层逐字一致。漏实现会 `NameError` → 脚本提前退出 → 连整轮汇总通知一起丢，代码审查
-很难看出来，改完务必实跑一次。
-
-### 5.5 通知函数的正确接法
+### 5.4 通知函数的正确接法
 
 **真源只在顶层 source 一次。** 函数体可能在子 shell 里执行（`m=$(fn)`、`fn | …`、
 `fn &`），子 shell 内 `source` 只改子 shell 的函数表：调用点对 `send_tg` 的本地覆写会被
@@ -671,8 +673,8 @@ wb_notify() {                    # 函数体只用助手，不再 source
 
 **长跑接力去重**：同一份 service 被接力 run 反复启动时，默认只在首轮推「已就绪」，
 用 `/tmp` 标记文件区分首轮与接力轮（runner 生命周期内有效）；标记文件只在服务真的起来
-时写。**例外**：某服务被明确要求每轮都发时（当前只有 workbuddy-gateway），要在该域文档
-与调用点写明，不要文档写「只发首轮」、代码却在每轮发。
+时写。**例外**：某服务被明确要求每轮都发时，要在该域文档与调用点写明，不要文档写
+「只发首轮」、代码却在每轮发。
 
 ---
 
@@ -681,6 +683,7 @@ wb_notify() {                    # 函数体只用助手，不再 source
 - **一律 HTML parse_mode**，动态内容必须转义（`escape_html` / `Esc-Html` /
   `html.escape`，或经 `tg_*` 助手）。没有「值是脚本自造」的豁免。
 - **HTML 解析失败（400 can't parse entities）不重发**，直接报错并带响应体前 200 字符。
+  媒体上传（caption）同样适用：坏 caption 重试多少次都是同一条坏消息。
 - **429 按 `retry_after` 等待重试（最多 5 次）**；长消息自动分片，断在换行处、不切
   UTF-8 多字节。分片口径三套有意不同：
   - bash：>3900 UTF-16 码元触发，按 3800 UTF-16 码元切，边界自动闭合 / 重开 HTML 标签；
@@ -698,24 +701,22 @@ wb_notify() {                    # 函数体只用助手，不再 source
 
 ### 6.1 全库 bot 分工（唯一口径）
 
-| bot | 职责 | 本机 | 仓库 |
-|---|---|---|---|
-| @openclaw_sb_bot | 主对话（不发通知） | ✓ | — |
-| @FuckSaberBot | 一般通知（业务） | ✓ | ✓ |
-| @SaberFuckBot | 重要通知 | ✓ | ✓ |
-| @sbsb / @sbsbsb / @sbsbsbsb / @sbsbsbsbsb | agent 各自对话窗口 | ✓ | — |
-| @ass_openclaw_bot | 内部消息隔离带（relay / 后台完成 / 串号排查） | ✓ | — |
+| 档位 | bot | 用途 |
+|---|---|---|
+| 普通 | @FuckSaberBot | 业务结果与流水（备份、同步、测速、频道内容） |
+| alert | @SaberFuckBot | 告警 + 信息（失败 / 中断、入口与凭据、服务启停、模型倍率、灾难恢复） |
 
-**两档 × 两侧，共 4 格，只用 2 个通知 bot。** 判定：一般 = 业务结果；重要 = 告警 +
-信息（runner 重启、setup-env 报告、测速告警、入口 / 凭据、服务启停）。内部消息不属于
-任何一档，不进业务通知通道。
+**两档 × 两侧，只用这 2 个通知 bot。** 判定：一般 = 业务结果；重要 = 告警 + 信息。
+内部消息（relay / 后台完成 / 串号排查）走隔离带，不属于任何一档，也不进业务通知通道；
+本机 bot 全表见 `docs/openclaw.md` 九。
 
 > 判据（易踩）：GitHub Secrets 只写不可读，本机 `.env` 的值 ≠ 仓库 secrets 的值。
 > 判断仓库接的是哪个 bot 只能看消息头。也不要把本机裸变量 `TELEGRAM_BOT_TOKEN` 改值——
 > 那是本机重要通知的出口。
 
-已知差异（当前实现）：pwsh 无分片；python 429 耗尽抛异常而非返回字典；python
-分片不带标签闭合。
+已知差异（当前实现）：pwsh 无分片、无 5xx / 网络错误退避、alert 凭据缺失时以 API 报错
+留痕而非显式提示；python 无 5xx / 网络错误退避、429 耗尽抛异常而非返回字典、分片不带
+标签闭合。
 
 ---
 
@@ -729,7 +730,7 @@ msg=""; tg_add_title msg "⚠️ 示例"; tg_add_section msg "❌ 清单 · 2"
 tg_add_block msg "$(tree_lines "$(tg_entry "a.mp4" "1.700 GiB")")"
 tg_add_footer msg; printf '%s\n' "$msg"
 
-bash skills/telegram-notify-audit/scripts/render_preview.sh        # 真源渲染 + 16 项自动校验
+bash skills/telegram-notify-audit/scripts/render_preview.sh        # 真源渲染 + 自动校验
 bash skills/telegram-notify-audit/scripts/list_notify.sh --check   # 机械校验（偏差退出 1）
 ```
 

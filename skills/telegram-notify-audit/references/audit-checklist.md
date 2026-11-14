@@ -17,7 +17,7 @@
 | 8 | 运行日志接线 | `grep -l TG_RUN_URL .github/workflows/*.yml` | **现场重数，不记固定数字**。判据是「每个发通知的 step 都有 `TG_RUN_URL`」；直接构造通知的 workflow 数与注入面不必相等。caption 场景也需注入 |
 | 9 | 树形 / 折叠调用点 | `tree_lines\|tree_fold\|tree_code_fold` | 逐个确认折叠口径（第 2 节） |
 | 10 | 分节计数 | `tg_add_section +[a-z_]+ +"[^"]*"` | 后跟列表的带 ` · N`；后跟 `<pre>` 或 kv 行的可不带 |
-| 11 | 速查表函数存在性 | 对 `docs/telegram-notify.md` 5.3 表的每个函数名 `grep -nE '^(函数名)\(\)\|^def 函数名\|^function 函数名'` 对真源 | 双向核对：表里的名字必须存在；真源新增公开助手（如 `tg_add_link`）必须补进表。只记函数名不记行号 |
+| 11 | 速查表函数存在性 | 对 `skills/telegram-notify-send/references/api-reference.md` 的三套实现对照表，逐列取函数名 `grep -nE '^(函数名)\(\)\|^def 函数名\|^function 函数名'` 对真源 | 双向核对：表里的名字必须存在；真源新增公开助手（如 `tg_add_link`）必须补进表。只记函数名不记行号 |
 | 12 | **函数体内 `source` 真源** | `source .*tg_notify\.sh`，人工判断是否落在 `name() { … }` 之间 | 只允许在 step / heredoc 顶层。子 shell 内 source 只改子 shell 函数表，会还原调用点对 `send_tg` 的覆写、`local` 也失效（规范 · 通知函数的正确接法） |
 | 13 | 接力轮重复通知 | 长跑 workflow 里按「服务已就绪」发通知的调用点 | 默认 `/tmp` 标记文件区分首轮 / 接力轮；**例外**：被明确要求每轮发的（当前 workbuddy-gateway）按域文档执行 |
 | 14 | `🕒` 误用 | `🕒` | 只允许无 run 上下文的常驻服务收尾区（`health/system_health.sh`、`board.py`、`gateway-watchdog.py`）；正文分节 / 时间行不得使用 |

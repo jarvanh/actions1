@@ -12,7 +12,7 @@ agent_created: true
 
 | 用途 | 路径 |
 |---|---|
-| 版式规范 | `docs/telegram-notify.md`（版式构件、发送层硬约束、助手速查表） |
+| 版式规范 | `docs/telegram-notify.md`（版式构件、发送层硬约束） |
 | 通知清单 | `bash skills/telegram-notify-audit/scripts/list_notify.sh`（现场枚举发送点/标题/档位）；域级出口与档位规则在 `docs/telegram-notify-registry.md` |
 | bash 实现（最全） | `.github/scripts/telegram/tg_notify.sh` |
 | pwsh 实现（**只有 5 个成员**） | `.github/scripts/telegram/tg_notify.ps1` |

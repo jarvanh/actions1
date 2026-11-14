@@ -897,3 +897,16 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 
 `openclaw.yml` 的 `Notify AI gateway usage report`（普通档）：标题与内容来自
 `board.py usage-report`，仓库内无标题字面量。
+
+### 9.6 本机 bot 分工
+
+| bot | 职责 | 本机 | 仓库 |
+|---|---|---|---|
+| @openclaw_sb_bot | 主对话（不发通知） | ✓ | — |
+| @FuckSaberBot | 一般通知（业务结果与流水） | ✓ | ✓ |
+| @SaberFuckBot | 重要通知（告警 + 信息） | ✓ | ✓ |
+| @sbsb / @sbsbsb / @sbsbsbsb / @sbsbsbsbsb | agent 各自对话窗口 | ✓ | — |
+| @ass_openclaw_bot | 内部消息隔离带（relay / 后台完成 / 串号排查） | ✓ | — |
+
+**仓库侧只用两个通知 bot**（按档位路由，判定见规范 · 全库 bot 分工）；本机的对话窗口
+与隔离带不接收业务通知。
