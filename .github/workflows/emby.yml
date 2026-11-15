@@ -1561,10 +1561,12 @@ jobs:
             text=""
             tg_add_title text "$title"
             # kv 值按 规范 · 取值行口径（机器返回值 → <code>；
-            # 结论值/状态/计数/数值 → 裸文本 + 转义）
-            [ -n "$meta" ] && text="${text}"$'\n'"规格：${meta}"
-            text="${text}"$'\n'"链路：${l3}"
-            [ -n "$client" ] && text="${text}"$'\n'"客户端：${client}"
+            # 结论值/状态/计数/数值 → 裸文本 + 转义）。
+            # 标题块已以换行结尾：这三行直接续写，不要再前置 \n —— 否则分隔线与规格行
+            # 之间多出一个空行（规范 · 空行：分隔线后不空行）。
+            [ -n "$meta" ] && text="${text}规格：${meta}"$'\n'
+            text="${text}链路：${l3}"$'\n'
+            [ -n "$client" ] && text="${text}客户端：${client}"$'\n'
             # 分节标题交给 tg_add_section：emoji 不套标签（规范 · 取值行口径）、段前空行自动补全。
             # waitline 只含树形条目，不要再自带"⏳ 起播等待"标题行，也不要再套"等待："标签
             if [ -n "$waitline" ]; then
