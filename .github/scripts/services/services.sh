@@ -280,8 +280,8 @@ EOF
       cat > "$tmp" <<EOF
 [Unit]
 Description=zcode2api (GLM Anthropic+OpenAI gateway, 8319)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target zcode2api-proxy.service
+Wants=network-online.target zcode2api-proxy.service
 # 2026-11-08 事故加上限：运行目录被踩空时 ExecStart 消失，原 Restart=always
 # 无上限每 5s 空转（实锤连续 233 次）且无新信息；改为 300s 内最多 3 次，
 # 超出进 failed 终态，哨兵/人更容易发现真问题。
@@ -294,6 +294,12 @@ WorkingDirectory=/tmp/local_zcode2api
 Environment=ZCODE_GATEWAY_KEY=${ZCODE_GATEWAY_KEY}
 # 环境变量优先于 .env（python-dotenv 默认不覆盖已存在的环境变量），
 # 与仓库 Secrets 对齐无需改数据快照里的 .env
+# 出口代理就绪闸门：Plan 账号全部走 127.0.0.1:789x，mihomo 未就绪时上游在
+# TCP 层直接失败（All connection attempts failed），账号被打进冷却且自检必报
+# 「无可用账号」（2026-11-15 19:41 实锤：网关先起、代理 8 分钟后才拉起，4 账号
+# 全冷却）。最多等 40s，超时仍启动 —— 代理故障应表现为账号冷却告警，而不是
+# 网关起不来。
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 40); do curl -fsS --max-time 3 -o /dev/null -x http://127.0.0.1:7891 https://chat.z.ai 2>/dev/null && exit 0; sleep 1; done; echo "warn: egress proxy not ready after 40s" >&2; exit 0'
 ExecStart=/tmp/local_zcode2api/.venv/bin/python cli.py serve
 Restart=always
 RestartSec=5

@@ -50,6 +50,42 @@
       [ -n "$code" ] && [ "$code" != "000" ]
     }
 
+    # 出口代理就绪闸门：Plan 账号全部绑定 127.0.0.1:789{1..4} 出口，mihomo
+    # 未起时上游请求在 TCP 层直接失败（All connection attempts failed），
+    # 账号被 net_fail_penalty 打进冷却，本轮自检必报「无可用账号」。
+    # 2026-11-15 19:41 实锤：网关先起、setup-env 19:49 才装好代理，8 分钟
+    # 窗口内 4 账号全冷却，通知还误诊成「额度耗尽」。新鲜 runner 上代理单元
+    # 可能尚未被 setup-env 装回，故此处自带幂等安装（源在 /dropbox）。
+    # 最多等 40s；超时只告警不阻断 —— 代理坏了应表现为账号冷却告警，
+    # 而不是网关起不来。
+    z2a_ensure_egress_proxy() {
+      local src="/dropbox/self-hosted/zcode2api/proxy" unit ok=0 code=""
+      unit="$HOME/.config/systemd/user/zcode2api-proxy.service"
+      if [ ! -f "$unit" ] && [ -f "$src/zcode2api-proxy.service" ]; then
+        mkdir -p "$(dirname "$unit")"
+        cp "$src/zcode2api-proxy.service" "$unit" 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+      fi
+      if [ ! -f "$unit" ]; then
+        echo "⚠️ [zcode2api] 出口代理单元缺失（${src} 无源），跳过就绪闸门"
+        return 0
+      fi
+      systemctl --user start zcode2api-proxy.service 2>/dev/null || true
+      for _ in $(seq 1 40); do
+        code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' -x http://127.0.0.1:7891 https://chat.z.ai 2>/dev/null || true)"
+        if [ -n "$code" ] && [ "$code" != "000" ]; then
+          ok=1
+          break
+        fi
+        sleep 1
+      done
+      if [ "$ok" = "1" ]; then
+        echo "✅ [zcode2api] 出口代理已就绪（7891 经代理出网 ${code}）"
+      else
+        echo "⚠️ [zcode2api] 出口代理 40s 未探通，仍继续启动（账号可能短冷却）"
+      fi
+    }
+
     # 端到端自检：无论进程是新起的还是复用的残留实例，都要真发消息验证。
     # 判据是「上游返回了助手内容块」——healthz/模型列表通不代表上游链路可用
     # （旧反代实测漏过「进程活着但上游 429」）。注意 GLM 是思考模型，
@@ -155,8 +191,11 @@
     }
     Z2A_POOL_TITLE=""
     Z2A_POOL_TEXT=""
+    # 池内「最近错误 = 连接失败」的条数（出口链路故障的判据，供失败分诊用）
+    Z2A_POOL_ERR_NET=0
     z2a_collect_pool() {
       local ak json n=0 total=0
+      Z2A_POOL_ERR_NET=0
       ak="$(z2a_admin_key)"
       [ -n "$ak" ] || return 0
       json="$(curl -sS --max-time 10 -H "Authorization: Bearer ${ak}" \
@@ -198,6 +237,9 @@
           invalid)   st_cn="鉴权失效" ;;
           disabled)  st_cn="已停用" ;;
           *)         st_cn="$st" ;;
+        esac
+        case "$err" in
+          *连接失败*|*ConnectError*|*"All connection attempts failed"*) Z2A_POOL_ERR_NET=$((Z2A_POOL_ERR_NET + 1)) ;;
         esac
         local line="$prefix<code>$(escape_html "$name")</code> · $chan · $st_cn"
         local sub=""
@@ -367,6 +409,7 @@
           # 进程崩溃由 systemd 秒级拉起，不再依赖下一轮 run。ZCODE_GATEWAY_KEY
           # 由 step env 注入、单元 Environment 落盘（600），优先级高于 .env。
           # 停止必须走 systemctl（见收尾 3c 注释），pkill 会被 Restart 抢回来。
+          z2a_ensure_egress_proxy
           bash "$GITHUB_WORKSPACE/.github/scripts/services/services.sh" ensure zcode2api || true
           Z2A_UP=0
           for _ in $(seq 1 60); do
@@ -460,13 +503,28 @@
           tg_add_path _m "停用账号" "${Z2A_RISK_BAN_LIST}"
           tg_add_kv _m "说明" "不会自动恢复：需到 z.ai 后台确认解封后启用（解封后可让我调 admin API 启用并实测）；解除前 GLM-5.3 持续 503"
           ;;
-        # unavailable = 网关 503 no_available_account / 请求级死线：账号池全冷却
-        # 或额度耗尽，服务本体在监听且能回 /v1/models —— 与 quota 同为黄色降级，
-        # 不能掉进红色「启动失败」（2026-09-30 误报实例：额度耗尽报成了启动失败）
-        quota|unavailable)
+        # quota = 上游额度/余额类（服务本体健康）。黄色降级而非红色启动失败
+        # （2026-09-30 误报实例：额度耗尽报成了启动失败）
+        quota)
           tg_add_title _m "🟡 zcode2api 已就绪 · 全部通道额度耗尽"
-          tg_add_kv _m "结论" "服务正常，上游无可用额度/账号池冷却中（非启动故障）"
-          tg_add_kv _m "说明" "冷却到期自动回轮询，无需人工介入；额度周期刷新后自动恢复"
+          tg_add_kv _m "结论" "服务正常，上游无可用额度（非启动故障）"
+          tg_add_kv _m "说明" "冷却到期自动回轮询；额度周期刷新后自动恢复"
+          ;;
+        # unavailable = 网关 503 no_available_account：账号池没有可调度账号。
+        # 上游把「额度耗尽 / 并发满 / 出口连接失败」揉进同一句文案，不能照抄
+        # 成「额度耗尽」—— 2026-11-15 实锤：mihomo 未就绪 → 4 账号全连接失败，
+        # 通知却写「额度耗尽 · 无需人工介入」，把该修出口的故障指成了等额度。
+        # 池内有连接失败账号时点名出口并给排查命令，否则只说账号池冷却。
+        unavailable)
+          if [ "${Z2A_POOL_ERR_NET:-0}" -gt 0 ]; then
+            tg_add_title _m "🟡 zcode2api 已就绪 · 出口网络异常（账号池冷却）"
+            tg_add_kv _m "结论" "服务正常，${Z2A_POOL_ERR_NET} 个账号上游连接失败（代理/直连均不可达），非额度耗尽"
+            tg_add_kv _m "说明" "查出口代理：systemctl --user status zcode2api-proxy / journalctl --user -u zcode2api-proxy；恢复后冷却到期自动回轮询"
+          else
+            tg_add_title _m "🟡 zcode2api 已就绪 · 账号池全部冷却"
+            tg_add_kv _m "结论" "服务正常，账号池暂无可调度账号（冷却/并发占满），非启动故障"
+            tg_add_kv _m "说明" "冷却到期自动回轮询；持续多轮不恢复再查额度与出口"
+          fi
           ;;
         channel)
           tg_add_title _m "🟡 zcode2api 已就绪 · 回退通道已关闭"
