@@ -34,6 +34,22 @@ case "$EXPECTED" in
     ;;
 esac
 
+# 2026-11-15 上游 installer 改版新增两道环境检查（实测 run 43658656383 之后的
+# 手工复现）：npm 全局 prefix 不可写 + 存在 ~/.nvm 时，installer 会拒绝继续并
+# 要求用户交互式跑 `nvm install`。runner 是非交互环境，会直接失败。
+# 对策：把 npm prefix 指到 runner 可写的 ~/.npm-global（并预建 lib/，否则
+# installer 的 -w 检查仍不通过），并把其 bin 放到 PATH 最前。
+# 副作用：openclaw CLI 落在 ~/.npm-global/bin —— 后续步骤需同样带上该 PATH
+#（prepare-runtime-env 与调用方已统一从 install 步骤继承，见 openclaw.yml）。
+if ! npm_prefix="$(npm config get prefix 2>/dev/null)" || [ ! -w "${npm_prefix:-/nonexistent}" ]; then
+  export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$HOME/.npm-global}"
+  mkdir -p "$NPM_CONFIG_PREFIX/lib"
+  export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+  # 持久化到 ~/.npmrc：后面的「Prepare runtime env」用 `npm config get prefix`
+  # 组装 GITHUB_PATH，只有写进 npmrc，openclaw 的 bin 目录才会进后续步骤 PATH。
+  npm config set prefix "$NPM_CONFIG_PREFIX" >/dev/null 2>&1 || true
+fi
+
 TMP_INSTALLER="$(mktemp "${TMPDIR:-/tmp}/openclaw-install.XXXXXX")"
 cleanup() { rm -f "$TMP_INSTALLER"; }
 trap cleanup EXIT
