@@ -584,6 +584,29 @@ def check():
                         ok = re.search(rf"^def {name}\b", srcs[kind], re.M) or name == "TG_SEP"
                     if not ok:
                         bad.append(f"api-reference 表 {kind} 列: {name} 在真源不存在")
+
+        # 反向核对（真源 → 表）：公开助手（非 _ 前缀）必须登记进速查表，
+        # 否则新增助手无人知晓、误用丛生。只核对 bash / pwsh：python 文件里大量
+        # 函数是测速业务逻辑（load_env_file / resolve_subscription_policy …），
+        # 不是通知助手，一并要求登记只会制造噪音。
+        def doc_has(name):
+            return re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", doc) is not None
+
+        for kind in ("bash", "pwsh"):
+            src = srcs[kind]
+            if kind == "bash":
+                fns = re.findall(r"^([A-Za-z_]\w*)\(\)", src, re.M)
+            else:
+                # pwsh 动词-名词命名带连字符（Esc-Html），不能按 \w 截断
+                fns = re.findall(r"^function ([A-Za-z_][\w-]*)", src, re.M)
+            fns.append("TG_SEP")
+            for name in fns:
+                if name.startswith("_"):
+                    continue
+                if name == "tg_route":   # 发送层内部路由，调用方不用（§2 已注明）
+                    continue
+                if not doc_has(name):
+                    bad.append(f"{kind} 真源公开助手 {name} 未登记进 api-reference")
     except Exception as e:
         bad.append(f"解析 api-reference 表失败: {e}")
     add(11, "助手速查表与真源一致", bad)
