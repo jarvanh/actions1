@@ -130,7 +130,13 @@ OPENLIST_PAIR_PARALLEL="${OPENLIST_PAIR_PARALLEL:-2}"   # 1=串行；>=2=按后�
 #   管道包一层 —— 全局变量在更深的子 shell 里读不到（同 OPENLIST_SYNC_DEADLINE_EPOCH，
 #   参见 openlist_api.sh 里"短路标记必须落文件"的实测注释）。
 # 未注入预算锚点（调试/还原/本机单测）→ 不设份额，行为与改动前完全一致。
-OPENLIST_PAIR_MIN_SLICE_SECONDS="${OPENLIST_PAIR_MIN_SLICE_SECONDS:-1200}"  # 20min
+OPENLIST_PAIR_MIN_SLICE_SECONDS="${OPENLIST_PAIR_MIN_SLICE_SECONDS:-1500}"  # 25min
+# ↑ 20min → 25min（2026-11-15，run 43531475896 实测预算没用满）:
+#   该轮 step 22 只跑 244min（02:59:48→07:03:46），预算 320min ⇒ 约 76min 闲置。
+#   按 16 对 / 并行 2 / 每对(份额+宽限 600s): 20min→240min（实测 244 吻合）、
+#   25min→280min（仍留 40min 尾部）、30min→320min（吃满，无尾部，不可取）。
+#   积压 5.68 TiB vs 单轮 27 GiB（≈215 倍）⇒ 吞吐是唯一瓶颈（见 openlist-preview）。
+#   调大前提: 16×(份额/60+10)/2 < SYNC_BUDGET_MIN − 收尾预留(约 8min)。
 # 份额内的"收尾预留"（2026-11-11 加，run 42887432510 实证）:
 #   原先份额生效时子目录闸直接沿用全局最小片 600s 当预留，于是 **20min 份额
 #   实际只有 10min 干活**。而 backup / backup-aliyundrive 这类对的固定开销是
