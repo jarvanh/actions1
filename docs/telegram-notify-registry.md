@@ -23,7 +23,7 @@
 | OpenList 同步 | `.github/scripts/openlist/`（`load_all.sh` 注入真源；`telegram.sh` 的 `send_telegram_message` 统一出口） | 普通；失败 / 告警类显式 alert |
 | Telegram 频道内容管线 | `.github/scripts/tg-channel/` | 普通 |
 | 备份与任务 workflow | workflow 内联（`github_backup_all`、`self-hosted_backup`、`notion-backup`、`icloud-photos-downloader`、`pixivutil2`、`ph-dl`、`p`、`upload-video-to-tg` 等） | 成功普通；失败 / 中断 / 崩溃兜底 alert（iCloud 例外：全普通） |
-| OpenClaw Runner 与 AI 网关 | `.github/workflows/openclaw.yml` + `.github/scripts/openclaw/run-*.sh` | alert；结果类（用量报告、交接进度、非全败的归档汇总）显式普通 |
+| OpenClaw Runner 与 AI 网关 | `.github/workflows/openclaw.yml` + `.github/scripts/openclaw/run-*.sh`；交接五态 `.github/scripts/handoff/handoff-notify.sh` | alert；结果类（用量报告、交接进度、非全败的归档汇总）显式普通 |
 | Windows 入口 | `.github/workflows/rdp.yml`、`tailscale-windows.yml`（pwsh） | alert |
 | Emby | `.github/workflows/emby.yml` | 播放普通；启停 / 回退 / 凭据 alert |
 | 测速三套 | `.github/scripts/proxy-speedtest/` | 主报告普通；异常退出 / 终止 alert |

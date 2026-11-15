@@ -24,23 +24,54 @@ grep -nE '^(函数名)\(\)|^def 函数名|^function 函数名|\$?TG_SEP *=' 真�
 pwsh 只有 **5 个成员**：`$TG_SEP` / `Esc-Html` / `Format-TgDuration` / `Get-TgFooter` /
 `Send-TgMessage`。全库 dot-source 它的只有 `rdp.yml` 与 `tailscale-windows.yml`。
 
-## 2. bash 签名（易记错的部分）
+## 2. bash 签名（公开助手全表）
 
 ```bash
-tg_append      <变量名> <原始文本>          # 第一参是变量名不是值；不转义
-tg_add_kv      <变量名> <标签> <值>          # 值转义，输出 "标签：值"
-tg_add_path    <变量名> <标签> <值>          # 值转义 + <code>
-tg_add_link    <变量名> <标签> <URL> <文本>   # <a href>，文本与 URL 都转义
-tg_add_footer  <变量名> ["标签" "URL"]...    # 附加链接对
-tg_entry       <主体> [元数据...]            # 单行，无尾换行
-tg_add_entry   <变量名> <主体> [元数据...]    # 2 必填 + 变长元数据，追加一整行
-tg_format_ms   <秒>                          # "27 毫秒" / "1.40 秒"；空或非法返回空
-tree_fold      <多行条目流> [上限=8]          # 只截断
-tree_code_fold <多行裸文本> [上限=8]          # 转义 + <code> + 截断
+# 标题 / 正文
+tg_add_title      <变量名> <标题>              # 标题 + 分隔线，自带换行
+tg_add_kv         <变量名> <标签> <值>         # 值转义，输出 "标签：值"
+tg_add_path       <变量名> <标签> <值>         # 值转义 + <code>
+tg_add_link       <变量名> <标签> <URL> <文本>  # <a href>，文本与 URL 都转义
+tg_add_section    <变量名> <分节标题>          # 段前空行（紧跟分隔线 / 空消息除外）
+tg_add_note       <变量名> <说明段>            # 段前空行；段内不能带 HTML
+tg_add_block      <变量名> <已含标签的片段>     # 原样追加并保证尾换行
+tg_add_pre        <变量名> <裸文本>            # 转义 + <pre> 包裹
+tg_append         <变量名> <原始文本>          # 第一参是变量名不是值；不转义
+
+# 条目 / 树形（条目一律不含尾换行）
+tg_entry          <主体> [元数据...]           # 机器值主体，自动 <code>
+tg_entry_text     <主体> [元数据...]           # 自然语言主体，不套 <code>
+tg_entry_pair     <A> [B] [元数据...]          # 双机器值，A → B
+tg_entry_codes    <A> [B] [元数据...]          # 双机器值，A · B
+tg_add_entry        <变量名> <主体> [元数据...]
+tg_add_entry_text   <变量名> <主体> [元数据...]
+tg_add_entry_pair   <变量名> <A> [B] [元数据...]
+tg_add_entry_codes  <变量名> <A> [B] [元数据...]
+tree_conn         <0|1 是否末条>               # "  ├─ " / "  └─ "（已包 <code>）
+tree_sub          <0|1 是否末条>               # 二层子行前缀（与 tree_conn 等宽）
+tree_lines        <多行条目流>                 # 统一补树形前缀，末条 └─
+tree_fold         <多行条目流> [上限=8]         # 只截断 + 折叠行
+tree_code_fold    <多行裸文本> [上限=8]         # 转义 + <code> + 截断
+
+# 格式化 / 收尾
+format_bytes        <字节数>                   # 1.150 GiB（1024 进制 + 三位小数）
+tg_format_ms        <秒>                       # "27 毫秒" / "1.40 秒"
+tg_format_duration  <秒>                       # "X 小时 Y 分" / "X 分钟" / "X.XX 秒"
+tg_tail_safe        <文本> [字节=1200]         # UTF-8 安全的尾部截断
+tg_tail_file_safe   <文件> [字节=1200]
+tg_add_footer       <变量名> ["标签" "URL"]...  # 收尾区；附加链接对
+
+# 转义 / 发送
+escape_html     <文本>
+send_tg         <文本> [tier]                  # >3900 UTF-16 码元自动分片
+send_tg_chunked <文本> [tier]
 ```
 
+- `tg_route` 是发送层内部路由（解析 tier → `_TG_TOKEN` / `_TG_CHAT`），调用方不用；
+  新增内部函数一律用 `_` 前缀，机械校验只要求「非 `_` 前缀的公开助手」全部进本表。
 - `tg_add_*` 的第一参都是**变量名**（内部 `printf -v` + `${!1}`），写 `tg_add_title "$msg"` 是错的。
-- `tg_add_entry` 的主体收**裸文本**，内部才包 `<code>` 并转义；预先包好会二次转义。
+- `tg_add_entry` / `tg_add_entry_text` 的主体收**裸文本**，内部才转义（前者还包 `<code>`）；
+  预先包好会二次转义。
 - `tg_add_footer` 必须对**已积累正文**的变量原地追加；附加链接只在 `TG_RUN_URL` 非空时追加。
 - `send_tg` 空文本直接 `return 0`；`_tg_send_once` 返回 `2` 表示 HTML 解析失败（400，不重发）。
 
