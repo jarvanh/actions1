@@ -256,7 +256,7 @@ def inventory(filt):
     print("## 汇总")
     print(f"发送点 {len(rows)} 个：普通 {n['普通']} · alert {n['alert']} · 动态 {n['动态']}")
     print(f"标题字面量 {len(titles)} 条（变量拼接的只到变量名，需回文件确认取值）")
-    print("面板 / sendDocument / sendVideo 直连 bot，不在本清单内（见台账 · 域索引）")
+    print("面板 / sendDocument / sendVideo 直连 bot，不在本清单内（见台账「域 → 出口 → 默认档位」）")
     if n["动态"]:
         print(f"注意: {n['动态']} 个发送点的档位是变量，需人工确认取值后再判断档位")
 

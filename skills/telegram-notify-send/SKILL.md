@@ -126,22 +126,14 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
    - [ ] step 有 `if: always()` + 四项 env？
 3. 改到 openlist 域的脚本 → 跑回归（见 `references/api-reference.md` 末节）。
 
-## 必踩的坑（按真实事故排序）
+## 必踩的坑
 
-1. **二次转义**：`tree_code_fold` 收**裸文本**（一站式转义 + `<code>` + 折叠）；`tree_fold` 收**已构建条目流**（只截断）。对已含 `<code>` 的条目流用 `tree_code_fold` → `&` 变 `&amp;amp;`、整条 400 丢失。同理，`tg_add_entry` 的第二参是**裸主体**，预先包 `<code>` 也会被二次转义。
-2. **尾换行被吃掉**：`$(tg_entry …)` 不输出换行，命令替换又会吃掉它 → 累积多行列表一律用 `tg_add_entry`。
-3. **footer 两步写法**：`tg_add_footer` 必须原地追加到**已积累正文**的变量。先接在空变量上再拼正文 → 空行丢失（真源 `tg_add_footer` 上方注释）。
-4. **通知写在业务块末尾且无 `always()`**：任务失败时反而收不到通知——全库最常被忽略的接线坑。
-5. **pwsh 不自检**：dot-source 后要 `if (-not (Get-Command Send-TgMessage -ErrorAction SilentlyContinue)) { throw ... }`。调用未定义函数是终止错误，step 带 `continue-on-error` 时表现为**通知静默消失**。
-6. **python 兜底分支吞异常**：`try: send_telegram(...) except: pass` 会同时吞掉异常和返回值，400/429 完全没有痕迹。用 `notify_best_effort(stage, msg)`。
-7. **`<pre>` 超长**：原始输出取尾部 1200 字节（与 `file_split.sh` 同口径）——bash 分片虽会自动闭合标签，python 侧分片不闭合，截短后两套口径都不用操心。
-8. **大小口径**：用通知真源的 `format_bytes`（输出 `1.150 GiB`，1024 进制 + 三位小数），**不是** `du -h` 的 `1G`，也不要裸字节。python 侧两处同义实现改口径时要同步。
-9. **内嵌 python 段漏实现助手**：bash 里的 python 段无法 import 共享层，用到 `tg_entry` 却没在本文件定义 → NameError → 连整轮汇总通知一起丢。
-10. **通知写在会 `exit 1` 的步骤末尾**：步骤级 `always()` 只保证「任务失败时本步骤仍执行」，挡不住步骤**内部**早退——业务步骤在通知之前 `exit 1`，通知就整条不发。汇总类通知独立成 step，业务步骤只负责把结果落文件（`openclaw.yml` 的归档结果即此形态）。
-11. **`while read` 读结果文件丢掉最后一条**：末行缺尾换行时 `read` 返回非 0（变量已赋值），只写 `while IFS=$'\t' read -r a b c d` 会静默少一项。写成 `while IFS=$'\t' read -r a b c d || [ -n "${a:-}" ]`。
+全库坑清单的**唯一真源**在 `references/api-reference.md` 第 4 节（按真实事故排序，
+含二次转义、`exit 1` 早退、pwsh 自检、python 吞异常、`while read` 丢末条等 12 条），
+写完自检时逐条对照，此处不再重复维护第二份。
 
 ## 参考文件
 
-- `references/api-reference.md`——构件速查（三套实现对照、签名、折叠规则、时长/大小格式、状态图标）
+- `references/api-reference.md`——构件速查（三套实现对照、签名、折叠规则、时长/大小格式、状态图标）+ **全库唯一坑清单**（第 4 节）
 - `references/examples.md`——5 类真实范例（均摘自本仓库，用函数名/标题锚点定位）
 - `scripts/scaffold_notify.sh`——按场景生成骨架，省得手写

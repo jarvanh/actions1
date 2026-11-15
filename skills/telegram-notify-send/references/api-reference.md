@@ -54,17 +54,37 @@ tree_code_fold <多行裸文本> [上限=8]          # 转义 + <code> + 截断
 二者不可互换，误用会二次转义。折叠行并入条目流作末条（由 `tree_lines` 统一决定 `└─`），
 不要单独补一行造成双 `└─`。折叠与否看清单性质（流水折叠、结构性全量），判据见规范 · 折叠行。
 
-## 4. 高频坑
+## 4. 高频坑（全库唯一坑清单真源）
 
-1. **二次转义**：对已含 `<code>` 的条目流用 `tree_code_fold` → `&` 变 `&amp;amp;`、整条 400。
-2. **尾换行被吃掉**：`$(tg_entry …)` 不输出换行，命令替换还会吃掉它 → 累积多行用 `tg_add_entry`。
-3. **footer 两步写法**：先接在空变量上再拼正文 → 空行丢失。
-4. **函数体内 source 真源**：子 shell 只改自己的函数表，调用点对 `send_tg` 的覆写会被还原。
-5. **`<pre>` 超长**：原始输出取尾部 1200 字节，用 `tg_tail_safe` / `tg_tail_file_safe`，
+按真实事故排序。send SKILL 的「写后自检」与 audit skill 的复核都以本节为准，
+不在别处再维护第二份。
+
+1. **二次转义**：`tree_code_fold` 收**裸文本**（一站式转义 + `<code>` + 折叠）；`tree_fold`
+   收**已构建条目流**（只截断）。对已含 `<code>` 的条目流用 `tree_code_fold` →
+   `&` 变 `&amp;amp;`、整条 400 丢失。同理，`tg_add_entry` 的主体收**裸文本**，预先包
+   `<code>` 也会被二次转义。
+2. **尾换行被吃掉**：`$(tg_entry …)` 不输出换行，命令替换还会吃掉它 → 累积多行一律用
+   `tg_add_entry`。
+3. **footer 两步写法**：`tg_add_footer` 必须原地追加到**已积累正文**的变量；先接在空变量上
+   再拼正文 → 空行丢失（真源 `tg_add_footer` 上方注释）。
+4. **通知写在业务块末尾且无 `always()`**：任务失败时反而收不到通知——全库最常被忽略的
+   接线坑。
+5. **通知写在会 `exit 1` 的步骤末尾**：步骤级 `always()` 挡不住步骤**内部**早退——业务步骤
+   在通知之前 `exit 1`，通知整条不发。汇总类通知独立成 step，业务步骤只负责把结果落文件
+   （`openclaw.yml` 的归档结果即此形态）。
+6. **pwsh 不自检**：dot-source 后必须 `Get-Command Send-TgMessage`；调用未定义函数是终止
+   错误，step 带 `continue-on-error` 时表现为**通知静默消失**。
+7. **python 兜底吞异常**：`except: pass` 会同时吞掉异常和返回值，400/429 无痕迹。用
+   `notify_best_effort(stage, msg)`。
+8. **`<pre>` 超长**：原始输出取尾部 1200 字节，用 `tg_tail_safe` / `tg_tail_file_safe`，
    不要裸 `tail -c`（会切断 UTF-8）。
-6. **内嵌 python 段**：无法 import 共享层，用到的助手必须在本文件同义实现，漏实现会 `NameError`。
-7. **pwsh 不自检**：dot-source 后必须 `Get-Command Send-TgMessage`，否则调用未定义函数会静默消失。
-8. **python 兜底吞异常**：用 `notify_best_effort(stage, msg)`，不要 `except: pass`。
+9. **内嵌 python 段**：无法 import 共享层，用到的助手必须在本文件同义实现，漏实现会
+   `NameError` → 连整轮汇总通知一起丢。
+10. **函数体内 source 真源**：子 shell 只改自己的函数表，调用点对 `send_tg` 的覆写会被还原。
+11. **`while read` 读结果文件丢最后一条**：末行缺尾换行时 `read` 返回非 0（变量已赋值），
+    写成 `while IFS=$'\t' read -r a b c d || [ -n "${a:-}" ]`。
+12. **大小口径**：用真源 `format_bytes`（`1.150 GiB`，1024 进制 + 三位小数），不是 `du -h`
+    的 `1G`，也不要裸字节；python 侧同义实现改口径时要同步。
 
 回归基线（openlist 域）见
 [`telegram-notify-audit/references/audit-checklist.md`](../../telegram-notify-audit/references/audit-checklist.md)。

@@ -380,7 +380,7 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 对象：<code>openclaw.tar.gz</code>
 结论：上传失败 · 退出码 2
 原因：rclone 上传失败
-Run：<a href="https://…/runs/12345678">run 12345678</a>
+Run ID：<code>12345678</code>
 
 🧾 原始输出
 <pre>2026/09/12 09:00:00 ERROR : Failed to copy: connection reset</pre>
@@ -389,7 +389,10 @@ Run：<a href="https://…/runs/12345678">run 12345678</a>
 ```
 
 分节后跟 `<pre>` 时**不带** ` · N`；`<pre>` 是正文最后一块，其后只跟收尾区。
-Run 一律写可点短号（`<a href>`），不要贴整条 URL、也不要省成纯文本。
+Run 两种合规形态（二选一）：`Run ID：<code>短号</code>`（机器值走等宽）或
+`Run：<a href="…">run 短号</a>`（需要跨 run 跳转时用可点链接，如交接通知的
+「旧轮 / 继任」）。都不要贴整条 URL、也不要省成纯文本；收尾区已有「运行日志」链接，
+本 run 的告警用短号即可，不必再造第二条可点链接。
 
 ### 3.6 入口与凭据
 
