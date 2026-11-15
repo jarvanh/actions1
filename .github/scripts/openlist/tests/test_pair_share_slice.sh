@@ -40,7 +40,7 @@ source "$_REPO_ROOT/.github/scripts/openlist/task_engine.sh" 2>/dev/null
 OPENLIST_BATCH_TAIL_RESERVE=2700
 OPENLIST_SYNC_BUDGET_SECONDS=19200
 OPENLIST_SYNC_MIN_SLICE_SECONDS=600
-OPENLIST_PAIR_MIN_SLICE_SECONDS=1200
+OPENLIST_PAIR_MIN_SLICE_SECONDS=1500
 
 # ================= A. 份额数学 =================
 unset OPENLIST_SYNC_DEADLINE_EPOCH
@@ -51,9 +51,9 @@ unset OPENLIST_SYNC_DEADLINE_EPOCH
 # 轮初: 预算 19000s，尾部预留 2700 ⇒ 可用 ≈16300
 OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 19000 ))
 _v=$(_pair_share_seconds 21)
-[ "$_v" = "1200" ] \
-  && ok "A2 21 对轮初: 16300/21=776 → 抬到下限 1200（一个对至少能跑预览+实传）" \
-  || bad "A2 期望1200 实得 [${_v:-空}]"
+[ "$_v" = "1500" ] \
+  && ok "A2 21 对轮初: 16300/21=776 → 抬到下限 1500（一个对至少能跑预览+实传；2026-11-15 由 1200 上调）" \
+  || bad "A2 期望1500 实得 [${_v:-空}]"
 _v=$(_pair_share_seconds 2)
 [ "$_v" -gt 7000 ] && [ "$_v" -lt 8200 ] \
   && ok "A3 只剩 2 对: 各分一半（≈8100s，慢对可放开跑，无人被饿）" \
@@ -75,7 +75,7 @@ OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 800 ))
 _u=$(_budget_slice_seconds)
 _v=$(_pair_share_seconds 5)
 [ "$_v" = "$_u" ] \
-  && ok "A6 轮末(可用 ${_u}s < 下限 1200) → 份额取可用预算，不越过预算" \
+  && ok "A6 轮末(可用 ${_u}s < 下限 1500) → 份额取可用预算，不越过预算" \
   || bad "A6 期望 ${_u} 实得 [${_v:-空}]"
 # 大批量: 下限会过度承诺，但份额本身不得高于可用预算
 OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 19000 ))
