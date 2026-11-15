@@ -670,6 +670,12 @@ Runner 每轮通过 Tailscale 加入 tailnet（ephemeral，`--hostname=openclaw`
   任一缺失时 Tailscale 段整体跳过，只打一行告警（此时没有 SSH 入口）。
 - `ts.env` 字段：`TS_HOST`（MagicDNS 短名）/ `TS_FQDN`（完整域名）/ `TS_IP` / `RUN_URL`。
   `--hostname` 重命名有传播延迟，步骤会轮询最多 15 次等待名字收敛为 `openclaw.*`，避免地址每轮漂移。
+- **入口文案只认正名**（2026-11-15）：撞名降级成 `openclaw-1/-2`（或交接期的 `openclaw-next`）时，
+  就绪通知先等回收（30s 内重读 `ts.env`）；仍未收敛只发「入口回收中」短消息，**任何段落都不出现
+  临时主机名，也不发临时命令**——这类地址数分钟内即失效，还会与正名的 setup-env 通知互相打架
+  （run 43613385818：00:07 发出、00:07:17 取消）。`ts-reclaim-hostname.sh` 收回正名后补发一条
+  「SSH 入口已收回」通知（凭据由 Enable Tailscale SSH 步骤注入），形成闭环；失败告警的
+  「SSH 调试」行同样只认正名。就绪通知另附「发出时间（东八区）」，转发来的隔天旧消息可一眼识别。
 - AI 网关管理地址：`https://ai-api.${VD}.eu.org/manage`（cloudflared 命名隧道，与后端无关）。
 
 ### 出口节点（Exit Node）
