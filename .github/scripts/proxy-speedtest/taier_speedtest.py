@@ -189,6 +189,13 @@ CONFIG = {
     # 小池（待测 17）表 17 条 = 覆盖 100%，判死才可信。取 0.5 是留够余量：覆盖过半时
     # 「不在表里」已能大概率说明它真没测出延迟。
     'TAIER_PROBE_MIN_COVERAGE': float(os.environ.get('TAIER_PROBE_MIN_COVERAGE', '0.5') or 0.5),
+    # 控制面连续失败熔断：开测至今**零成功**、且连续 N 个节点都卡在泰尔控制面
+    # （getIpLocSP.php 的 EOF / 超时 / TLS 错）就提前收摊，拿已测节点照常出通知（退出码仍 0）。
+    # 0 = 关闭（逃生阀）。默认 10 ≈ 3.5 分钟（控制面失败单节点约 21 秒），与「烧满 5 小时」
+    # 比是极小代价；正常轮次的失败是零散的（定时轮实测 159 个里仅 7 个，从未连续）。
+    # 为什么不能只靠测活层：组延迟表覆盖不足时按契约 fail-open 全量放行（2026-11-14
+    # gistnodes 轮 23/1692=1.4% → 放行 1692 个），这一层是最后一道「别再烧预算」的闸。
+    'TAIER_CP_BREAKER_STREAK': int(os.environ.get('TAIER_CP_BREAKER_STREAK', '10') or 0),
     'TAIER_TIMEOUT': int(os.environ.get('TAIER_TIMEOUT', '120') or 120),
     'TAIER_SWITCH_SETTLE': float(os.environ.get('TAIER_SWITCH_SETTLE_SECONDS', '1.5') or 1.5),
     # 节点间隔（秒，0 = 不间隔）：降低对单一测速服务器的请求密度。
@@ -347,6 +354,39 @@ def filter_nodes_include(items: list, pattern: str):
     log_progress('nodes_include_filtered', before=len(items), kept=len(kept),
                  dropped=dropped, pattern=pattern)
     return kept, dropped
+
+
+# ---------------------------------------------------------------------------
+# 控制面连续失败熔断（2026-11-15）
+# ---------------------------------------------------------------------------
+# 引擎在正式测速前必须先向泰尔控制面取出口归属（getIpLocSP.php）。这一步失败时
+# 报错里一定带控制面域名，与「节点慢」「下行端点限频 403」这类正常失败可区分。
+# 签名只认这两个域：写宽了会把正常失败误判成故障（好节点被提前收摊），写窄了
+# 真故障不命中（整轮照样烧满预算）。
+_CONTROL_PLANE_ERROR_RE = re.compile(r'cnspeedtest\.cn|duoweisoft\.com', re.IGNORECASE)
+
+
+def is_control_plane_unreachable_error(error_text) -> bool:
+    """这条失败是否卡在泰尔控制面（而不是节点慢 / 下行端点限频）。"""
+    return bool(_CONTROL_PLANE_ERROR_RE.search(str(error_text or '')))
+
+
+def should_break_control_plane(fail_streak: int, ok_count: int, threshold: int) -> bool:
+    """「零成功 + 控制面失败连续 N 个」是否该提前收摊。
+
+    为什么需要（2026-11-14 run 43618341804 实测）：gist 抓来的 1692 个公开节点，
+    组延迟表只回来 23 个（覆盖 1.4%），按 fail-open 契约全量放行；随后 920/920 个
+    节点全部卡在 `getIpLocSP.php: EOF`——没有一个节点能到控制面。脚本按「逐节点
+    失败」记账，一路烧到 5 小时预算，产出 qualified=0 且 job 仍 success。
+
+    判据刻意收紧到「**一个成功都没有**」：中途控制面抖动时，已测出的节点仍有效，
+    不该收摊；只有开测到现在零成功、且连续 N 个都是控制面签名，才说明这批节点
+    （或这条代理链路）根本跑不了泰尔，继续测只剩烧预算。
+    threshold <= 0 = 关闭（逃生阀）。
+    """
+    if int(threshold) <= 0:
+        return False
+    return int(ok_count) == 0 and int(fail_streak) >= int(threshold)
 
 
 MODE_LABELS = {'single': '只测单线程', 'multi': '只测多线程', 'both': '单线程 + 多线程对照'}
@@ -1129,6 +1169,9 @@ def _run():
     runtime_abort_reason = ''
     _probe_alive = 0
     _probe_dead = 0
+    # 控制面连续失败计数（控制面熔断用，见 should_break_control_plane 的说明）
+    _cp_fail_streak = 0
+    _ok_count = 0
     for item in alive_items:
         # 判据放在**开下一个节点之前**：单节点 ≈ 31 秒，所以超发最多一个节点
         if should_stop_for_budget(_budget_deadline):
@@ -1214,6 +1257,26 @@ def _run():
                 tail = (err or out or '').strip().splitlines()
                 row['error'] = (tail[-1][:200] if tail else f'rc={rc}（无输出）')
         results.append(row)
+        # 控制面熔断计数（2026-11-15，见 should_break_control_plane 的说明）：
+        # 成功节点重置连败；失败节点只有卡在泰尔控制面（getIpLocSP 的 EOF/超时/
+        # TLS 错）才累计连败——「节点慢」「下行端点限频 403」不触发收摊。
+        if row['ok']:
+            _ok_count += 1
+            _cp_fail_streak = 0
+        elif is_control_plane_unreachable_error(row['error'] or (err or out or '')):
+            _cp_fail_streak += 1
+        else:
+            _cp_fail_streak = 0
+        if should_break_control_plane(_cp_fail_streak, _ok_count,
+                                      CONFIG['TAIER_CP_BREAKER_STREAK']):
+            aborted_due_to_runtime = True
+            runtime_abort_reason = (
+                f'控制面连续失败收摊：开测零成功、连续 {_cp_fail_streak} 个节点卡在泰尔控制面，'
+                f'已测 {len(results)}/{len(alive_items)} 个节点')
+            log_progress('taier_control_plane_breaker_stop', streak=_cp_fail_streak,
+                         tested=len(results), total=len(alive_items),
+                         threshold=CONFIG['TAIER_CP_BREAKER_STREAK'])
+            break
         log_progress('taier_node_done', name=name, rc=rc, region=row['region'],
                      rtt=row['rtt'], up=row['up'], down=row['down'],
                      exit_ip=row['exit_ip'], bypass=row['bypass'])
