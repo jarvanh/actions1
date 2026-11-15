@@ -50,7 +50,17 @@ _up_names="workbuddy trae2api zcode2api qingyan autoclaw qoder2api"
 # 提前放行 —— 单个上游 rc 缺席（脚本 bug / 早退未写兜底 rc，run 41294902778 即
 # autoclaw 内联版从未写 rc）不再把其余五个全拖满 480s。宽限后仍缺席的按缺席口径
 # 降级放行（渠道可能降级，照常部署），语义与超时路径一致。
-_up_deadline=$(( $(date +%s) + 480 ))
+# 2026-11-15（修复 B）：交接轮上限缩到 240s（宽限 30s）——上游派发已在 ai-priority
+# 步改真并行，正常 1-2 分钟内全部就绪；480s 是为「串行慢」时代留的余量，交接时
+# 它直接叠加在下线时长上（run 43707372232：6 rc 实际秒级到齐，等齐门白等到上限）。
+# 普通轮维持 480s 不动（early-dispatch 后台化架构不变，非本修复范围）。
+if [ -f /tmp/openclaw-handoff/successor-run-id ]; then
+  _p5b_max=240; _p5b_grace=30
+  echo "🔀 [P5b] 交接轮：上限 ${_p5b_max}s、宽限 ${_p5b_grace}s"
+else
+  _p5b_max=480; _p5b_grace=60
+fi
+_up_deadline=$(( $(date +%s) + _p5b_max ))
 _up_grace_deadline=""
 while [ "$(date +%s)" -lt "$_up_deadline" ]; do
   _up_done=0
@@ -60,11 +70,11 @@ while [ "$(date +%s)" -lt "$_up_deadline" ]; do
   if [ "$_up_done" -eq 6 ]; then break; fi
   # 5/6 到齐且宽限死线未定 → 设定宽限死线（60s 后放行）
   if [ "$_up_done" -eq 5 ] && [ -z "$_up_grace_deadline" ]; then
-    _up_grace_deadline=$(( $(date +%s) + 60 ))
-    echo "⏳ [P5b] 5/6 上游就绪，余下 1 个宽限 60s（到点按缺席降级放行）"
+    _up_grace_deadline=$(( $(date +%s) + _p5b_grace ))
+    echo "⏳ [P5b] 5/6 上游就绪，余下 1 个宽限 ${_p5b_grace}s（到点按缺席降级放行）"
   fi
   if [ -n "$_up_grace_deadline" ] && [ "$(date +%s)" -ge "$_up_grace_deadline" ]; then
-    echo "⚠️ [P5b] 宽限 60s 内最后 1 个上游仍未出 rc，提前放行"
+    echo "⚠️ [P5b] 宽限 ${_p5b_grace}s 内最后 1 个上游仍未出 rc，提前放行"
     break
   fi
   sleep 2
@@ -79,7 +89,7 @@ for _u in $_up_names; do
     fi
     tail -n 8 "/opt/logs/upstream-$_u.log" 2>/dev/null | sed 's/^/    │ /' || true
   else
-    echo "⚠️ [P5b] 上游 $_u 未在 480s 内完成（照常部署，渠道可能降级）"
+    echo "⚠️ [P5b] 上游 $_u 未在 ${_p5b_max}s 内完成（照常部署，渠道可能降级）"
   fi
 done
 

@@ -10,6 +10,9 @@
 # 全部沿用原逻辑，只换传输通道。
 # 取不到 → 什么都不播种 → gate 走 ai.json（Dropbox 归档，Phase 1.5 行为）。
 # 这是「直传优先、失败回退 Dropbox」的落地方式。
+# 2026-11-15：明确失败（旧轮 dump.rc≠0 / tar 校验不过 / 300s 单次超时）时写
+# /tmp/handoff-ai-fail.reason，供 gate:ai_archives_done 立即放行 —— 旧轮明确说
+# 快路径没戏时，继续空等 ai.json 只会白耗 60s（run 43707372232 实测）。
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=protocol.sh
@@ -53,6 +56,7 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
     _rc="$(cat "$AI_PAYLOAD_DIR/dump.rc" 2>/dev/null)"
     if [ "$_rc" != "0" ]; then
       echo "⚠️ [ai-fetch] 旧轮 dump 失败（rc=${_rc:-空}），走 Dropbox 回退"
+      echo "old_dump_rc=${_rc:-empty}" > /tmp/handoff-ai-fail.reason
       break
     fi
     if [ ! -s "$AI_PAYLOAD_DIR/omnivol.tar" ] || [ ! -s "$AI_PAYLOAD_DIR/omnideploy.tar" ]; then
@@ -63,6 +67,10 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
     if ! tar tf "$AI_PAYLOAD_DIR/omnivol.tar" >/dev/null 2>&1 \
        || ! tar tf "$AI_PAYLOAD_DIR/omnideploy.tar" >/dev/null 2>&1; then
       echo "⚠️ [ai-fetch] dump 包校验不过（第 ${_i} 次）"
+      # 2026-11-15：同一轮内校验失败 ≥3 次 = 旧轮的包坏了（不是没传完），
+      # 600s 预算内继续重传大概率拿到同一个坏包 → 标记明确失败，gate 提前放行
+      _fail=$(( ${_fail:-0} + 1 ))
+      [ "$_fail" -ge 3 ] && { echo "old_payload_corrupt" > /tmp/handoff-ai-fail.reason; break; }
       sleep 5; continue
     fi
     # ① 部署目录（compose + .env）：让 run-ai-gateway 的 restore 走「已就绪」短路
@@ -85,4 +93,10 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
   sleep 5
 done
 echo "ℹ️ [ai-fetch] 快路径未就绪 —— AI 栈走 Dropbox 归档（Phase 1.5 行为）"
+# 600s 预算耗尽仍没拿到包：若旧轮 payload 里只有半包（omnivol 缺失/为空且 dump.rc
+# 从未变 0），多半是旧轮 dump 进程死了 —— 同样标记明确失败，gate 不必再等 ai.json
+target="$AI_PAYLOAD_DIR/omnivol.tar"
+if [ ! -s "$target" ]; then
+  echo "old_payload_incomplete" > /tmp/handoff-ai-fail.reason
+fi
 exit 0

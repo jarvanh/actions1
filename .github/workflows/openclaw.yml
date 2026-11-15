@@ -1590,13 +1590,23 @@ jobs:
           _gate=ai_archives_done; [ "${OPENCLAW_AI_EARLY:-}" != "1" ] && _gate=archives_done
           bash "$GITHUB_WORKSPACE/.github/scripts/handoff/gate.sh" "$_gate" || true
           _dispatched=0
+          # 2026-11-15 改真并行（修复 B）：原前台串行把 6 个部署脚本逐个跑完才进等齐门，
+          # 总时长 = Σ(各脚本)，而 P5b 等齐门等待的又是同一批 rc —— 串行除了拉长
+          # 关键路径毫无收益（各上游互不依赖；交接时的零丢失由 gate 放行保证）。
+          # 改后台并行 + 统一 wait：总时长 ≈ max(各脚本)，实测收口 rc 从集中到秒级
+          # （run 43707372232：6 rc 全部挤在 11s 内，串行全程却拖了 18min）。
+          # run-ai-gateway.sh 的 P5b 等齐门消费的 rc 契约不变。
+          _dispatch_pids=""
           for _u in workbuddy trae2api zcode2api qingyan qoder2api autoclaw; do
             [ -f "/tmp/upstream-rc-$_u" ] && continue
-            bash -eo pipefail "$OC_DIR/run-$( [ "$_u" = qingyan ] && echo qingyan || echo "$_u" ).sh" \
-              || echo "::warning::[ai-priority] $_u 返回非零（收口 step 兜底）"
+            ( bash -eo pipefail "$OC_DIR/run-$( [ "$_u" = qingyan ] && echo qingyan || echo "$_u" ).sh" \
+                || echo "::warning::[ai-priority] $_u 返回非零（收口 step 兜底）" ) \
+              > "/tmp/ai-priority-$_u.log" 2>&1 &
+            _dispatch_pids="$_dispatch_pids $!"
             _dispatched=$((_dispatched + 1))
           done
-          echo "🚀 [ai-priority] 已派发 ${_dispatched}/6 上游；OmniRoute 由 AI 网关步骤的等齐门最后起"
+          for _p in $_dispatch_pids; do wait "$_p" || true; done
+          echo "🚀 [ai-priority] 已派发 ${_dispatched}/6 上游（真并行，各自日志 /tmp/ai-priority-<上游>.log）；OmniRoute 由等齐门最后起"
           # AI 网关本体也在这里起：内部 P5b 等齐门会等上面 6 个 rc 就绪，
           # 因此 OmniRoute 天然是最后起的那个（主人要求）。
           bash -eo pipefail "$OC_DIR/run-ai-gateway.sh" \
@@ -5695,6 +5705,16 @@ jobs:
             cat "$PHASE0_LOG" 2>/dev/null || echo "[phase0] 日志缺失"
             echo "===== [phase0] end ====="
           fi
+
+          # 2026-11-15（修复 C）：ai-archives 在旧轮侧也走 setsid 后台，日志只落 /tmp
+          # 随 VM 回收消失 —— run 43707372232 排障时 CI 里全程零输出，根因只能靠
+          # 继任者 VM 的残迹倒推。这里在收尾尾部把日志回显进 step 日志（与 phase0 同款）。
+          echo "===== [ai-archives] 交接 AI 栈快照结果 ====="
+          tail -n 30 /tmp/handoff-ai-archives.log 2>/dev/null \
+            || echo "（无 handoff-ai-archives.log：本轮非交接轮或快照未跑）"
+          [ -f /tmp/handoff-ai-archives.ok ] && echo "✅ ai.json marker 已写" \
+            || echo "⚠️ ai.json marker 未写（继任者闸门将超时/提前放行，走 Dropbox 兼底）"
+          echo "===== [ai-archives] end ====="
 
           # ── 2026-10-29 下线提速（A1）：网关停止从收尾第一步后置到最后一步 ──
           # 原顺序 = 停网关 → 停服/归档，网关下线窗口 = 整个收尾（实测 647s）。

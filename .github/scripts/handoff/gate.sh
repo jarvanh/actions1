@@ -73,10 +73,23 @@ for _i in $(seq 1 $(( wait_sec / 5 ))); do
       if [ -s /tmp/openclaw-prefetch/OmniRoute.tar.gz ]; then
         : > "$PASS_FILE"; exit 0
       fi
+      # 2026-11-15：旧轮明确说快路径没戏（dump.rc≠0 / 包坏 / 半包残骸），
+      # 继续等 ai.json 只会白耗 60s+（run 43707372232 实测）→ 立即放行。
+      # ai-fetch 会在 Dropbox 回退路径照常拿 OmniRoute.tar.gz（阶段A已上传），
+      # 零丢失口径不变（ai-fetch 日志可追：/tmp/handoff-ai-fail.reason）。
+      if [ -s /tmp/handoff-ai-fail.reason ]; then
+        echo "⚡ [gate:$need] 快路径明确失败（$(head -c 120 /tmp/handoff-ai-fail.reason)）→ 立即放行，走 Dropbox 归档兜底"
+        : > "$PASS_FILE"; exit 0
+      fi
       _ai="$(handoff_ai_state "${HANDOFF_OF}")"
       case "$_ai" in done) : > "$PASS_FILE"; exit 0 ;; esac
       _old="$(handoff_old_state "${HANDOFF_OF}")"
       case "$_old" in archives_done|handoff_done) : > "$PASS_FILE"; exit 0 ;; esac
+      # 2026-11-15：交接失败（handoff_aborted）也放行 —— 旧轮 aborted 后走传统收尾
+      # （服务照常归档上传），继任者用「旧轮收尾中上传的数据」与 archives_done 分支
+      # 同口径。run 43707372232 实测：旧轮 19:36 aborted，gate 空等到 19:41:21
+      # archives_done 才放行，多耗 5 分钟。
+      case "$_old" in handoff_aborted) : > "$PASS_FILE"; exit 0 ;; esac
       ;;
   esac
   sleep 5
