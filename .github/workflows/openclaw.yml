@@ -4590,6 +4590,15 @@ jobs:
             echo "handoff_done=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # 2026-11-15：归档辅助脚本由「Start background archive loop」步骤生成。
+          # 该步骤没跑到（继任者接管失败/被取消、Install 失败）时脚本不存在，
+          # 收尾仍会照跑 → zcode 归档 rc=127「No such file or directory」并刷告警
+          #（run 43627206503 实测）。这类轮次从未部署服务，没有可归档内容，直接跳过。
+          if [ ! -f /tmp/create-openclaw-archive.sh ] || [ ! -f /tmp/create-zcode-archive.sh ]; then
+            echo "ℹ️ 归档脚本未生成（本轮未完成启动或已被取消），跳过最终归档与告警"
+            echo "handoff_done=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # 通知真源在 step 顶层 source 一次（勿挪进下面的函数体，理由见启动步骤同名注释 / 规范 · 通知函数的正确接法）
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
           # 2026-10-22 对象级锁（值须与 Start background archive loop 侧保持一致，

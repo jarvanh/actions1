@@ -100,11 +100,21 @@ _zc_rc=0
     rsync://"${OLD_TS_IP}:${HANDOFF_RSYNC_PORT}"/zc/ "$HOME/.zcode/" 2>&1 \
   | tail -n 4; exit "${PIPESTATUS[0]}" ) > /tmp/handoff-rsync-zc.log 2>&1 & _zc_pid=$!
 _rs_t0=$(date +%s)
-if ! timeout 780 rsync -a --delete --exclude-from="$EXCLUDES" --timeout=60 --stats \
-      rsync://"${OLD_TS_IP}:${HANDOFF_RSYNC_PORT}"/oc/ "$HOME/.openclaw/" > /tmp/handoff-rsync-oc.log 2>&1; then
-  wait "$_zc_pid" 2>/dev/null || true
-  abort_takeover "openclaw 增量 rsync 失败（$(tail -n 3 /tmp/handoff-rsync-oc.log 2>/dev/null | tr '\n' ' ')）"
-fi
+# 2026-11-15：rsync rc=24（"some files vanished before they could be transferred"）
+# 对活跃树是**正常**语义 —— 源目录里的日志/临时文件在扫描与传输之间被删。
+# 旧代码把所有非 0 都当失败：run 43678802340 就因 zc rc=24 自我取消，交接白失败一次。
+# 现在 0/24 都放行（24 记警告），真正的错误（23/超时 124 等）仍 abort。
+_oc_rc=0
+timeout 780 rsync -a --delete --exclude-from="$EXCLUDES" --timeout=60 --stats \
+  rsync://"${OLD_TS_IP}:${HANDOFF_RSYNC_PORT}"/oc/ "$HOME/.openclaw/" > /tmp/handoff-rsync-oc.log 2>&1 || _oc_rc=$?
+case "$_oc_rc" in
+  0) ;;
+  24) echo "⚠️ [takeover] openclaw rsync rc=24（部分文件传输中消失，活跃树正常现象）" ;;
+  *)
+    wait "$_zc_pid" 2>/dev/null || true
+    abort_takeover "openclaw 增量 rsync 失败 rc=$_oc_rc（$(tail -n 3 /tmp/handoff-rsync-oc.log 2>/dev/null | tr '\n' ' ')）"
+    ;;
+esac
 wait "$_zc_pid" || _zc_rc=$?
 _rs_t1=$(date +%s)
 _rs_bytes=$(awk -F': ' '/^Total transferred file size/{gsub(/,/,"",$2); print $2+0}' /tmp/handoff-rsync-oc.log 2>/dev/null | head -1)
@@ -114,7 +124,15 @@ echo "📊 [takeover] oc rsync: $(grep -E 'Number of regular files transferred' 
 # 吞吐是「真实下线时长」的唯一未知量：每次交接都记下来，用于校准生产预期
 echo "📊 [takeover] oc 传输量 $(( _rs_bytes / 1048576 ))MB / ${_rs_sec}s = $(( _rs_bytes / 1048576 / _rs_sec ))MB/s"
 echo "📊 [takeover] zc rsync: $(grep -E 'total transferred file size|Number of regular files transferred' /tmp/handoff-rsync-zc.log 2>/dev/null | tr '\n' ' ')"
-[ "$_zc_rc" = "0" ] || abort_takeover "zcode 增量 rsync 失败 rc=$_zc_rc（$(tail -n 3 /tmp/handoff-rsync-zc.log 2>/dev/null | tr '\n' ' ')）"
+case "$_zc_rc" in
+  0) ;;
+  # 同上：zcode 目录里 rollout/日志/临时文件持续增删，rc=24 不代表数据缺失。
+  # 真源 db.sqlite 已由 cutover checkpoint、下面还有 quick_check 兜底。
+  24) echo "⚠️ [takeover] zcode rsync rc=24（部分文件传输中消失，活跃树正常现象）" ;;
+  *)  abort_takeover "zcode 增量 rsync 失败 rc=$_zc_rc（$(tail -n 3 /tmp/handoff-rsync-zc.log 2>/dev/null | tr '\n' ' ')）" ;;
+esac
+# 零丢失兜底：无论 rc 如何，真源库必须落到继任者盘上
+[ -s "$HOME/.zcode/cli/db/db.sqlite" ] || abort_takeover "zcode 真源库缺失（cli/db/db.sqlite）"
 
 # ── 4.5 Phase 2：AI 整包直取（**后台**，不占聊天路径）──
 # 关键：这段绝不能同步等 —— 旧轮要先停 AI 栈再打包，最坏 2-3 分钟；
