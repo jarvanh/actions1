@@ -986,6 +986,13 @@ jobs:
       - name: Enable Tailscale SSH
         id: ts_ssh
         if: ${{ always() && steps.ts.outcome == 'success' }}
+        env:
+          # 回收守护（ts-reclaim-hostname.sh）收回正名后要补发「入口已收回」通知，
+          # 故本步注入发送层凭据与 run 链接（2026-11-15：此前守护收回名字后静默，
+          # 主人手上还留着撞名轮的临时地址）
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # 开启 Exit Node 前置条件：启用内核转发
@@ -2096,10 +2103,17 @@ jobs:
               ts_ip=$(grep '^TS_IP=' "$HOME/ts.env" | tail -n 1 | cut -d= -f2- || true)
             fi
             ssh_entry="Tailscale SSH 暂不可用 · 稍后查看 Actions 日志"
-            if [ -n "$ts_host" ] && [ -n "$ts_ip" ]; then
-              ssh_entry="tailscale ssh runner@${ts_host} · 或 ssh runner@${ts_ip}"
-            elif [ -n "$ts_host" ]; then
-              ssh_entry="tailscale ssh runner@${ts_host}"
+            # 2026-11-15：只认正名。撞名降级出的 openclaw-1/-2、交接期的
+            # openclaw-next 都不是主人该用的入口（数分钟即失效，且与正名通知
+            # 互相打架）—— 非正名时给结论，不给临时地址。
+            if [ "${ts_host:-}" = "openclaw" ]; then
+              if [ -n "$ts_ip" ]; then
+                ssh_entry="tailscale ssh runner@${ts_host} · 或 ssh runner@${ts_ip}"
+              else
+                ssh_entry="tailscale ssh runner@${ts_host}"
+              fi
+            elif [ -n "${ts_host:-}" ]; then
+              ssh_entry="SSH 入口回收中 · 收回后自动补发正名"
             fi
 
             current_version=""
@@ -2686,6 +2700,32 @@ jobs:
           # 按套分节（规范 · 入口与凭据：多套同类信息各占一分节）+ 组内树形条目，凭据/网络/出口/AI 网关
           # 各归其节，避免一级平铺 10 行 kv 混排
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
+
+          # 2026-11-15：入口只发正名。撞名降级成 openclaw-1/-2 时，这条命令和
+          # RustDesk 直连都是数分钟内就失效的死链（run 43613385818：00:07 发出、
+          # 00:07:17 取消），还会与 setup-env 通知的正名打架。做法：先等回收
+          # （守护每 120s 一轮，快轮询期 15s），仍未收敛就只报「回收中」、不发
+          # 任何临时地址；收回后由 ts-reclaim-hostname.sh 补发正名入口。
+          TS_CANONICAL="openclaw"
+          if [ "${TS_HOST:-}" != "$TS_CANONICAL" ]; then
+            echo "⚠️ 入口名暂为 ${TS_HOST:-未知}（非正名），等待收回 $TS_CANONICAL"
+            for _i in $(seq 1 6); do
+              sleep 5
+              # shellcheck disable=SC1090
+              . "$HOME/ts.env" 2>/dev/null || true
+              [ "${TS_HOST:-}" = "$TS_CANONICAL" ] && break
+            done
+          fi
+          if [ "${TS_HOST:-}" != "$TS_CANONICAL" ]; then
+            msg=""
+            tg_add_title msg "🟡 OpenClaw Runner 已启动 · 入口回收中"
+            tg_add_note msg "本轮主机名被上一轮残留节点占用，暂用临时名；按规则不发送临时地址（数分钟内即失效）。后台每 120 秒重试收回，收回后自动补发正名入口。"
+            tg_add_footer msg
+            send_tg "$msg" alert || true
+            echo "已推送「入口回收中」通知（未暴露临时地址）"
+            exit 0
+          fi
+
           msg=""
           tg_add_title msg "🟢 OpenClaw Runner 已就绪"
 
@@ -2745,6 +2785,9 @@ jobs:
             tg_add_block msg "$(tree_lines "$_entries")"
             tg_add_note msg "说明：云端主包本轮不可用，已回退到历史版本。"
           fi
+          # 通知年龄可辨：转发/置顶的旧消息一眼能看出不是本轮（2026-11-15 事故：
+          # 18 小时前的「已就绪」被当成当前入口转发核对）
+          tg_add_note msg "发出时间：$(TZ=Asia/Shanghai date '+%m-%d %H:%M')（东八区）"
           # footer 读 TG_RUN_URL（由本 step 的 env 注入），时长走开机时刻兜底
           tg_add_footer msg
           # 走发送层而非 curl 直发：429 重试已内建，HTML 解析失败直接报错（规范 · 发送层），

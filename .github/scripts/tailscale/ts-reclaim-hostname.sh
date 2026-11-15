@@ -133,12 +133,34 @@ _rebind_serves() {
   echo "[ts-reclaim] $(date -u +%FT%TZ) 🔁 serve 重建完成: 成功 ${_ok} 条, 失败 ${_fail} 条"
 }
 
+# 2026-11-15：收回后补发「正名入口」通知。此前守护只改 ts.env，主人手上
+#   还留着撞名轮的临时地址（openclaw-1），两条通知互相打架。凭据由 workflow
+#   在拉起守护的步骤注入；缺席时静默跳过（不影响回收本身）。
+_notify_reclaimed() {
+  local _tg="${GITHUB_WORKSPACE:-${_here}/../../..}/.github/scripts/telegram/tg_notify.sh"
+  [ -r "$_tg" ] || _tg="${_here}/../telegram/tg_notify.sh"
+  [ -r "$_tg" ] || return 0
+  [ -n "${TELEGRAM_BOT_TOKEN:-}${TG_BOT_TOKEN:-}" ] || return 0
+  # shellcheck disable=SC1090
+  . "$_tg" || return 0
+  local _msg=""
+  tg_add_title _msg "🟢 SSH 入口已收回"
+  tg_add_note _msg "正名已回到 openclaw，serve 端口已按现状重建；此前若收到过临时地址，已作废。"
+  tg_add_section _msg "🔐 SSH · 1"
+  tg_add_block _msg "$(tree_lines "命令：<code>ssh runner@openclaw</code>")"
+  tg_add_footer _msg
+  send_tg "$_msg" alert || true
+  echo "[ts-reclaim] $(date -u +%FT%TZ) 📨 已补发正名入口通知"
+}
+
 # 2026-11-11：交接后前 5 分钟快速轮询（15s），之后回到 120s 常态。
 # 原实现「先 sleep 120 再检查」→ 最早一次尝试在启动后 2 分钟；叠加旧 VM 迟迟
 # 不放名字，实测 22:38:34 serving → 22:47:02 才收回，客户端 12 分钟连到死节点。
 # 现在旧 VM 会在 rsync_done 后主动改名让位（cutover.sh 3.6），这里配合快轮询，
 # 通常能在交出后 1-2 分钟内收回。僵尸清理依赖控制面收敛，前 5 分钟每 4 轮做一次即可。
 _round=0
+# 启动时若已是正名，只重建 serve 即退，不补发通知（避免每轮重复一条）
+_INITIAL_CUR="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
 while true; do
   _round=$((_round + 1))
   if [ "$_round" -le 20 ]; then _pause=15; else _pause=120; fi
@@ -157,6 +179,7 @@ while true; do
       printf 'TS_IP=%s\n' "$IP"
     } > "$HOME/ts.env"
     echo "[ts-reclaim] $(date -u +%FT%TZ) ✅ 已收回 ${TARGET}，serve 已重建，ts.env 已更新"
+    [ "${_INITIAL_CUR:-}" = "$TARGET" ] || _notify_reclaimed
     # OS hostname 同步（2026-11-12）：继任轮开头写的是 openclaw-next，名字收回后
     # 一并把 OS hostname 改回 openclaw，避免整轮 hostname 与 tailnet 名不一致。
     if [ -f "${_here}/ts-sync-os-hostname.sh" ]; then
