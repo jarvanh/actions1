@@ -59,7 +59,7 @@
     # 最多等 40s；超时只告警不阻断 —— 代理坏了应表现为账号冷却告警，
     # 而不是网关起不来。
     z2a_ensure_egress_proxy() {
-      local src="/dropbox/self-hosted/zcode2api/proxy" unit ok=0 code=""
+      local src="/dropbox/self-hosted/zcode2api/proxy" unit ok=0 code="" t0=$SECONDS
       unit="$HOME/.config/systemd/user/zcode2api-proxy.service"
       if [ ! -f "$unit" ] && [ -f "$src/zcode2api-proxy.service" ]; then
         mkdir -p "$(dirname "$unit")"
@@ -71,7 +71,7 @@
         return 0
       fi
       systemctl --user start zcode2api-proxy.service 2>/dev/null || true
-      for _ in $(seq 1 40); do
+      while [ $((SECONDS - t0)) -lt 40 ]; do
         code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' -x http://127.0.0.1:7891 https://chat.z.ai 2>/dev/null || true)"
         if [ -n "$code" ] && [ "$code" != "000" ]; then
           ok=1

@@ -299,7 +299,7 @@ Environment=ZCODE_GATEWAY_KEY=${ZCODE_GATEWAY_KEY}
 # 「无可用账号」（2026-11-15 19:41 实锤：网关先起、代理 8 分钟后才拉起，4 账号
 # 全冷却）。最多等 40s，超时仍启动 —— 代理故障应表现为账号冷却告警，而不是
 # 网关起不来。
-ExecStartPre=/bin/sh -c 'for i in \$(seq 1 40); do curl -fsS --max-time 3 -o /dev/null -x http://127.0.0.1:7891 https://chat.z.ai 2>/dev/null && exit 0; sleep 1; done; echo "warn: egress proxy not ready after 40s" >&2; exit 0'
+ExecStartPre=/bin/sh -c 'timeout 40 sh -c "while :; do curl -fsS --max-time 3 -o /dev/null -x http://127.0.0.1:7891 https://chat.z.ai 2>/dev/null && exit 0; sleep 1; done" || echo "warn: egress proxy not ready after 40s" >&2; exit 0'
 ExecStart=/tmp/local_zcode2api/.venv/bin/python cli.py serve
 Restart=always
 RestartSec=5
