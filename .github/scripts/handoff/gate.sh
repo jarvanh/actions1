@@ -74,7 +74,7 @@ for _i in $(seq 1 $(( wait_sec / 5 ))); do
         : > "$PASS_FILE"; exit 0
       fi
       # 2026-11-15：旧轮明确说快路径没戏（dump.rc≠0 / 包坏 / 半包残骸），
-      # 继续等 ai.json 只会白耗 60s+（run 43707372232 实测）→ 立即放行。
+      # 继续等 ai.json 只会白耗 → 立即放行。
       # ai-fetch 会在 Dropbox 回退路径照常拿 OmniRoute.tar.gz（阶段A已上传），
       # 零丢失口径不变（ai-fetch 日志可追：/tmp/handoff-ai-fail.reason）。
       if [ -s /tmp/handoff-ai-fail.reason ]; then
@@ -90,6 +90,18 @@ for _i in $(seq 1 $(( wait_sec / 5 ))); do
       # 同口径。run 43707372232 实测：旧轮 19:36 aborted，gate 空等到 19:41:21
       # archives_done 才放行，多耗 5 分钟。
       case "$_old" in handoff_aborted) : > "$PASS_FILE"; exit 0 ;; esac
+      # 2026-11-15：旧轮 run 已死（completed/失败/被取消）且没写任何可用标记时，
+      # 不再等满 25min 上限 —— 死轮不会再写 ai.json，等到头也是超时放行（同一
+      # 降级语义），只是白耗。盯 run 状态与 takeover.sh 同款（每 30s 查一次）。
+      # 注意 handoff_aborted≠run 死：aborted 轮还活着走传统收尾，前面分支已放行；
+      # 这里兜的是「半路被硬上限杀死/手取消」的轮（mark-archives-done 没跑的场景）。
+      if [ $((_i % 6)) -eq 0 ]; then
+        case "$(handoff_run_status "${HANDOFF_OF}")" in
+          completed|failure|cancelled)
+            echo "⚡ [gate:$need] 旧轮 run=${HANDOFF_OF} 已 ${_old:-<无标记>} 且 run 已结束 → 放行（死轮不会再写 ai.json）"
+            : > "$PASS_FILE"; exit 0 ;;
+        esac
+      fi
       ;;
   esac
   sleep 5
