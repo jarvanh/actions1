@@ -30,8 +30,8 @@
     # 凭据清单（只列文件名，绝不回显内容——真实凭据；与 wb_notify 同口径）
     TRAE_CREDS="$(cd "$TRAE_DATA/auths" 2>/dev/null && ls -1 trae*.json 2>/dev/null || true)"
 
-    # trae2api 通知的版式真源：与 wb_notify（workbuddy 段）完全同构
-    # （docs/telegram-notify.md 2.5；三个调用点共用本函数，改版式只改这里）。
+    # trae2api 通知的字段口径真源：与 wb_notify（workbuddy 段）完全同构
+    # （docs/openclaw.md「九、通知口径」9.2；三个调用点共用本函数，改版式只改这里）。
     # 用法: trae_notify <标题> <结论> <版本> <更新说明> <原因> <原始输出> [<接口/鉴权>]
     # 第 7 参 = 服务就绪态，取 "1" 才补「接口 / 鉴权」两行：失败时服务已不在，
     # 展示一个指向已停进程的地址会误导读者（与 wb_notify 同口径）。
@@ -211,7 +211,7 @@
         >/tmp/trae-rel.out 2>/tmp/trae-rel.err && _gh_rc=0 || _gh_rc=$?
       TRAE_REL="$(cat /tmp/trae-rel.out 2>/dev/null || true)"
       TRAE_REL_ERR="$(cat /tmp/trae-rel.err 2>/dev/null || true)"
-      [ "$_gh_rc" -ne 0 ] && [ -z "$TRAE_REL_ERR" ] && TRAE_REL_ERR="gh api exit=$_gh_rc"
+      [ "$_gh_rc" -ne 0 ] && [ -z "$TRAE_REL_ERR" ] && TRAE_REL_ERR="gh api 退出码 $_gh_rc"
       if [ -n "$TRAE_REL" ]; then
         [ "$_try" -gt 1 ] && echo "   （第 ${_try} 次尝试成功）"
         break
@@ -241,7 +241,7 @@
         >/tmp/trae-sums.out 2>/tmp/trae-sums.err && _curl_rc=0 || _curl_rc=$?
       TRAE_SHA256="$(awk '$2 == "./trae2api-linux-amd64" {print $1}' /tmp/trae-sums.out 2>/dev/null || true)"
       TRAE_SHA_ERR="$(cat /tmp/trae-sums.err 2>/dev/null || true)"
-      [ "$_curl_rc" -ne 0 ] && [ -z "$TRAE_SHA_ERR" ] && TRAE_SHA_ERR="curl exit=$_curl_rc"
+      [ "$_curl_rc" -ne 0 ] && [ -z "$TRAE_SHA_ERR" ] && TRAE_SHA_ERR="curl 退出码 $_curl_rc"
       if [ -n "$TRAE_SHA256" ]; then
         [ "$_try" -gt 1 ] && echo "   （第 ${_try} 次尝试成功）"
         break

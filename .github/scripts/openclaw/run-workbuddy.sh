@@ -48,7 +48,8 @@
     WB_LOG="$WB_DIR/logs/serve.log"
     : > "$WB_META"
 
-    # workbuddy 通知的版式真源（docs/telegram-notify.md 2.5 workbuddy 段）。
+    # workbuddy 通知的字段口径真源（docs/openclaw.md「九、通知口径」9.1；版式规则在
+    # docs/telegram-notify.md）。
     # 三个调用点（step 内就绪/失败、收尾停止）在同一作业但不同 shell，函数无法跨 step
     # 共享，故版式在两处各存一份；改版式必须同时改两处，否则停止通知会掉队。
     #
@@ -68,9 +69,6 @@
     #   免费模型列**具体模型名**（取自上游模型目录接口，见采集处注释），
     #   全量展示不折叠 —— 只给「免费模型 N」读者不知道是哪个，等于没说。
     wb_notify() {
-      # 发送成功才置 1；调用方据此决定是否写「本轮已启动」标记，
-      # 避免发送失败后下一轮被标记挡住、通知永久丢失。
-      WB_NOTIFY_OK=0
       if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
         local _msg=""
         tg_add_title _msg "$1"
@@ -226,7 +224,9 @@
         # 既不砍数据，也避免主消息在客户端被折叠得太长。
         WB_RATES_BLOCK=""
         if [ -n "${WB_RATES_TXT:-}" ]; then
-          WB_RATES_BLOCK="$(tg_add_title WB_RATES_BLOCK "📊 workbuddy-gateway 模型倍率 · 模型数量 ${WB_RATES_N:-0}${WB_RATES_FREE_TAG:-}"; tg_add_pre WB_RATES_BLOCK "$WB_RATES_TXT"; tg_add_footer WB_RATES_BLOCK; printf '%s' "$WB_RATES_BLOCK")"
+          # 计数形态与 gw_add_rates_section 同口径（📊 … · N，不带文字）；
+          # 来源前缀 `workbuddy-gateway · ` 区分它与 trae/zcode 各自的倍率独立通知
+          WB_RATES_BLOCK="$(tg_add_title WB_RATES_BLOCK "📊 workbuddy-gateway 模型倍率 · ${WB_RATES_N:-0}${WB_RATES_FREE_TAG:-}"; tg_add_pre WB_RATES_BLOCK "$WB_RATES_TXT"; tg_add_footer WB_RATES_BLOCK; printf '%s' "$WB_RATES_BLOCK")"
         fi
         # 用量 + 流水（看板独有，2026-10-05 补进通知）：只渲染本网关自己，
         # 避免 wb 通知里出现 zcode 数据（语义串台）。调 board.py 的 CLI 子命令 ——
@@ -238,7 +238,7 @@
         gw_add_board_usage _msg workbuddy 12
         gw_add_original_output _msg "$6"
         if gw_send _msg alert; then
-          WB_NOTIFY_OK=1
+          echo "✅ workbuddy-gateway 通知已发送"
         else
           echo "::warning::TG 通知发送失败（不影响任务）"
         fi
@@ -1133,31 +1133,17 @@
       fi
     fi
 
-    # 接力轮次的判据：本文件由「Trigger next OpenClaw run」在上一轮收尾时以
-    # workflow_dispatch 接力启动（长跑保活标准形态），但接力轮同样会跑一遍本步骤，
-    # 于是同一份 service 同一份账号池会**每个 run 各推一条**已就绪通知。
-    # 用本步骤自己的结果文件区分（本步骤无 id、幂等引用 steps.run_workbuddy 不安全，
-    # 且其结果在本步骤内不可读）：文件在 → 上一轮启动过 = 接力轮，不再发就绪通知。
-    # 按标记文件失败处理（多发一条好过漏发；下次重装后自然收敛）。
-    WB_RUN_TAG_FILE="/tmp/workbuddy-serve-run-tag"
-    WB_RELAUNCH=0
-    WB_PREV_TAG=""
-    if [ -s "$WB_RUN_TAG_FILE" ]; then
-      WB_RELAUNCH=1
-      WB_PREV_TAG="$(head -n 1 "$WB_RUN_TAG_FILE" 2>/dev/null || true)"
-    fi
+    # 就绪通知每次启动都发（2026-10-24 主人定）：services.sh ensure 每轮 restart
+    # 一次，接力轮同样会走到这里。不按「首轮 / 接力轮」静默——之前那套 /tmp 标记
+    # 文件已移除，别再加回来（域文档：docs/openclaw.md「九、通知口径」9.1）。
     if [ "$WB_READY" = "1" ]; then
       if [ -n "$WB_ACCOUNTS" ]; then
-        # 2026-10-24 主人定：就绪通知每次启动都发。services.sh ensure
-        # 每轮 restart 一次，故这里不再按「接力轮」静默。
         wb_notify "🟢 workbuddy-gateway 已就绪" "$WB_ACCOUNTS" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1
-        [ "$WB_NOTIFY_OK" = "1" ] && printf '%s\n' "${GITHUB_RUN_ID:-manual}" > "$WB_RUN_TAG_FILE"
       else
         # 网关自己起来了、但账号池为空：多半是数据目录里还没有 workbuddy*.json
         # （二维码登录只能人工做），如实标注为可用性问题，不假装就绪。
         wb_notify "⚠️ workbuddy-gateway 已启动 · 无可用账号" \
           "账号池为空 · 需人工扫码登录" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1
-        [ "$WB_NOTIFY_OK" = "1" ] && printf '%s\n' "${GITHUB_RUN_ID:-manual}" > "$WB_RUN_TAG_FILE"
       fi
     else
       WB_TAIL="$(tg_tail_file_safe "$WB_LOG" 1200)"

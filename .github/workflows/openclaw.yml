@@ -4096,7 +4096,7 @@ jobs:
 
 
           # 用法: send_telegram_alert <对象> <结论> <原因> [原始输出]
-          # 版式（docs/telegram-notify.md 2.3 / 4.3 / 规范 · 多行块）：对象是机器返回的包名 → <code>；
+          # 版式（规范 · 机器值 / 规范 · 多行块 / 规范 · 告警通知）：对象是机器返回的包名 → <code>；
           # 结论与原因是人写的自然语言 → 裸文本 kv；rclone/tar 的原始输出 → <pre>。
           # 此前四者拼成一整串塞进单个 <pre>，自然语言被一并等宽化，与全库
           # 「kv 区 + 明细分节」形态不一致。
@@ -5431,9 +5431,10 @@ jobs:
           ls -la "$WB_DIR"/workbuddy*.json 2>/dev/null | head -10 || true
 
           wb_stop_notify() {
-            # 收尾停止通知。版式与运行步骤里的 wb_notify 同源（docs/telegram-notify.md
-            # 2.5 workbuddy 段）——两者分处不同 step、shell 不共享，只能各存一份副本，
-            # 改版式必须两处一起改，这是这类双份实现最容易「改一处漏一处」的地方。
+            # 收尾停止通知。版式与运行步骤里的 wb_notify 同源（字段口径见
+            # docs/openclaw.md「九、通知口径」9.1）——两者分处不同 step、shell 不共享，
+            # 只能各存一份副本，改版式必须两处一起改，这是这类双份实现最容易
+            # 「改一处漏一处」的地方。
             # 收尾没有 WB_CREDS / WB_POOL（那是启动步骤的局部变量），本函数只出
             # 结论 + 版本 + 数据目录：网关已停，再列账号池会让人以为服务还在跑。
             if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
