@@ -2258,6 +2258,37 @@ jobs:
             echo "⚠️ Telegram alert skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty"
           fi
 
+      - name: Run Cloudflared Tunnel
+        # 2026-10-29 下线优化（B1）：同 Install Cloudflared 护栏口径；隧道此刻才启动，
+        # 网关（18789）已先就绪 —— 公网可达性恢复略晚于网关健康，换取下线关键路径缩短。
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          # 2026-11-10 Phase 1：继任轮等旧轮交出（其隧道已随网关同步停止）才起本侧
+          # connector —— 双 connector 会分流流量到已停服的旧 VM。serve 轮直通。
+          bash "$GITHUB_WORKSPACE/.github/scripts/handoff/gate.sh" cutover || true
+          mkdir -p ~/.openclaw/logs
+
+          cloudflared tunnel route dns oc oc.'${{ secrets.VD }}'.eu.org || true
+          # Managed by the unified systemd tunnel manager: tunnels get
+          # Restart=always, so a killed connector comes back on its own.
+          # Falls back to nohup only if the manager is unavailable.
+          if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
+            bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure oc || true
+            # 2026-11-11：qb（看板 Mini App）**不在此处启动** —— 本步在交接轮里早于
+            # 「Run quota-board」，而看板要等 AI 闸门放行才起（可能几分钟），
+            # tunnels.sh 的端口等待只有 60s → qb 被静默跳过，看板公网入口直接缺失
+            #（实测：qb.<VD>.eu.org 报 Cloudflare 1033）。改由 Run quota-board
+            # 在确认看板存活后启动（含 tunnels.sh 缺失时的 nohup 兜底）。
+          else
+            nohup cloudflared tunnel run --url http://127.0.0.1:18789 oc \
+              > ~/.openclaw/logs/cloudflared_oc.log 2>&1 &
+            echo $! > ~/.openclaw/logs/cloudflared_oc.pid
+          fi
+
+          sleep 10
+          echo "OpenClaw tunnel started (systemd-managed)."
+
       - name: Post-cutover upstream services (继任轮：等旧轮最终归档 → 上游+AI 网关)
         id: post_cutover_upstream
         # 2026-11-10 Phase 1：只对继任轮存在。六个上游 + AI 网关在原位置的步骤已被
@@ -2297,6 +2328,14 @@ jobs:
           # 2026-11-11 优先级重排：6 个上游 + AI 网关已由「AI 网关优先恢复」步骤
           # 在交接完成后立刻派发（本步骤在 Run OpenClaw 之后，太晚）。这里只做
           # AI 网关收口（等齐门/健康判定仍在 run-ai-gateway.sh 内，OmniRoute 最后起）。
+          # 2026-11-16：ai-priority 已后台化。本步只做**兜底**，绝不阻塞后续步骤
+          # （看板/rsstt 排在本步之后，等 AI 会重演「AI 慢 → 全站慢」）。
+          # 后台任务还活着 → 直接跳过（它会起 AI）；已结束但没起成 → 这里补跑。
+          _aipid="$(cat /tmp/post-health-ai-priority.pid 2>/dev/null | tr -dc '0-9')"
+          if [ -n "${_aipid:-}" ] && kill -0 "$_aipid" 2>/dev/null; then
+            echo "⏭️ [post-cutover] 后台 AI 网关恢复仍在进行（pid ${_aipid}），本步跳过兜底（收口在 Collect）"
+            exit 0
+          fi
           # 幂等：若 ai-priority 已把 run-ai-gateway 跑起来（rc 文件在），此处跳过。
           if [ ! -f /tmp/ai-gateway-started ]; then
             bash -eo pipefail "$OC_DIR/run-ai-gateway.sh" \
@@ -2316,37 +2355,6 @@ jobs:
           else
             echo "ℹ️ 走 Dropbox 回退：OmniRoute 整包来自云端归档"
           fi
-
-      - name: Run Cloudflared Tunnel
-        # 2026-10-29 下线优化（B1）：同 Install Cloudflared 护栏口径；隧道此刻才启动，
-        # 网关（18789）已先就绪 —— 公网可达性恢复略晚于网关健康，换取下线关键路径缩短。
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          # 2026-11-10 Phase 1：继任轮等旧轮交出（其隧道已随网关同步停止）才起本侧
-          # connector —— 双 connector 会分流流量到已停服的旧 VM。serve 轮直通。
-          bash "$GITHUB_WORKSPACE/.github/scripts/handoff/gate.sh" cutover || true
-          mkdir -p ~/.openclaw/logs
-
-          cloudflared tunnel route dns oc oc.'${{ secrets.VD }}'.eu.org || true
-          # Managed by the unified systemd tunnel manager: tunnels get
-          # Restart=always, so a killed connector comes back on its own.
-          # Falls back to nohup only if the manager is unavailable.
-          if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
-            bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure oc || true
-            # 2026-11-11：qb（看板 Mini App）**不在此处启动** —— 本步在交接轮里早于
-            # 「Run quota-board」，而看板要等 AI 闸门放行才起（可能几分钟），
-            # tunnels.sh 的端口等待只有 60s → qb 被静默跳过，看板公网入口直接缺失
-            #（实测：qb.<VD>.eu.org 报 Cloudflare 1033）。改由 Run quota-board
-            # 在确认看板存活后启动（含 tunnels.sh 缺失时的 nohup 兜底）。
-          else
-            nohup cloudflared tunnel run --url http://127.0.0.1:18789 oc \
-              > ~/.openclaw/logs/cloudflared_oc.log 2>&1 &
-            echo $! > ~/.openclaw/logs/cloudflared_oc.pid
-          fi
-
-          sleep 10
-          echo "OpenClaw tunnel started (systemd-managed)."
 
       - name: Install auxiliary CLIs (clawhub)
         # 2026-11-01：ZCode 数据还原已前移为「Restore ZCode data (先于 Tailscale 接入)」
@@ -2865,8 +2873,10 @@ jobs:
             _rcf="/tmp/post-health-${_tag}.rc"
             _pidf="/tmp/post-health-${_tag}.pid"
             _waited=0
+            # ai-priority 的 AI 闸门最长 1500s，给 1700s；其余三项沿用 600s。
+            _limit=600; [ "$_tag" = ai-priority ] && _limit=1700
             [ -f "$_pidf" ] || continue
-            while [ ! -s "$_rcf" ] && [ "$_waited" -lt 600 ]; do
+            while [ ! -s "$_rcf" ] && [ "$_waited" -lt "$_limit" ]; do
               _p="$(cat "$_pidf" 2>/dev/null | tr -dc '0-9')"
               if [ -n "${_p:-}" ] && ! kill -0 "$_p" 2>/dev/null; then
                 sleep 2
