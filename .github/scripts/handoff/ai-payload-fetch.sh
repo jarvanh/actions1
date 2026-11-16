@@ -45,6 +45,8 @@ if [ ! -f "$_TAKEOVER_TS_FILE" ] || [ "$(( _NOW - $(stat -c %Y "$_TAKEOVER_TS_FI
 fi
 _TAKEOVER_TS="$(tr -dc '0-9' < "$_TAKEOVER_TS_FILE" 2>/dev/null || echo 0)"
 rm -f "$AI_PAYLOAD_DIR/dump.rc" "$AI_PAYLOAD_DIR/omnivol.tar" "$AI_PAYLOAD_DIR/omnideploy.tar"
+# 同时清掉上一轮的远程收尾信号（否则旧 VM 会在等待里秒读 done/giveup → 提前关 rsyncd）
+rclone deletefile "${HANDOFF_REMOTE_DIR%/}/ai-fetch.json" >/dev/null 2>&1 || true
 echo "[$(date '+%F %T')] ai-fetch 本轮基线 ts=${_TAKEOVER_TS}（早于此的 dump.rc 视为上一轮残留）"
 
 # ── Phase 2b 快路径：取「裸卷 dump」并装进同名卷 ──
@@ -106,6 +108,12 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
             sh -c 'test -s /data/storage.sqlite -o -s /data/server.env' >/dev/null 2>&1; then
       : > /tmp/handoff-ai-fast.ok
       echo "⚡ [ai-fetch] 卷直装完成（$(du -h "$AI_PAYLOAD_DIR/omnivol.tar" | awk '{print $1}')）—— AI 栈走快路径，跳过 Dropbox"
+      # 2026-11-17：把收尾信号写进 new.json（旧 VM 的 cutover 轮询它来决定
+      # 何时关 rsyncd —— /tmp 是各 VM 本地的，旧 VM 看不到 fast.ok）
+      _nf=/tmp/handoff-new-ai-fetch.json
+      printf '{"ai_fetch":"done","ts":%s}' "$(date +%s)" > "$_nf" 2>/dev/null || true
+      rclone copyto "$_nf" "${HANDOFF_REMOTE_DIR%/}/ai-fetch.json" >/dev/null 2>&1 || true
+      rm -f "$_nf"
       exit 0
     fi
     echo "⚠️ [ai-fetch] 卷装载失败（第 ${_i} 次）"
@@ -113,6 +121,11 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
   sleep 5
 done
 echo "ℹ️ [ai-fetch] 快路径未就绪 —— AI 栈走 Dropbox 归档（Phase 1.5 行为）"
+# 通知旧 VM：本机已放弃快路径（rsyncd 可以关了）
+_nf=/tmp/handoff-new-ai-fetch.json
+printf '{"ai_fetch":"%s","ts":%s}' "$([ -s /tmp/handoff-ai-fail.reason ] && echo giveup || echo timeout)" "$(date +%s)" > "$_nf" 2>/dev/null || true
+rclone copyto "$_nf" "${HANDOFF_REMOTE_DIR%/}/ai-fetch.json" >/dev/null 2>&1 || true
+rm -f "$_nf"
 # 600s 预算耗尽仍没拿到包：若旧轮 payload 里只有半包（omnivol 缺失/为空且 dump.rc
 # 从未变 0），多半是旧轮 dump 进程死了 —— 同样标记明确失败，gate 不必再等 ai.json
 target="$AI_PAYLOAD_DIR/omnivol.tar"

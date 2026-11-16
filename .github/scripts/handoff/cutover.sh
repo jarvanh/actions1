@@ -237,6 +237,27 @@ for _i in $(seq 1 $(( HANDOFF_SERVING_WAIT_SEC / 5 ))); do
   case "$_ns" in
     serving)
       handoff_put "$HANDOFF_OLD_REMOTE" "$(handoff_old_json handoff_done "$SID" "$TS_IP" "$CUTOVER_TS" "$BASE_MARKER")"
+      # 2026-11-17 复核发现的结构冲突：继任者 AI 快路径的 2.1GB omnivol.tar
+      # 正从本机 rsyncd 拉取（~30-60s），而 serving 由聊天网关健康触发（常在
+      # 90-100s 就到）→ 此前立即 stop_rsyncd 会把快路径掐死（实测 omnivol 只传到
+      # 130MB，AI 被迫走 Dropbox 回退）。
+      # 修法：serving 后**先等 AI 传输收尾**再关通道 —— 轮询继任者的
+      # fast.ok（拉完了）或 fail.reason（放弃了），≤180s；超时也关（保底）。
+      # 改名让位顺延到 stop_rsyncd 之后（主机名空窗多 ~1 分钟，15s 快轮询可找回）。
+      if [ -n "${SID:-}" ]; then
+        _aiwait=0
+        echo "⏳ [cutover] 等继任者 AI 快路径收尾（≤180s；dropbox:…/ai-fetch.json）…"
+        while [ "$_aiwait" -lt 180 ]; do
+          _af="$(rclone cat "${HANDOFF_REMOTE_DIR%/}/ai-fetch.json" 2>/dev/null | jq -r '.ai_fetch // empty' 2>/dev/null)"
+          case "$_af" in
+            done|giveup|timeout)
+              echo "✅ [cutover] AI 传输已收尾（ai_fetch=$_af，等待 ${_aiwait}s）"
+              break ;;
+          esac
+          sleep 5; _aiwait=$((_aiwait + 5))
+        done
+        [ "$_aiwait" -ge 180 ] && echo "⚠️ [cutover] AI 收尾等待超时 180s，关闭 rsyncd（保底，快路径可能未完成）"
+      fi
       stop_rsyncd
       # 让出 openclaw 主机名（改名而非 logout：本机仍在 tailnet，回退可达）
       _retired="openclaw-retired-${GITHUB_RUN_ID:-x}"
