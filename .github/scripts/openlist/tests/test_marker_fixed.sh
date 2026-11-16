@@ -30,7 +30,10 @@ echo 0 > "$RCAT_N"; : > "$RCAP_FILE"
 rclone() {
   case "$1" in
     cat) cat "$MARKER_FILE" ;;
-    rcat) cat > "$RCAP_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
+    # rcat 同时更新 MARKER_FILE: 真实 rcat 是"覆盖远端"，cat 随后读到的就是新内容。
+    # 首版只写 RCAP_FILE（两份存储），导致"写完再读"读到旧内容 ⇒ 无法验证
+    # 拒写分支的作废流程（2026-11-16）。
+    rcat) cat > "$RCAP_FILE"; cat "$RCAP_FILE" > "$MARKER_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
     lsjson)
       # carry-forward 探测: 路径含 "aligned" 视为目标端已出现（无需继承）
       case "$2" in
@@ -161,7 +164,10 @@ export DELFILE
 rclone() {
   case "$1" in
     cat) cat "$MARKER_FILE" ;;
-    rcat) cat > "$RCAP_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
+    # rcat 同时更新 MARKER_FILE: 真实 rcat 是"覆盖远端"，cat 随后读到的就是新内容。
+    # 首版只写 RCAP_FILE（两份存储），导致"写完再读"读到旧内容 ⇒ 无法验证
+    # 拒写分支的作废流程（2026-11-16）。
+    rcat) cat > "$RCAP_FILE"; cat "$RCAP_FILE" > "$MARKER_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
     lsjson)
       case "$2" in
         *sz123*) echo '[{"Name":"x","Size":123}]' ;;
@@ -206,7 +212,10 @@ echo 0 > "$RCAT_N"; : > "$RCAP_FILE"
 rclone() {
   case "$1" in
     cat) cat "$MARKER_FILE" ;;
-    rcat) cat > "$RCAP_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
+    # rcat 同时更新 MARKER_FILE: 真实 rcat 是"覆盖远端"，cat 随后读到的就是新内容。
+    # 首版只写 RCAP_FILE（两份存储），导致"写完再读"读到旧内容 ⇒ 无法验证
+    # 拒写分支的作废流程（2026-11-16）。
+    rcat) cat > "$RCAP_FILE"; cat "$RCAP_FILE" > "$MARKER_FILE"; _n=$(cat "$RCAT_N"); echo $((_n+1)) > "$RCAT_N" ;;
     lsjson) echo '[]' ;;
     size)
       case "$2" in
@@ -230,12 +239,19 @@ echo "$PAY9" | jq -e 'has("last_success") | not' >/dev/null && ok "9e 骨架不�
 [ "$(echo "$PAY9" | jq -r '.fixed_files[0].alternative')" = "f27becd6/0 (1).jpg" ] && ok "9f alternative 原样保留（供下轮 filter）" || bad "9f"
 echo "$PAY9" | jq -e '.fix_blacklist | has("fold/a.jpg|copyto_original")' >/dev/null && ok "9g 黑名单一并持久化" || bad "9g"
 echo "$SR9" | grep -q "已保存修复状态" && ok "9h 拒写分支保存日志可见（可观测）" || bad "9h: $SR9"
-# 9i-9j: 有旧 marker——只并修复字段，游标字段（last_success 等）不被触碰
+# 9i-9j: 有旧 marker——并修复字段，且**必须作废它的跳过依据**
+#   2026-11-16 语义变更（run 43774563232 实证）: 旧版只并修复字段、把
+#   last_success 原样留着，于是"拒写 ⇒ 下轮重新同步"这句日志是假的 ——
+#   下轮照样命中 24h 跳过窗口，缺 147 个文件的子树按天空转。
+#   新契约: **清掉 last_success**（不是改成当前时间，也不是删整个 marker），
+#   让下轮直接放行做真同步；fixed_files / fix_blacklist 必须一字不动。
+#   （9i 原来断言"last_success 保留"，那条契约本身就是这个缺陷的编码。）
 echo 0 > "$RCAT_N"; : > "$RCAP_FILE"
 printf '%s' '{"last_success":"2020-01-01T00:00:00Z","source_count":18031,"fixed_files":[],"fix_blacklist":{}}' > "$MARKER_FILE"
 save_sync_marker "onedrive:src" "openlist:dst" "taskZ" >/dev/null 2>&1
 PAY9B=$(cat "$RCAP_FILE")
-[ "$(echo "$PAY9B" | jq -r '.last_success')" = "2020-01-01T00:00:00Z" ] && ok "9i 旧 marker last_success 保留（游标不前进）" || bad "9i: $PAY9B"
+echo "$PAY9B" | jq -e 'has("last_success") | not' >/dev/null && ok "9i 旧 marker 的 last_success 已作废（下轮放行做真同步）" || bad "9i: $PAY9B"
+echo "$PAY9B" | jq -e '(.skip_basis_invalidated_at // "") != ""' >/dev/null && ok "9i2 作废留痕（可回溯）" || bad "9i2: $PAY9B"
 [ "$(echo "$PAY9B" | jq -r '.fixed_count')" = "1" ] && ok "9j 修复记录并入旧 marker" || bad "9j"
 
 echo "-----"

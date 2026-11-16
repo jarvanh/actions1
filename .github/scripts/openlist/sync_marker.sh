@@ -422,6 +422,50 @@ save_fix_state_marker() {
 # 记录: 时间戳、源端路径、目标路径、源端大小/文件数、顶层目录列表、已修复文件列表
 # 已修复文件列表 (fixed_files): 通过缺失文件修复机制以非原名上传的文件
 #   预览时从差异中扣减这部分，避免显示"虚假缺失"
+# ===== 拒写标记时作废它的"跳过依据"（清 last_success）=====
+# 为什么必须有（2026-11-16 加，run 43774563232 日志实证）:
+#   子目录 ..._HongKongDoll_HongKongDoll 玩偶姐姐 3 的实际时序:
+#     23:36:39 「24小时内已成功同步（距今 22 小时），跳过」   ← 只按时间戳判跳过
+#     23:36:40 「⚠️ 拒绝写入同步标记: 目标端文件数 2 < 源端 149（缺失 147 个）」
+#     23:36:40 「  本次不写 marker，下次运行将重新同步」        ← **这句是假的**
+#   拒写分支保留旧 marker（连 last_success 一起），下轮 check_sync_marker
+#   又读到"22 小时前成功过" ⇒ 继续跳过 ⇒ 要等 skip 窗口（默认 24h）过期
+#   才真正重试一次，失败后 last_success 仍是旧的 ⇒ 这个子目录进入
+#   **按天为周期原地打转**，147 个文件永远补不上。
+#   指纹: 连续三轮日志里这些子树的数字逐字节相同 ——
+#     2/149（缺147）· 0/297 · 23/297 · 52/422 · 272/422 · 19842/23818（缺3976）。
+#   它们是 5.7 TiB 剩余量里"传输了也不下降"的那部分的主因之一。
+# 处置: 清掉 last_success，让「下次运行将重新同步」成真（下轮直接放行做真同步）。
+#   **只清跳过依据**，fixed_files / fix_blacklist / 顶层目录列表等一律保留:
+#   fixed_files 既是"一键还原"的唯一索引，也是修复产物的 filter 保护来源，
+#   删整个 marker 会让替代名产物被当成"源端不存在的多余文件"删掉。
+# 用法: _invalidate_marker_skip_basis <marker_path>
+# 返回: 0=已作废或无需作废；1=作废失败（原 marker 保持不动）
+_invalidate_marker_skip_basis() {
+  local marker_path="$1"
+  local cur
+  cur=$(rclone cat "$marker_path" 2>/dev/null) || return 0
+  [ -n "$cur" ] || return 0
+  # 没有 last_success 就没什么可作废的（不看注释、只看字段）
+  echo "$cur" | jq -e 'type == "object" and ((.last_success // "") != "")' >/dev/null 2>&1 || return 0
+  local old_ts out
+  old_ts=$(echo "$cur" | jq -r '.last_success // ""' 2>/dev/null)
+  out=$(printf '%s\n' "$cur" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    del(.last_success)
+    | .skip_basis_invalidated_at = $ts
+    | .skip_basis_invalidated_reason = "目标端文件数少于源端：上次成功记录被后端真值证伪"' 2>/dev/null)
+  if [ -z "$out" ]; then
+    echo "⚠️ 作废旧跳过依据失败（JSON 构造为空，保留原 marker）: ${marker_path}" >&2
+    return 1
+  fi
+  if _marker_write "$out" "$marker_path" 2>/dev/null; then
+    echo "   ↳ 已作废跳过依据（last_success=${old_ts}）→ 下轮不再按时间窗口跳过，改为真同步；修复记录/黑名单保持不变"
+    return 0
+  fi
+  echo "⚠️ 作废旧跳过依据写回失败（保留原 marker）: ${marker_path}" >&2
+  return 1
+}
+
 # 文件修复方法假成功黑名单 (fix_blacklist): {文件: 方法条目集合}
 #   （2026-09-16 起条目为**归一语义 ID**，形如 "copyto_original" 或
 #    "copyto_original|zip_split_original"，| 分隔；此前存冗长全名）
@@ -490,6 +534,9 @@ save_sync_marker() {
     if ! save_fix_state_marker "$source_path" "$dest_path" "$task_name"; then
       echo "⚠️ 拒写分支的修复记录保存失败（见上方日志）—— 下轮这些产物将无 filter 保护"
     fi
+    # 让上面那句「下次运行将重新同步」成真（见 _invalidate_marker_skip_basis 头注释）:
+    # 不清 last_success 的话，下轮会继续命中跳过窗口，这棵子树按 24h 周期空转。
+    _invalidate_marker_skip_basis "$marker_path" || true
     return 1
   fi
 
