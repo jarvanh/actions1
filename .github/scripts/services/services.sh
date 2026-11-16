@@ -432,6 +432,12 @@ StartLimitBurst=0
 # 超时后由 systemd 重启。POLL_SECS=60，180s 留足三轮余量（避免采集中小抖动误杀）。
 Type=notify
 WatchdogSec=180
+# 2026-11-17 复核补：Type=notify 下 READY=1 必须在 TimeoutStartSec 内到达，
+# 默认 90s 对「新 VM 首轮采集 3 个网关 + TG 菜单重建」偏紧（交接后实例尤甚）——
+# 实测被判超时杀掉、Restart=always 反复重启，表现为「看板时有时无」
+# （2026-11-16 17:30 的「服务入口未就绪 7/8：quota-board(8321)」就是它）。
+# 300s 与 Dropbox 真源口径一致。
+TimeoutStartSec=300
 # 复用全局敏感变量：TELEGRAM_BOT_TOKEN_*、TELEGRAM_CHAT_ID、TRAE2API_KEY
 # 2026-10-30 R4 去耦：`-` 前缀容忍缺失（配合 board.py 无头降级，见其 main()）
 EnvironmentFile=-%h/.openclaw/.env
