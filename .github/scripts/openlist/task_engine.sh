@@ -278,7 +278,13 @@ _pairs_parallel_reap_one() {
           [ -n "$_be3" ] && unset "_busy_be[$_be3]"
           _done_n=$((_done_n + 1))
           _trunc_n=$((_trunc_n + 1))
-          echo "⏰ 第 $((_idx + 1))/${_pp_n} 个同步对已超份额 ${_ovm}min（宽限 ${_ovg}s）→ 强制收摊交棒（子 marker/修复状态已落盘，非后端故障）"
+          # 强杀计数（2026-11-16 加）: 被 kill -9 的 worker 来不及写 .done，
+          # 它的 transferred= 永远拿不到 ⇒ total_transferred **不含**这部分字节。
+          # 不单独计数的话，日志里的「传输 X GiB」看着像完整值，实际是下界
+          # （实测 run 43849396256: 6 对正常交回 105.878 GiB，另有 10 对被强杀，
+          #   它们已传的字节全部不在这个数里）。收尾会把这一点写出来。
+          _killed_n=$((_killed_n + 1))
+          echo "⏰ 第 $((_idx + 1))/${_pp_n} 个同步对已超份额 ${_ovm}min（宽限 ${_ovg}s）→ 强制收摊交棒（子 marker/修复状态已落盘，非后端故障；本对已传字节不计入本轮合计）"
           return 0
         fi
       fi
@@ -298,7 +304,7 @@ _run_registry_pairs_parallel() {
   declare -A _pp_pid=() _pp_be=() _pp_dst=() _busy_be=() _started=() _quota_logged=() _pp_pd=()
   # 这几个是"调用方局部": _pairs_parallel_reap_one 靠 bash 动态作用域改它们，
   # 因此既不能声明在 reap 内部（改了看不见），也不能不声明（会污染全局）
-  local _pp_n="$n" _done_n=0 _failed_n=0 _trunc_n=0 total_transferred=0
+  local _pp_n="$n" _done_n=0 _failed_n=0 _trunc_n=0 _killed_n=0 total_transferred=0
   local _k idx _e _dst _be _pick _pick_be _running=0
   echo "🔀 并行同步对: 上限 ${_par} 个（同一后端不并行），本轮候选 ${n} 个"
   while :; do
@@ -493,6 +499,14 @@ _run_registry_pairs_parallel() {
     #   「本轮 N 个（失败 0）」会被读成全部同步完成 —— 与硬顶放弃同源的误读。
     if [ "${_trunc_n:-0}" -gt 0 ]; then
       echo "   ↳ 其中 ${_trunc_n} 个是份额到点主动交棒（未完，子 marker/游标已持久化，下轮接力；非后端故障）"
+    fi
+    # 传输量的口径必须是下界（2026-11-16 加，run 43849396256 实证）:
+    #   上面那个「传输 X」只累加**写出了 .done 的 worker** 的 transferred。
+    #   被 kill -9 的对来不及写 .done ⇒ 它们已传的字节完全不在里面。
+    #   实测该轮 16 对里 10 对是被强杀的，日志只报 6 对的 105.878 GiB；
+    #   不做说明会让人把"下界"当"全量"，进而把提速幅度算错（我此前就踩过）。
+    if [ "${_killed_n:-0}" -gt 0 ]; then
+      echo "   ↳ 注意: 另有 ${_killed_n} 对被强杀，其在途字节未计入上面的传输量 ⇒ 该数是**下界**（真实传输只会更多；下界也足够判断趋势，但不要拿它做精确工期换算）"
     fi
   fi
   return 0
