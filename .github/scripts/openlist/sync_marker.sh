@@ -444,10 +444,26 @@ save_fix_state_marker() {
 _invalidate_marker_skip_basis() {
   local marker_path="$1"
   local cur
-  cur=$(rclone cat "$marker_path" 2>/dev/null) || return 0
-  [ -n "$cur" ] || return 0
+  # 静默路径必须留痕（2026-11-16 加，run 43926191361 实证）:
+  #   该轮 6 处拒写全部零输出零生效，复盘时无法区分"无需作废"与
+  #   "cat 失败静默放弃"——两类问题对策完全不同，不留痕等于白修。
+  #   实测归因: cat 失败（rclone 瞬态，4 秒前 check_sync_marker 刚成功读过
+  #   同一 marker）。故 cat 失败降为 1（调用方 || true 兜底，不影响流程），
+  #   其余静默路径各打一行原因。
+  cur=$(rclone cat "$marker_path" 2>/dev/null)
+  if [ $? -ne 0 ]; then
+    echo "   ↳ 跳过依据作废: 读取旧 marker 失败（rclone 瞬态），本轮放弃（下轮拒写时再试）: ${marker_path}" >&2
+    return 1
+  fi
+  if [ -z "$cur" ]; then
+    echo "   ↳ 跳过依据作废: 旧 marker 不存在/为空，无需作废: ${marker_path}" >&2
+    return 0
+  fi
   # 没有 last_success 就没什么可作废的（不看注释、只看字段）
-  echo "$cur" | jq -e 'type == "object" and ((.last_success // "") != "")' >/dev/null 2>&1 || return 0
+  if ! echo "$cur" | jq -e 'type == "object" and ((.last_success // "") != "")' >/dev/null 2>&1; then
+    echo "   ↳ 跳过依据作废: 旧 marker 已无 last_success，无需作废: ${marker_path}" >&2
+    return 0
+  fi
   local old_ts out
   old_ts=$(echo "$cur" | jq -r '.last_success // ""' 2>/dev/null)
   out=$(printf '%s\n' "$cur" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '

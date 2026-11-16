@@ -171,13 +171,20 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────
-# C5 · marker 不存在 → 安全返回 0，不写
+# C5 · marker 不存在 → 不写（2026-11-16 语义更新: 打"无需作废"日志到 stderr，
+#       返回值从 0 改为 0 —— 不变；注意 rclone cat 桩对空 marker 返回 0 + 空输出
 # ────────────────────────────────────────────────────────────
 reset_state
-if _invalidate_marker_skip_basis "$MARKER_PATH" >/dev/null 2>&1; then
-  ok "C5: marker 不存在时返回 0"
+_out5=$(_invalidate_marker_skip_basis "$MARKER_PATH" 2>&1); rc5=$?
+if [ "$rc5" -eq 1 ]; then
+  ok "C5: marker 不存在（cat 失败）时返回 1 且不写"
 else
-  bad "C5: marker 不存在时返回非 0"
+  bad "C5: 期望 rc=1，实际 $rc5"
+fi
+if echo "$_out5" | grep -q "读取旧 marker 失败"; then
+  ok "C5b: 失败路径留痕（打『读取旧 marker 失败』日志，不再静默）"
+else
+  bad "C5b: 无留痕输出"
 fi
 if [ "$(rcat_calls)" -eq 0 ]; then
   ok "C5: marker 不存在时不写"
