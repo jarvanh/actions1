@@ -369,6 +369,15 @@ _escape_filter_glob() { printf '%s' "$1" | sed -e 's/[][*?{}]/[&]/g'; }
 #   EXHAUSTED 失败且原因为"所有修复方法均失败" ⇒ **永久性失败**，这才是"文件修不好、
 #             同步永远完不成"的证据（4 种方法 × 原目录 + 兜底目录都试过了）
 #   DEFERRED  因轮数/预算耗尽未修完 ⇒ 语义是"没轮到"，不是"修不好"，故与 EXHAUSTED 分开
+#   REUSED    沿用上轮修复成果（替代名仍存在，本轮**未新落盘**）。
+#             2026-11-16 加（run 43774563232 实证）: 这一档必须进事件日志，否则
+#             "新落盘"必然算错 —— 沿用计数原本只走 ROUND_REUSED_TOTAL 这个 shell
+#             变量，而并行同步对的修复管线跑在 worker 子 shell 里，自增回不到父进程。
+#             现场: 日志「♻ 沿用上轮修复」1049 行，收尾却报「沿用上轮 7」⇒
+#             新落盘 = 1045 − 7 = **1038** 这个假数，而同轮「✅ 修复成功 ·」是
+#             **0 行**（真新落盘 0）。假数会把"修复管线零产出"的告警顶掉，
+#             并让复盘误以为每轮修好一千个文件。事件日志 append 到 /tmp 文件，
+#             父子进程都可见 ⇒ 一律以此为准。
 _FIX_EVENT_LOG="/tmp/ol_fix_events.log"
 _fix_event() {
   printf '%s|%s|%s\n' "$1" "${2:-}" "${3:-}" >> "$_FIX_EVENT_LOG" 2>/dev/null || true
@@ -1055,7 +1064,10 @@ _sync_fix_missing_files() {
               prev_sbytes=$(echo "$prev_entry" | jq -r '.size_bytes // 0')
               echo "♻ 沿用上轮修复 · $(_fix_method_short "$prev_mid") · $(_short_path "$mf")" | tee -a "$LOG_FILENAME"
               # 沿用 = 上轮成果，不是本轮产出；单列计数，供收尾区分"新落盘"与"沿用"
+              # ① 变量口径（串行模式下可用，并行下会被子 shell 吞掉）
               ROUND_REUSED_TOTAL=$((ROUND_REUSED_TOTAL + 1))
+              # ② 事件日志口径（并行安全的真源，收尾以它为准，见 _FIX_EVENT_LOG 注释）
+              _fix_event REUSED "$mf"
               echo "${mf}${OL_FIELD_SEP}${prev_alt}${OL_FIELD_SEP}${prev_method}${OL_FIELD_SEP}${prev_restore}${OL_FIELD_SEP}${prev_shuman}${OL_FIELD_SEP}${prev_sbytes}${OL_FIELD_SEP}${prev_mid}" >> "$fix_list"
               FIXED_THIS_RUN["$mf"]="$prev_alt"
               continue

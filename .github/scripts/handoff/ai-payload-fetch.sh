@@ -33,6 +33,20 @@ OMNI_VOL="${OMNIROUTE_VOLUME:-omniroute_omniroute-data}"
 OMNI_IMG="${OMNIROUTE_IMAGE:-diegosouzapw/omniroute:latest}"
 DEB_DIR="$HOME/omniroute"
 
+# 2026-11-16 实测事故：本脚本由 takeover 在**交出瞬间**拉起，常常早于旧轮 cutover
+# 清理/重写 /tmp/handoff-ai-payload —— 读到的是**上一轮残留的 dump.rc（rc=1）**，
+# 于是秒判「dump 失败」→ 永久回退 Dropbox → AI 闸门白等 12.5 分钟 →
+# 全站停机被拉到 ~19 分钟（ai-api 530 就是这段）。
+# 修法：记下本轮起始时刻，只信**晚于它**写入的 dump.rc；并先清掉残留文件。
+_TAKEOVER_TS_FILE=/tmp/handoff-ai-takeover-ts
+_NOW=$(date +%s)
+if [ ! -f "$_TAKEOVER_TS_FILE" ] || [ "$(( _NOW - $(stat -c %Y "$_TAKEOVER_TS_FILE" 2>/dev/null || echo 0) ))" -gt 3600 ]; then
+  echo "$_NOW" > "$_TAKEOVER_TS_FILE"
+fi
+_TAKEOVER_TS="$(tr -dc '0-9' < "$_TAKEOVER_TS_FILE" 2>/dev/null || echo 0)"
+rm -f "$AI_PAYLOAD_DIR/dump.rc" "$AI_PAYLOAD_DIR/omnivol.tar" "$AI_PAYLOAD_DIR/omnideploy.tar"
+echo "[$(date '+%F %T')] ai-fetch 本轮基线 ts=${_TAKEOVER_TS}（早于此的 dump.rc 视为上一轮残留）"
+
 # ── Phase 2b 快路径：取「裸卷 dump」并装进同名卷 ──
 # 旧轮在交出瞬间停 AI 栈后直接 tar 卷（不做 VACUUM/压缩，10-20s 完成），
 # 这里 rsync 直取（540MB，实测 88-150MB/s）+ 解包进卷，全程 ~15-30s。
@@ -54,6 +68,12 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
     # 区分两种情形：rc!=0 才是真失败（旧轮明确报错）；rc==0 但文件缺失/为空
     # 说明仍在传输 → 继续下一轮（--partial 续传）。
     _rc="$(cat "$AI_PAYLOAD_DIR/dump.rc" 2>/dev/null)"
+    _rc_mtime=$(stat -c %Y "$AI_PAYLOAD_DIR/dump.rc" 2>/dev/null || echo 0)
+    if [ "${_rc_mtime:-0}" -lt "${_TAKEOVER_TS:-0}" ]; then
+      echo "⏳ [ai-fetch] dump.rc 早于本轮基线（mtime ${_rc_mtime} < ${_TAKEOVER_TS}）→ 上一轮残留，继续等"
+      rm -f "$AI_PAYLOAD_DIR/dump.rc" "$AI_PAYLOAD_DIR/omnivol.tar" "$AI_PAYLOAD_DIR/omnideploy.tar"
+      sleep 3; continue
+    fi
     if [ "$_rc" != "0" ]; then
       echo "⚠️ [ai-fetch] 旧轮 dump 失败（rc=${_rc:-空}），走 Dropbox 回退"
       echo "old_dump_rc=${_rc:-empty}" > /tmp/handoff-ai-fail.reason
