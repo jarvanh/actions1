@@ -188,6 +188,13 @@ _pairs_parallel_reap_one() {
       # （trend_record_transferred 由各任务收尾追加），否则大文件一传几小时、
       # 心跳的"累计传输"纹丝不动（run 41196672258: 3h 停在 345.154 KiB，
       # 同期 rclone 实际在传 GiB 级）
+      # ⚠️ 这个和**不是"纯在途"**（2026-11-16 修，run 43691918760 日志实证）:
+      #   流水文件是**只追加**的，同一个对重试一次就再追加一条，某个对还会在
+      #   reap 之后继续追加 ⇒ 和里既有已完成对的量、也有重试的重复量。
+      #   实证: 该轮 13:54 心跳打「在途 86.136 GiB」，而当时唯一在跑的第 13 对
+      #   最终只结算 1.879 GiB（差 45 倍），我据此差点误判整轮产出。
+      #   故文案改成"结算流水合计"并标注口径；数值保留（它对判断"有没有在动"
+      #   仍有意义），但绝不能再叫"在途"，也不并入 total_transferred。
       local _beat_live_bytes=0 _beat_line _beat_tf
       # ⚠️ 必须显式判存在（2026-11-12 修，run 42957096246 日志实证）:
       #   `done < nonexistent 2>/dev/null` 里的 2>/dev/null 只作用于循环体，
@@ -200,7 +207,7 @@ _pairs_parallel_reap_one() {
           [[ "$_beat_line" =~ ^[0-9]+$ ]] && _beat_live_bytes=$((_beat_live_bytes + _beat_line))
         done < "$_beat_tf"
       fi
-      echo "⏱ [心跳] 并行同步对等待中: 在跑 ${_beat_live} 个 · 已完成 ${_done_n}/${_pp_n} · 累计传输 $(format_bytes "${total_transferred:-0}") + 在途 $(format_bytes "$_beat_live_bytes") · 预算剩 ${_beat_left}"
+      echo "⏱ [心跳] 并行同步对等待中: 在跑 ${_beat_live} 个 · 已完成 ${_done_n}/${_pp_n} · 累计传输 $(format_bytes "${total_transferred:-0}") + 结算流水合计 $(format_bytes "$_beat_live_bytes")（含已完成对/重试重复，非纯在途） · 预算剩 ${_beat_left}"
     fi
     # 硬顶闸（2026-09-25 病灶 D 第五处）: 闸必须装在**轮询内部**，不能只装在
     #   调用点前。调用点前的闸只能查到"进入等待的那一瞬间" —— run 35989879675
