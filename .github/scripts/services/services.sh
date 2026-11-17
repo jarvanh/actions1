@@ -460,6 +460,60 @@ WantedBy=default.target
 EOF
       ;;
     rclone-dropbox)
+      # 2026-11-17：挂载点守卫脚本。原先单元里那段 ExecStartPre 只写一行
+      # logger —— 残留被挪到 /tmp/dropbox-orphan-* 后重启即静默消失（/tmp
+      # 与根盘同盘，VM 回收一起没）。等于把「永久 not empty」换成了「无声丢
+      # 数据」。现在改成独立脚本：搬运 + 立刻发 TG + 落盘留痕。
+      local guard="${HOME}/.openclaw/bin/dropbox-orphan-guard.sh"
+      install -d -m 755 "${HOME}/.openclaw/bin" 2>/dev/null || true
+      cat > "$guard" <<'GUARD'
+#!/usr/bin/env bash
+# /dropbox 挂载点守卫：rclone 没挂上（或刚崩）时，写进挂载点目录的数据会被
+# 下一次成功挂载彻底遮住。这里把残留挪到带时间戳的目录，并立刻发 Telegram
+# 告警——绝不只写 logger（旧实现的教训：无人知晓地丢）。
+# 用法：dropbox-orphan-guard.sh <env-file>
+set -u
+ENV_FILE="${1:-$HOME/.openclaw/.env}"
+OPENCLAW_DIR="$(dirname "$ENV_FILE")"
+MOUNT="${DROPBOX_MOUNT:-/dropbox}"
+
+mountpoint -q "$MOUNT" && exit 0
+[ -n "$(ls -A "$MOUNT" 2>/dev/null)" ] || exit 0
+
+dest="/tmp/dropbox-orphan-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$dest" || exit 0
+find "$MOUNT" -mindepth 1 -maxdepth 1 -exec mv -t "$dest" {} + 2>/dev/null || true
+count=$(find "$dest" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+size=$(du -sh "$dest" 2>/dev/null | cut -f1)
+logger -t rclone-dropbox "挂载点非空，${count} 项/${size} 残留已移至 $dest"
+mkdir -p "$OPENCLAW_DIR/logs" 2>/dev/null || true
+echo "[$(date '+%F %T')] orphan moved count=$count size=$size dest=$dest" >> "$OPENCLAW_DIR/logs/dropbox-orphan.log" 2>/dev/null || true
+
+# 凭据只从 .env 读，绝不写进单元文件
+if [ -r "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE" 2>/dev/null || true
+  set +a
+fi
+token="${TELEGRAM_BOT_TOKEN_ALERT:-${TELEGRAM_BOT_TOKEN:-}}"
+chat="${TELEGRAM_CHAT_ID_ALERT:-${TELEGRAM_CHAT_ID:-}}"
+if [ -z "$token" ] || [ -z "$chat" ]; then
+  logger -t rclone-dropbox "orphan alert skipped: no TG credentials"
+  exit 0
+fi
+
+text="🚨 /dropbox 挂载点非空，已隔离残留
+主机：$(hostname)
+数量：${count} 项 / ${size}
+位置：${dest}
+影响：这批写入没进 Dropbox，重启即丢；请检查上一轮 rclone 挂载失败原因。"
+curl -sS --max-time 15 "https://api.telegram.org/bot${token}/sendMessage" \
+  --data-urlencode "chat_id=${chat}" \
+  --data-urlencode "text=${text}" \
+  -o /dev/null 2>/dev/null || logger -t rclone-dropbox "orphan alert send failed"
+exit 0
+GUARD
+      chmod 755 "$guard" 2>/dev/null || true
       cat > "$tmp" <<EOF
 [Unit]
 Description=rclone mount dropbox: -> /dropbox
@@ -486,7 +540,10 @@ Type=simple
 ExecStartPre=+/bin/sh -c 'grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo user_allow_other | sudo tee -a /etc/fuse.conf >/dev/null'
 ExecStartPre=+/bin/sh -c 'grep -qF -- "-> /dropbox/" /etc/apparmor.d/local/fusermount3 2>/dev/null || { printf "%%s\n" "mount fstype=@{fuse_types} options=(nosuid,nodev) options in (ro,rw,noatime,dirsync,nodiratime,noexec,sync) -> /dropbox/{,**/}," "umount /dropbox/{,**/}," | sudo tee -a /etc/apparmor.d/local/fusermount3 >/dev/null; sudo apparmor_parser -r /etc/apparmor.d/fusermount3 2>/dev/null || true; }'
 ExecStartPre=-/usr/bin/fusermount3 -uz /dropbox
-ExecStartPre=+/bin/sh -c 'mountpoint -q /dropbox && exit 0; [ -z "\$(ls -A /dropbox 2>/dev/null)" ] && exit 0; d=/tmp/dropbox-orphan-\$(date +%%Y%%m%%d-%%H%%M%%S); mkdir -p "\$d"; find /dropbox -mindepth 1 -maxdepth 1 -exec mv -t "\$d" {} + 2>/dev/null || true; logger -t rclone-dropbox "挂载点非空，残留已移至 \$d"'
+# 2026-11-17：挂载点非空时不再只写 logger —— 残留落 /tmp 后重启即静默
+# 消失（等于把「永久 not empty」换成「无声丢数据」）。改为调用守卫脚本：
+# 搬运 + 立刻发 TG 告警 + 落盘留痕。脚本由本文件 ensure 时生成。
+ExecStartPre=+/bin/bash %h/.openclaw/bin/dropbox-orphan-guard.sh %h/.openclaw/.env
 # 参数画像："配置 / Docker 数据卷"——小文件随机读写，不需要大块顺序预读。
 #   --cache-dir        默认 ~/.cache/rclone 会落进根分区（≈14GB），必须指向 /mnt
 #   --attr-timeout 1m  原 10m：容器内文件频繁增删改，属性缓存 10 分钟有陈旧风险

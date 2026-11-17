@@ -4244,7 +4244,63 @@ jobs:
             echo "ℹ️ Unhealthy run detected: background archive SKIPS the openclaw package (main package keeps the last healthy state)."
           fi
 
+          # HA 自动备份保留（2026-11-17 新增）：HA 自己的 retention 是 3 份，
+          # 但它的自动备份调度在 2026-10-05 就停了（.storage/backup 的
+          # last_completed_automatic_backup 停在 10-05），之后每天仍有新包进来，
+          # 却没有任何东西清理 —— 实测 20 天堆了 21 份 / 9.07GiB，占 Dropbox
+          # 已用空间的 53%，是配额逼近上限的主因。这里按文件名（内含日期）排序
+          # 保留最近 N 份；不用 mtime 判据，HA 重传会刷新 mtime。
+          prune_ha_backups() {
+            local keep="${HA_BACKUP_KEEP:-7}"
+            local dir="dropbox:self-hosted/HomeAssistant/backups"
+            local list total victims f n=0
+            list=$(rclone lsf "$dir" --files-only 2>/dev/null | sort) || return 0
+            total=$(printf '%s' "$list" | grep -c . || true)
+            [ "${total:-0}" -gt "$keep" ] || return 0
+            victims=$(printf '%s' "$list" | head -n $((total - keep)))
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if rclone deletefile "$dir/$f" >/dev/null 2>&1; then
+                n=$((n + 1))
+              fi
+            done <<< "$victims"
+            if [ "$n" -gt 0 ]; then
+              echo "[$(date '+%F %T')] ha_backup_prune removed=$n kept=$keep"
+            fi
+            return 0
+          }
+
           while true; do
+            # 2026-11-17 配额闸门：workflow 起跑时只查一次，而本地循环一轮要写
+            # 3.5GB 主包 —— 起跑时余量够，不代表循环期间够。每轮再查一次：
+            #   < 1GiB：本轮整体跳过（传不上去，失败分支还会把 /tmp 大包留着，
+            #           几轮就把根分区撑爆，连 mount 缓存一起崩），告警节流 6h；
+            #   < 5GiB：只告警不拦（主包 3.5GB，留一个包的余量做缓冲）。
+            # rclone about 失败或解析失败一律放行（fail-open，与 workflow 预检同口径）。
+            _free_bytes=$(rclone about dropbox: --json 2>/dev/null | python3 -c 'import json,sys;print(int(json.load(sys.stdin).get("free",0)))' 2>/dev/null || true)
+            case "${_free_bytes:-}" in
+              ''|*[!0-9]*) ;;
+              *)
+                if [ "$_free_bytes" -lt $((1 * 1024 * 1024 * 1024)) ]; then
+                  _stamp=/tmp/openclaw-archive-quota.stamp
+                  _now=$(date +%s); _last=$(cat "$_stamp" 2>/dev/null || echo 0)
+                  if [ $((_now - _last)) -ge 21600 ]; then
+                    echo "$_now" > "$_stamp"
+                    send_telegram_alert "dropbox-quota" "配额不足，本轮归档已跳过" "剩余 $((_free_bytes / 1048576))MiB，低于 1GiB 硬闸门" "" || true
+                  fi
+                  echo "[$(date '+%F %T')] ⏭️ dropbox free ${_free_bytes}B < 1GiB, skip round"
+                  sleep 1200
+                  continue
+                elif [ "$_free_bytes" -lt $((5 * 1024 * 1024 * 1024)) ]; then
+                  _stamp=/tmp/openclaw-archive-quota-warn.stamp
+                  _now=$(date +%s); _last=$(cat "$_stamp" 2>/dev/null || echo 0)
+                  if [ $((_now - _last)) -ge 21600 ]; then
+                    echo "$_now" > "$_stamp"
+                    send_telegram_alert "dropbox-quota" "配额偏低，仍继续归档" "剩余 $((_free_bytes / 1048576))MiB，低于 5GiB 警戒线" "" || true
+                  fi
+                fi
+                ;;
+            esac
             # 2026-11-10 Phase 0 埋点：记「本份快照的内容时刻」（不是上传完成时刻）。
             # 上传成功后落到 /tmp/openclaw-archive-marker.openclaw，供收尾 step 计算
             # 「最后一次周期归档之后改动了多少字节」—— warm-standby/rsync 交接方案
@@ -4435,6 +4491,7 @@ jobs:
             fi
           fi
 
+            prune_ha_backups
             sleep 1200
           done
           EOF
