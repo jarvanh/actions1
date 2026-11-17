@@ -171,7 +171,20 @@ if [ "$ARCHIVE_PRESENT" = "1" ]; then
     fi
     command -v openclaw >/dev/null 2>&1 || { echo "SKIP (openclaw not on PATH)"; return 0; }
     if ! OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" openclaw config validate >/dev/null 2>&1; then
-      echo "FAIL (config invalid)"
+      # 2026-11-17 事故（run 44074148025 / 44088685644 连续两次）：CLI 升级到
+      # 2026.11.5 后不再接受 `agents.*.heartbeat`，而归档里的配置是 2026.11.3
+      # 写的 → **所有**历史 revision 全部 config invalid → 安装必然失败 →
+      # 18789 从未启动，整机「起来了但没法用」，且无任何自愈出口。
+      # 修法：先尝试 openclaw doctor --fix 就地修复（实测能移除弃用键），
+      # 修好了就放行；仍不行才判 FAIL（保留原来的严格口径）。
+      echo "⚠️ config validate 未通过，尝试 openclaw doctor --fix 自修…"
+      OPENCLAW_STATE_DIR="$root/.openclaw" OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" \
+        timeout 240 openclaw doctor --fix > /tmp/openclaw-doctor-fix.log 2>&1 || true
+      if OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" openclaw config validate >/dev/null 2>&1; then
+        echo "PASS (config 已由 doctor --fix 修复)"
+        return 0
+      fi
+      echo "FAIL (config invalid；doctor --fix 未能修复，见 /tmp/openclaw-doctor-fix.log)"
       return 1
     fi
     local audit_out audit_rc unresolved_n
