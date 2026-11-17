@@ -38,12 +38,18 @@ DEB_DIR="$HOME/omniroute"
 # 于是秒判「dump 失败」→ 永久回退 Dropbox → AI 闸门白等 12.5 分钟 →
 # 全站停机被拉到 ~19 分钟（ai-api 530 就是这段）。
 # 修法：记下本轮起始时刻，只信**晚于它**写入的 dump.rc；并先清掉残留文件。
-_TAKEOVER_TS_FILE=/tmp/handoff-ai-takeover-ts
-_NOW=$(date +%s)
-if [ ! -f "$_TAKEOVER_TS_FILE" ] || [ "$(( _NOW - $(stat -c %Y "$_TAKEOVER_TS_FILE" 2>/dev/null || echo 0) ))" -gt 3600 ]; then
-  echo "$_NOW" > "$_TAKEOVER_TS_FILE"
+# 2026-11-17 二次修正：基线**不能用本脚本启动时刻**。实测（14:02 交接）旧轮
+# 的 dump.rc 写于 14:01:55，而 ai-fetch 14:02:01 才启动 —— 差 6 秒，被判成
+# 「上一轮残留」→ 无限循环、还每轮删掉已下载的 1.68GB → 最终 timeout。
+# 正确基线 = 旧轮的 cutoff（dump 一定发生在 cutover 之后），留 120s 容差。
+_cut="$(handoff_get "$HANDOFF_OLD_REMOTE" '.cutoff_epoch' 2>/dev/null || true)"
+case "${_cut:-}" in ''|*[!0-9]*) _cut=0 ;; esac
+if [ "$_cut" -gt 0 ]; then
+  _TAKEOVER_TS=$(( _cut - 120 ))
+else
+  _TAKEOVER_TS=$(( $(date +%s) - 600 ))   # 拿不到 cutoff：宽松回退 10 分钟
 fi
-_TAKEOVER_TS="$(tr -dc '0-9' < "$_TAKEOVER_TS_FILE" 2>/dev/null || echo 0)"
+echo "$_TAKEOVER_TS" > /tmp/handoff-ai-baseline-ts 2>/dev/null || true
 rm -f "$AI_PAYLOAD_DIR/dump.rc" "$AI_PAYLOAD_DIR/omnivol.tar" "$AI_PAYLOAD_DIR/omnideploy.tar"
 # 同时清掉上一轮的远程收尾信号（否则旧 VM 会在等待里秒读 done/giveup → 提前关 rsyncd）
 rclone deletefile "${HANDOFF_REMOTE_DIR%/}/ai-fetch.json" >/dev/null 2>&1 || true
@@ -72,8 +78,9 @@ while [ "$(date +%s)" -lt "$_deadline" ]; do
     _rc="$(cat "$AI_PAYLOAD_DIR/dump.rc" 2>/dev/null)"
     _rc_mtime=$(stat -c %Y "$AI_PAYLOAD_DIR/dump.rc" 2>/dev/null || echo 0)
     if [ "${_rc_mtime:-0}" -lt "${_TAKEOVER_TS:-0}" ]; then
+      # 注意：**不能删**已下载的 omnivol.tar（--partial 要续传；删了就得从头再来，
+      # 实测因此每轮重下 1.68GB 直到 600s 预算耗尽）。
       echo "⏳ [ai-fetch] dump.rc 早于本轮基线（mtime ${_rc_mtime} < ${_TAKEOVER_TS}）→ 上一轮残留，继续等"
-      rm -f "$AI_PAYLOAD_DIR/dump.rc" "$AI_PAYLOAD_DIR/omnivol.tar" "$AI_PAYLOAD_DIR/omnideploy.tar"
       sleep 3; continue
     fi
     if [ "$_rc" != "0" ]; then
