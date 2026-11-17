@@ -70,6 +70,40 @@ jobs:
           sudo touch /tmp/HA_CONFIG_PULLED
 
       # -----------------------------------------------------------
+      # 备份保留（2026-11-17 新增）
+      # -----------------------------------------------------------
+      # HA 自己的 retention（.storage/backup 里 copies=3）自 2026-10-05 起就没再生效，
+      # 而每天的自动备份照常产生 —— 实测 20 天堆了 21 份 / 9.07GiB，把 Dropbox 吃到 74%。
+      # 这里按文件名（内含日期）排序保留最近 N 份，本地与远端同时删：
+      #   - 只删远端：本轮收尾的 rclone sync 会把它当“本地缺失”重新传回去，白删；
+      #   - 只删本地：靠 sync 传播删除，但 sync 被跳过/强杀时配额就释放不了。
+      # 放本 workflow 而不是 openclaw 的归档循环：HA 的 sync 会把循环删掉的文件
+      # 当“远端多余”再传回来，两边抢着管只会制造反复上传。
+      - name: 清理过期 HA 备份（保留最近 N 份）
+        run: |
+          set -euo pipefail
+          KEEP="${HA_BACKUP_KEEP:-7}"
+          DIR="dropbox:self-hosted/HomeAssistant/backups"
+          rclone lsf "$DIR" --files-only | sort > /tmp/ha-backups.txt
+          total=$(grep -c . /tmp/ha-backups.txt || true)
+          echo "当前备份 $total 份，保留上限 $KEEP 份"
+          if [ "${total:-0}" -le "$KEEP" ]; then
+            echo "无需清理"
+            exit 0
+          fi
+          head -n $((total - KEEP)) /tmp/ha-backups.txt > /tmp/ha-prune.txt
+          n=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            # 先删本地，保证本轮 sync 不会把它传回去
+            sudo rm -f "/opt/ha-config/backups/$f"
+            if rclone deletefile "$DIR/$f"; then
+              n=$((n + 1))
+            fi
+          done < /tmp/ha-prune.txt
+          echo "清理完成：删除 $n 份，剩余 $(rclone lsf "$DIR" --files-only | grep -c . || true) 份"
+
+      # -----------------------------------------------------------
       # 插入修正步骤：解决 400 Bad Request 问题
       # -----------------------------------------------------------
       - name: Configure HA for Reverse Proxy

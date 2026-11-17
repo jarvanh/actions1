@@ -4244,32 +4244,6 @@ jobs:
             echo "ℹ️ Unhealthy run detected: background archive SKIPS the openclaw package (main package keeps the last healthy state)."
           fi
 
-          # HA 自动备份保留（2026-11-17 新增）：HA 自己的 retention 是 3 份，
-          # 但它的自动备份调度在 2026-10-05 就停了（.storage/backup 的
-          # last_completed_automatic_backup 停在 10-05），之后每天仍有新包进来，
-          # 却没有任何东西清理 —— 实测 20 天堆了 21 份 / 9.07GiB，占 Dropbox
-          # 已用空间的 53%，是配额逼近上限的主因。这里按文件名（内含日期）排序
-          # 保留最近 N 份；不用 mtime 判据，HA 重传会刷新 mtime。
-          prune_ha_backups() {
-            local keep="${HA_BACKUP_KEEP:-7}"
-            local dir="dropbox:self-hosted/HomeAssistant/backups"
-            local list total victims f n=0
-            list=$(rclone lsf "$dir" --files-only 2>/dev/null | sort) || return 0
-            total=$(printf '%s' "$list" | grep -c . || true)
-            [ "${total:-0}" -gt "$keep" ] || return 0
-            victims=$(printf '%s' "$list" | head -n $((total - keep)))
-            while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              if rclone deletefile "$dir/$f" >/dev/null 2>&1; then
-                n=$((n + 1))
-              fi
-            done <<< "$victims"
-            if [ "$n" -gt 0 ]; then
-              echo "[$(date '+%F %T')] ha_backup_prune removed=$n kept=$keep"
-            fi
-            return 0
-          }
-
           while true; do
             # 2026-11-17 配额闸门：workflow 起跑时只查一次，而本地循环一轮要写
             # 3.5GB 主包 —— 起跑时余量够，不代表循环期间够。每轮再查一次：
@@ -4491,7 +4465,6 @@ jobs:
             fi
           fi
 
-            prune_ha_backups
             sleep 1200
           done
           EOF
