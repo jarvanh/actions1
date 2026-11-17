@@ -82,7 +82,9 @@ jobs:
       - name: 清理过期 HA 备份（保留最近 N 份）
         run: |
           set -euo pipefail
-          KEEP="${HA_BACKUP_KEEP:-7}"
+          # 2026-11-17（主人拍板）：默认保留 3 份，与 HA 自身 retention.copies=3 对齐；
+          # 备份日更、单份 ~440MB，3 份足够覆盖「坏包发现得晚」的场景。
+          KEEP="${HA_BACKUP_KEEP:-3}"
           DIR="dropbox:self-hosted/HomeAssistant/backups"
           rclone lsf "$DIR" --files-only | sort > /tmp/ha-backups.txt
           total=$(grep -c . /tmp/ha-backups.txt || true)
