@@ -177,14 +177,37 @@ if [ "$ARCHIVE_PRESENT" = "1" ]; then
       # 18789 从未启动，整机「起来了但没法用」，且无任何自愈出口。
       # 修法：先尝试 openclaw doctor --fix 就地修复（实测能移除弃用键），
       # 修好了就放行；仍不行才判 FAIL（保留原来的严格口径）。
-      echo "⚠️ config validate 未通过，尝试 openclaw doctor --fix 自修…"
+      # 2026-11-18：先做**确定性清理**（秒级、可控）—— 删除已知弃用键。
+      # 实测（run 44074148025）：openclaw doctor --fix 在 240s 内跑不完（Terminated）
+      # 且未能移除 agents.*.heartbeat → FAIL → 100 个 revision 全灭 → 安装失败 32 分钟。
+      # 已知弃用键清单随 CLI 升级维护；python 删除是幂等且确定性的。
+      echo "⚠️ config validate 未通过，先做确定性清理（弃用键）…"
+      python3 - "$root/.openclaw/openclaw.json" <<'PYCLEAN' 2>/dev/null || true
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+changed = []
+for a in (d.get("agents") or {}).values():
+    if isinstance(a, dict) and "heartbeat" in a:
+        a.pop("heartbeat", None); changed.append("agents.*.heartbeat")
+if changed:
+    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    print("removed:", ",".join(changed))
+else:
+    print("no known deprecated keys found")
+PYCLEAN
+      if OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" openclaw config validate >/dev/null 2>&1; then
+        echo "PASS (config 已由确定性清理修复)"
+        return 0
+      fi
+      echo "⚠️ 确定性清理未解决，尝试 openclaw doctor --fix（后备，实测可能超时）…"
       OPENCLAW_STATE_DIR="$root/.openclaw" OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" \
         timeout 240 openclaw doctor --fix > /tmp/openclaw-doctor-fix.log 2>&1 || true
       if OPENCLAW_CONFIG_PATH="$root/.openclaw/openclaw.json" openclaw config validate >/dev/null 2>&1; then
         echo "PASS (config 已由 doctor --fix 修复)"
         return 0
       fi
-      echo "FAIL (config invalid；doctor --fix 未能修复，见 /tmp/openclaw-doctor-fix.log)"
+      echo "FAIL (config invalid；确定性清理与 doctor --fix 均未修复，见 /tmp/openclaw-doctor-fix.log)"
       return 1
     fi
     local audit_out audit_rc unresolved_n
@@ -271,12 +294,20 @@ if [ "$ARCHIVE_PRESENT" = "1" ]; then
         | python3 -c "import json,sys; d=json.load(sys.stdin); [print(r['rev'] + '|' + r.get('server_modified','')) for r in d.get('entries',[]) if r.get('size',0) >= ${OPENCLAW_TARBALL_MIN_KB} * 1024]" 2>/dev/null)
       echo "revision 候选（体积达标）: ${#GOOD_REVS[@]} 个"
       _rev_n=0
+      # 2026-11-18：候选上限。实测（run 44074148025）配置整体不兼容时 100 个候选
+      # 全部同一判据失败，每个还要下载 3.6GB + 校验 → 白烧 32 分钟、逼近 1800s
+      # 安装预算。默认只试 5 个；OPENCLAW_REVISION_MAX_TRY 可调。
+      _REV_MAX="${OPENCLAW_REVISION_MAX_TRY:-5}"
       for _entry in "${GOOD_REVS[@]:-}"; do
         [ -z "$_entry" ] && continue
         _rev="${_entry%%|*}"
         _rev_time="${_entry#*|}"
         [ "$_rev_time" = "$_entry" ] && _rev_time=""
         _rev_n=$((_rev_n + 1))
+        if [ "$_rev_n" -gt "$_REV_MAX" ]; then
+          echo "⚠️ 已试满 ${_REV_MAX} 个 revision 仍不可用，停止回退（OPENCLAW_REVISION_MAX_TRY 可调）"
+          break
+        fi
         echo "⬇️ 下载历史 revision $_rev（创建于 ${_rev_time:-未知}，候选 $_rev_n/${#GOOD_REVS[@]}）..."
         # 2026-10-23 修复：files/download 的参数必须放 Dropbox-API-Arg 头，
         # 此前是裸 JSON 头 → Dropbox 直接 400 拒掉，95 个候选全在 1s 内
