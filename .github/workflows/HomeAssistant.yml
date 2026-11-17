@@ -82,8 +82,8 @@ jobs:
       - name: 清理过期 HA 备份（保留最近 N 份）
         run: |
           set -euo pipefail
-          # 2026-11-17（主人拍板）：默认只留最近 1 份。HA 自身 retention.copies 虽写着 3，
-          # 但自 2026-10-05 起就没再生效，实际保留完全由这里决定；单份 ~440MB。
+          # 2026-11-17（主人拍板）：默认只留最近 1 份。HA 自身的 retention 自 2026-10-05
+          # 起就没再生效，实际保留完全由这里决定（状态文件里的 copies 也由下方对齐）；单份 ~440MB。
           # 只留 1 份 = 没有历史副本，最新一份损坏只能靠 Dropbox 回收站（30 天）兜底。
           KEEP="${HA_BACKUP_KEEP:-1}"
           # 对齐 HA 自身的 retention.copies：HA 的 retention 自 2026-10-05 起未再生效，
