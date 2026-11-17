@@ -72,8 +72,10 @@ if [ ! -f "$SID_FILE" ] && [ "$REMAIN" -gt 0 ] && { [ "$FORCE" = 1 ] || [ "$REMA
       if [ "$FORCE" = 1 ]; then
         bash "$here/handoff-notify.sh" prepare "old_run=$GITHUB_RUN_ID" "new_run=$_sid" "manual=1" || true
       else
+        # 给绝对时刻（主人要求「有明确时间就能提前准备」）：预计交出 = 现在 + REMAIN
+        _freeze_at="$(date -d "@$(( $(date +%s) + REMAIN ))" '+%H:%M' 2>/dev/null || true)"
         bash "$here/handoff-notify.sh" prepare "old_run=$GITHUB_RUN_ID" "new_run=$_sid" \
-          "eta=$(( REMAIN / 60 ))" || true
+          "eta=$(( REMAIN / 60 ))" "freeze_at=$_freeze_at" || true
       fi
       echo "[handoff-tick] ✅ 交接已武装：继任者 run=$_sid（T-4min 前须 ready，否则被看门狗取消）"
       if [ "$FORCE" = 1 ]; then

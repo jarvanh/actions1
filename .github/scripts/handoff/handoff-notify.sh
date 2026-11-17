@@ -40,12 +40,16 @@ case "$stage" in
     elif [ -n "${KV[eta]:-}" ]; then
       # 自动交接：距死线还有 N 分钟，仍可正常使用
       tg_add_kv msg "预计交出" "约 ${KV[eta]} 分钟后"
-      tg_add_note msg "此阶段服务完全在线，可正常使用；停机会在交出前单独提示（T-2 倒计时）。"
+      [ -n "${KV[freeze_at]:-}" ] && tg_add_kv msg "预计冻结" "${KV[freeze_at]}"
+      tg_add_note msg "此阶段服务完全在线；冻结前 2 分钟会再提醒一次。"
     else
       tg_add_note msg "此阶段服务完全在线，可正常使用；真正停机会在交出前单独提示。"
     fi
     ;;
   ready)
+    # 2026-11-17 降噪（主人）：ready 与 prepare 相隔仅 2-3 分钟、信息量低 → 默认不发。
+    # 需要时 HANDOFF_NOTIFY_READY=1 开回。
+    [ "${HANDOFF_NOTIFY_READY:-0}" = "1" ] || exit 0
     tg_add_title msg "✅ OpenClaw 交接 · 继任者已就绪"
     tg_add_kv msg "阶段" "基座已恢复，等待旧轮交出"
     [ -n "${KV[elapsed]:-}" ] && tg_add_kv msg "准备耗时" "$(tg_format_duration "${KV[elapsed]}")"
@@ -54,6 +58,9 @@ case "$stage" in
     tg_add_note msg "服务仍在线；旧轮按死线停止网关后即完成移交。"
     ;;
   cutover)
+    # 2026-11-17 降噪（主人）：这条在**冻结之后**才发，已无可操作意义，
+    # 且与「已恢复」相隔仅 3 分钟 → 默认不发。HANDOFF_NOTIFY_CUTOVER=1 开回。
+    [ "${HANDOFF_NOTIFY_CUTOVER:-0}" = "1" ] || exit 0
     tg_add_title msg "⏳ OpenClaw 交接 · 已交出"
     tg_add_kv msg "阶段" "旧轮已停网关并交出，继任者正在同步增量"
     [ -n "${KV[transfer]:-}" ] && tg_add_kv msg "增量" "${KV[transfer]}"

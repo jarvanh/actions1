@@ -4549,8 +4549,15 @@ jobs:
             fi
           }
 
-          send_final_archive_warning &
-          echo $! > /tmp/openclaw-final-archive-warning.pid
+          # 2026-11-17 降噪（主人）：T-15 预告与「交接准备中」的『预计交出/预计冻结』
+          # 完全重复 → 默认不发；只保留 T-2 停机倒计时（唯一需要立刻行动的信号）。
+          # 需要时 OPENCLAW_NOTIFY_T15=1 开回。
+          if [ "${OPENCLAW_NOTIFY_T15:-0}" = "1" ]; then
+            send_final_archive_warning &
+            echo $! > /tmp/openclaw-final-archive-warning.pid
+          else
+            echo "ℹ️ T-15 预告已按降噪策略跳过（T-2 倒计时保留）"
+          fi
           send_shutdown_warning &
           echo $! > /tmp/openclaw-shutdown-warning.pid
 
@@ -5868,6 +5875,12 @@ jobs:
             tg_add_kv msg "大小" "合计 $(format_bytes "$total_bytes")"
           fi
 
+          # 2026-11-17 降噪（主人）：交接轮的备份**成功**纯属信息，不必单独发一条
+          #（服务早已在继任者上，用户无需任何动作）；失败/部分失败仍照发告警。
+          if [ "$_is_handoff" = 1 ] && [ "$fail_n" -eq 0 ] && [ "$skip_n" -eq 0 ]; then
+            echo "ℹ️ 交接后备份成功（${ok_n} 项 / $(format_bytes "$total_bytes")），按降噪策略不发通知"
+            exit 0
+          fi
           tg_add_section msg "📦 归档明细 · $((ok_n + fail_n + skip_n))"
           tg_add_block msg "$(tree_lines "$entries")"
           if [ "$_is_handoff" = 1 ]; then
