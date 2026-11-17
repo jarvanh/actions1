@@ -63,6 +63,20 @@ LOG_DIR="${HOME}/.openclaw/logs"
 # cwd 高频读写状态文件，与 StandardOutput 追加写日志不是一回事）。
 LOG_ROOT="/dropbox/self-hosted"
 
+# 2026-11-17：从持久化 .env 兜底加载密钥。这些键（AUTOCLAW_GATEWAY_KEY /
+# ZCODE_GATEWAY_KEY / GLM2API_GATEWAY_KEY …）原先**只由 CI secret 注入** ——
+# 手动/异常恢复时 ensure 会因「key 未注入」拒绝生成单元（本次 autoclaw 就是
+# 从归档单元备份里才捞回 key）。改为：先加载 ~/.openclaw/.env，CI 注入的值
+# 仍然优先（已在环境里就不覆盖）。
+for _ef in "$HOME/.openclaw/.env" "/dropbox/self-hosted/qingyan-proxy/env.sh"; do
+  if [ -r "$_ef" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$_ef" 2>/dev/null || true
+    set +a
+  fi
+done
+
 # 日志目录必须存在：StandardOutput=append:<LOG> 在目录不存在时进程直接以
 # status=209/STDOUT 退出 → Restart=always 崩溃循环（glm2api 时代实测踩过）。
 # 日志改落 Dropbox 后目录未必预建，统一由此幂等补一道。
