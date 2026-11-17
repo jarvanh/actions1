@@ -1323,6 +1323,33 @@ jobs:
           done
           echo "🚀 [early-dispatch] 已派发 ${_dispatched}/6 上游（真实部署后台进行，收口 step 等待 rc）"
 
+      - name: Restore .env early (独立小文件，不等 3.7GB 主包)
+        # 2026-11-17 事故（run 44074148025）：主包 prefetch 没产出 → Install OpenClaw
+        # 失败 → ~/.openclaw 只有 124K、没有 .env → 无 GH_TOKEN/TG token/网关 key
+        # → Run OpenClaw 被跳过、18789 从未启动，整机「起来了但没法用」。
+        # .env 只有 4KB，没理由跟 3.7GB 状态包绑在一起。这里在安装之前先独立恢复，
+        # 后续所有步骤（通知、网关、看门狗）都不再依赖大包。
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          ENVF="$HOME/.openclaw/.env"
+          mkdir -p "$HOME/.openclaw"
+          # 已有非空 .env（同一轮重跑）→ 保留
+          if [ -s "$ENVF" ] && grep -q '^GH_TOKEN=.' "$ENVF" 2>/dev/null; then
+            echo "ℹ️ .env 已存在且含 GH_TOKEN，跳过独立恢复"
+            exit 0
+          fi
+          TMP="$(mktemp)"
+          if rclone copyto dropbox:self-hosted/openclaw.env "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
+            install -m 600 "$TMP" "$ENVF"
+            rm -f "$TMP"
+            echo "✅ .env 已从独立小文件恢复（$(grep -c '=' "$ENVF") 个键）"
+            exit 0
+          fi
+          rm -f "$TMP"
+          echo "⚠️ 独立 .env 不存在，回退：稍后由主包恢复（若主包失败则本轮无 .env）"
+
       - name: Install OpenClaw
         id: install_openclaw
         # 2026-10-23：本步骤失败也要能触发失败通知。此前通知只认
@@ -4464,6 +4491,15 @@ jobs:
               send_telegram_alert "zcode2api-data.tar.gz" "归档失败 · 退出码 $rc" "归档脚本执行失败，详见原始输出" "${z2a_archive_output:-归档脚本无输出}"
             fi
           fi
+
+            # 2026-11-17：每轮归档顺带把 .env 同步到独立小文件 —— 这是启动时
+            # 优先恢复的那份（见「Restore .env early」）。.env 可能被本轮修改
+            #（QUOTA_BOARD_TOKEN 等），不同步就会陈旧。
+            if [ -s "$HOME/.openclaw/.env" ]; then
+              rclone copyto "$HOME/.openclaw/.env" dropbox:self-hosted/openclaw.env >/dev/null 2>&1 \
+                && echo "[$(date '+%F %T')] .env 已同步到独立小文件" \
+                || echo "⚠️ .env 独立小文件同步失败（下轮启动将用旧值，主包里的仍是新的）"
+            fi
 
             sleep 1200
           done
