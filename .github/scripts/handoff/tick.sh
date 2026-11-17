@@ -60,9 +60,13 @@ if [ ! -f "$SID_FILE" ] && [ "$REMAIN" -gt 0 ] && { [ "$FORCE" = 1 ] || [ "$REMA
       # 2026-11-17：把「已武装」写到 Dropbox，供额度看板显示交接状态
       #（看板在另一台 VM/浏览器里，读不到本机 /tmp）。manual 区分手动/自动。
       _manual_flag=0; [ "$FORCE" = 1 ] && _manual_flag=1
-      printf '{"protocol":1,"old_run":%s,"successor_run":%s,"manual":%s,"ts":%s}' \
-        "${GITHUB_RUN_ID:-0}" "$_sid" "$_manual_flag" "$(date +%s)" \
-        | rclone rcat "${HANDOFF_REMOTE_DIR%/}/request.json" >/dev/null 2>&1 || true
+      _req_json="$(printf '{"protocol":1,"old_run":%s,"successor_run":%s,"manual":%s,"ts":%s}' \
+        "${GITHUB_RUN_ID:-0}" "$_sid" "$_manual_flag" "$(date +%s)")"
+      # 2026-11-17（主人要求：状态只能提前不能延迟）：
+      # ① 本机 /tmp 一份 —— 看板与 tick 同机，零延迟可见（Dropbox 挂载 poll 有 ≤60s 滞后）
+      # ② Dropbox 一份 —— 供跨机/重启后的看板读取
+      printf '%s' "$_req_json" > "$HANDOFF_STATE_DIR/request.json" 2>/dev/null || true
+      printf '%s' "$_req_json" | rclone rcat "${HANDOFF_REMOTE_DIR%/}/request.json" >/dev/null 2>&1 || true
       # 2026-11-11 修：手动交接**不等死线**（继任者 ready 就交出，实测 3 分钟），
       # 不能再给「距死线还剩多少分钟」——那会让人以为还能写 4 小时（实测误导）。
       if [ "$FORCE" = 1 ]; then

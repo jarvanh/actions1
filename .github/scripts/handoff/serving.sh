@@ -13,6 +13,10 @@ handoff_init
 handoff_is_successor || exit 0
 
 handoff_put "$HANDOFF_NEW_REMOTE" "$(handoff_new_json serving)"
+# 2026-11-17：交接完成即清掉「请求中」标记 —— 否则新 VM 的看板可能读到旧值，
+# 把「交接中」错误地显示到完成之后（主人要求：状态只能提前，不能滞后/残留）。
+rclone deletefile "${HANDOFF_REMOTE_DIR%/}/request.json" >/dev/null 2>&1 || true
+rm -f "$HANDOFF_STATE_DIR/request.json" 2>/dev/null || true
 echo "🎉 [serving] new.json=serving 已写 —— 旧轮收到后 handoff_done，下线窗口就此关闭"
 _cut="$(handoff_get "$HANDOFF_OLD_REMOTE" '.cutoff_epoch')"
 case "${_cut:-}" in ''|*[!0-9]*) _cut=0 ;; esac
