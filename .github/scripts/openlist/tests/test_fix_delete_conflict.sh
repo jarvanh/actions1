@@ -35,3 +35,10 @@ grep -q 'rclone deletefile "$round_file"' "$SRC" && ok "D7 删除的是目标端
 
 echo "----------"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
+
+# D8（2026-11-17 补）: 方法1 被黑名单跳过时兜底仍须可执行
+if grep -q '_m1_blocked=1' "$SRC" && grep -q '_dc_sig=1' "$SRC"; then
+  echo "PASS: D8 方法1 被拉黑时仍触发兜底（_m1_blocked → _dc_sig）"
+else
+  echo "FAIL: D8 拉黑后兜底不可达（关键：433 个死锁文件里就有被拉黑的）"
+fi

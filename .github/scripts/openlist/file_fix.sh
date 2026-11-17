@@ -1179,6 +1179,7 @@ _try_fix_methods_round() {
   if _fix_hard_limit_reached "方法1·原名直传"; then
     return 1
   fi
+  local _m1_blocked=0
   if _fix_method_gate copyto_original; then
     local m1_status
     rclone copyto "$src_file" "$round_file" "${RCLONE_RETRY_FLAGS[@]}" --timeout "${OPENLIST_UPLOAD_TIMEOUT:-300}s" 2>&1 | \
@@ -1213,44 +1214,58 @@ _try_fix_methods_round() {
     # 做法: 确认「目标端确实存在同名文件、且尺寸与源端期望不符」后，删掉它再重试
     #   一次原名直传。删的是**目标端坏件**（源端是主本，且该文件正因尺寸不符而
     #   出现在待修清单里），不是用户数据。
-    # 安全边界（全部满足才动手）:
-    #   ① 开关 OPENLIST_FIX_DELETE_CONFLICT 非 0（默认开，便于一键回退）
-    #   ② 日志末尾出现 Conflict/409 或 mkParentDir 失败（只治这一类死锁）
-    #   ③ 目标端该文件存在、size>0、且 != 源端期望字节数（半截件判据）
-    #   ④ 源端期望字节数已知且 >0（未知就不删）
-    #   ⑤ 删除失败即放弃；重试仍失败则原样交后续方法
-    if [ "${OPENLIST_FIX_DELETE_CONFLICT:-1}" != "0" ] && [ "$m1_status" -ne 0 ] \
-       && [[ "${src_expect_bytes:-}" =~ ^[0-9]+$ ]] && [ "${src_expect_bytes:-0}" -gt 0 ]; then
-      if tail -n 40 "$fix_log" 2>/dev/null | grep -qiE 'Conflict:[[:space:]]*409|409[[:space:]]+Conflict|mkParentDir failed'; then
-        local _dc_bytes
-        _dc_bytes=$(rclone size --json "$round_file" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null) || _dc_bytes=0
-        [[ "$_dc_bytes" =~ ^[0-9]+$ ]] || _dc_bytes=0
-        if [ "$_dc_bytes" -gt 0 ] && [ "$_dc_bytes" != "$src_expect_bytes" ]; then
-          log_fix "$fix_log" "  🧹 目标端同名件尺寸不符（实际 ${_dc_bytes}B / 期望 ${src_expect_bytes}B）→ 删除坏件后重试原名直传"
-          if rclone deletefile "$round_file" >/dev/null 2>&1; then
-            local m1b_status
-            rclone copyto "$src_file" "$round_file" "${RCLONE_RETRY_FLAGS[@]}" --timeout "${OPENLIST_UPLOAD_TIMEOUT:-300}s" 2>&1 | \
-              _cmd_log copyto_original "$fix_log"
-            m1b_status=${PIPESTATUS[0]}
-            if [ "$m1b_status" -eq 0 ] && { _confirm_persist_by_size copyto_original "$round_file" "$src_expect_bytes" "$fix_log" \
-                 || _confirm_persist_by_count copyto_original "$failed_file_rel" "$fix_log"; }; then
-              log_fix "$fix_log" "  ✅ $(_fix_method_short copyto_original) 成功（删坏件后重传）"
-              local m1b_alt m1b_restore
-              if [ "${used_hash_dir:-0}" -eq 1 ] || [ "${used_base64_dir:-0}" -eq 1 ]; then
-                m1b_alt="${round_file#${dest_path}/}"
-                m1b_restore="rclone copyto '${round_file}' '${dest_path}/${failed_file_rel}'  # 保留备份副本"
-              else
-                m1b_alt="$failed_file_rel"
-                m1b_restore="无需还原（文件已在正确路径）"
-              fi
-              _fix_succeed copyto_original "rclone copyto（删坏件后重传 · $(_fix_dir_desc) + 原文件名）" \
-                "$m1b_alt" "$m1b_restore" "$file_md5"
-              return 0
+    _m1_blocked=0
+  else
+    # 方法1 被黑名单跳过（跨轮失败记忆）:**不能因此放弃本兜底** ——
+    # 那 433 个死锁文件里就有被拉黑的，而本兜底恰恰是唯一能解开它们的手段。
+    # 置 _m1_blocked=1 让下面的兜底块照常执行（触发条件里已含"方法1 被拉黑"）。
+    _m1_blocked=1
+  fi
+
+  # ===== 同名不同尺寸的 409 死锁 → 删目标端坏件后重试一次（2026-11-17 加）=====
+  # 安全边界（全部满足才动手）:
+  #   ① 开关 OPENLIST_FIX_DELETE_CONFLICT 非 0（默认开，便于一键回退）
+  #   ② 有 409/Conflict 证据: 方法1 刚撞了（fix_log 末尾）**或** 方法1 已被拉黑
+  #   ③ 目标端该文件存在、size>0、且 != 源端期望字节数（半截件判据）
+  #   ④ 源端期望字节数已知且 >0（未知就不删）
+  #   ⑤ 删除失败即放弃；重试仍失败则原样交后续方法
+  if [ "${OPENLIST_FIX_DELETE_CONFLICT:-1}" != "0" ] \
+     && [[ "${src_expect_bytes:-}" =~ ^[0-9]+$ ]] && [ "${src_expect_bytes:-0}" -gt 0 ]; then
+    local _dc_sig=0
+    if [ "${_m1_blocked:-0}" -eq 1 ]; then
+      _dc_sig=1
+    elif tail -n 40 "$fix_log" 2>/dev/null | grep -qiE 'Conflict:[[:space:]]*409|409[[:space:]]+Conflict|mkParentDir failed'; then
+      _dc_sig=1
+    fi
+    if [ "$_dc_sig" -eq 1 ]; then
+      local _dc_bytes
+      _dc_bytes=$(rclone size --json "$round_file" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null) || _dc_bytes=0
+      [[ "$_dc_bytes" =~ ^[0-9]+$ ]] || _dc_bytes=0
+      if [ "$_dc_bytes" -gt 0 ] && [ "$_dc_bytes" != "$src_expect_bytes" ]; then
+        log_fix "$fix_log" "  🧹 目标端同名件尺寸不符（实际 ${_dc_bytes}B / 期望 ${src_expect_bytes}B）→ 删除坏件后重试原名直传"
+        if rclone deletefile "$round_file" >/dev/null 2>&1; then
+          local m1b_status
+          rclone copyto "$src_file" "$round_file" "${RCLONE_RETRY_FLAGS[@]}" --timeout "${OPENLIST_UPLOAD_TIMEOUT:-300}s" 2>&1 | \
+            _cmd_log copyto_original "$fix_log"
+          m1b_status=${PIPESTATUS[0]}
+          if [ "$m1b_status" -eq 0 ] && { _confirm_persist_by_size copyto_original "$round_file" "$src_expect_bytes" "$fix_log" \
+               || _confirm_persist_by_count copyto_original "$failed_file_rel" "$fix_log"; }; then
+            log_fix "$fix_log" "  ✅ $(_fix_method_short copyto_original) 成功（删坏件后重传）"
+            local m1b_alt m1b_restore
+            if [ "${used_hash_dir:-0}" -eq 1 ] || [ "${used_base64_dir:-0}" -eq 1 ]; then
+              m1b_alt="${round_file#${dest_path}/}"
+              m1b_restore="rclone copyto '${round_file}' '${dest_path}/${failed_file_rel}'  # 保留备份副本"
+            else
+              m1b_alt="$failed_file_rel"
+              m1b_restore="无需还原（文件已在正确路径）"
             fi
-            log_fix "$fix_log" "  ❌ 删坏件后重传仍失败 exit=$m1b_status（交后续方法）"
-          else
-            log_fix "$fix_log" "  ⚠️ 删除目标端坏件失败（跳过本兜底，交后续方法）"
+            _fix_succeed copyto_original "rclone copyto（删坏件后重传 · $(_fix_dir_desc) + 原文件名）" \
+              "$m1b_alt" "$m1b_restore" "$file_md5"
+            return 0
           fi
+          log_fix "$fix_log" "  ❌ 删坏件后重传仍失败 exit=$m1b_status（交后续方法）"
+        else
+          log_fix "$fix_log" "  ⚠️ 删除目标端坏件失败（跳过本兜底，交后续方法）"
         fi
       fi
     fi
