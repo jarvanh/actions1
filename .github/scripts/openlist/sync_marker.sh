@@ -443,6 +443,7 @@ save_fix_state_marker() {
 # 返回: 0=已作废或无需作废；1=作废失败（原 marker 保持不动）
 _invalidate_marker_skip_basis() {
   local marker_path="$1"
+  local dest_count="${2:-}" source_count="${3:-}"
   local cur
   # 静默路径必须留痕（2026-11-16 加，run 43926191361 实证）:
   #   该轮 6 处拒写全部零输出零生效，复盘时无法区分"无需作废"与
@@ -456,26 +457,67 @@ _invalidate_marker_skip_basis() {
     return 1
   fi
   if [ -z "$cur" ]; then
+    # marker 不存在 → 保持"不写"（不为从未有 marker 的子树凭空造文件）；
+    # 计数只在已有 marker 的重复缺口场景生效（那正是空转的形态）
     echo "   ↳ 跳过依据作废: 旧 marker 不存在/为空，无需作废: ${marker_path}" >&2
     return 0
   fi
-  # 没有 last_success 就没什么可作废的（不看注释、只看字段）
-  if ! echo "$cur" | jq -e 'type == "object" and ((.last_success // "") != "")' >/dev/null 2>&1; then
+  if ! echo "$cur" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "⚠️ 跳过依据作废: 旧 marker 非 JSON 对象，放弃改写（保留原样）: ${marker_path}" >&2
+    return 1
+  fi
+
+  local old_ts had_skip
+  old_ts=$(echo "$cur" | jq -r '.last_success // ""' 2>/dev/null)
+  had_skip=0; [ -n "$old_ts" ] && had_skip=1
+
+  # ===== 同一缺口连续轮数（2026-11-17 加）=====
+  # 今天我是靠手工 grep 三轮日志、比对"逐字节相同"的缺口数字才认出空转
+  # （2/149 · 0/297 · 52/422 · 19842/23818 …）。这类形态必须由系统自己报出来:
+  # 把本次缺口签名写进 marker，下轮拒写时比对，连续相同则打出「第 N 轮相同」。
+  local sig="" prev_sig="" prev_n=0 n=0 _dnum=0 _snum=0
+  if [[ "$dest_count" =~ ^[0-9]+$ ]] && [[ "$source_count" =~ ^[0-9]+$ ]]; then
+    _dnum="$dest_count"; _snum="$source_count"
+    sig="${dest_count}/${source_count}"
+    prev_sig=$(echo "$cur" | jq -r '.last_refusal.sig // ""' 2>/dev/null)
+    prev_n=$(echo "$cur" | jq -r '.last_refusal.count // 0' 2>/dev/null)
+    [[ "$prev_n" =~ ^[0-9]+$ ]] || prev_n=0
+    if [ "$prev_sig" = "$sig" ]; then n=$((prev_n + 1)); else n=1; fi
+  fi
+
+  # 既没有跳过依据可清、也没有缺口签名要记 → 无可写，直接返回（保持幂等，
+  # 避免每轮对同一 marker 做无意义写回；C4 单测锁这条）
+  if [ "$had_skip" = "0" ] && [ -z "$sig" ]; then
     echo "   ↳ 跳过依据作废: 旧 marker 已无 last_success，无需作废: ${marker_path}" >&2
     return 0
   fi
-  local old_ts out
-  old_ts=$(echo "$cur" | jq -r '.last_success // ""' 2>/dev/null)
-  out=$(printf '%s\n' "$cur" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-    del(.last_success)
-    | .skip_basis_invalidated_at = $ts
-    | .skip_basis_invalidated_reason = "目标端文件数少于源端：上次成功记录被后端真值证伪"' 2>/dev/null)
+
+  local out
+  out=$(printf '%s\n' "$cur" | jq -c \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg sig "$sig" --argjson n "$n" \
+    --argjson dest "$_dnum" --argjson src "$_snum" '
+    (if ($sig != "") then
+       .last_refusal = {sig: $sig, count: $n, at: $ts, dest_count: $dest, source_count: $src}
+     else . end)
+    | (if has("last_success") then
+         del(.last_success)
+         | .skip_basis_invalidated_at = $ts
+         | .skip_basis_invalidated_reason = "目标端文件数少于源端：上次成功记录被后端真值证伪"
+       else . end)' 2>/dev/null)
   if [ -z "$out" ]; then
     echo "⚠️ 作废旧跳过依据失败（JSON 构造为空，保留原 marker）: ${marker_path}" >&2
     return 1
   fi
   if _marker_write "$out" "$marker_path" 2>/dev/null; then
-    echo "   ↳ 已作废跳过依据（last_success=${old_ts}）→ 下轮不再按时间窗口跳过，改为真同步；修复记录/黑名单保持不变"
+    if [ "$had_skip" = "1" ]; then
+      echo "   ↳ 已作废跳过依据（last_success=${old_ts}）→ 下轮不再按时间窗口跳过，改为真同步；修复记录/黑名单保持不变"
+    fi
+    if [ "$n" -ge 2 ]; then
+      echo "🔁 同一缺口连续第 ${n} 轮未补齐（目标端/源端文件数 = ${sig}）—— 不是跳过窗口造成的空转，是真同步也补不上：多为后端内容性拒收（409/mkParentDir）或修复方法耗尽，需人工看该子树的 fail_list 原因"
+    elif [ -n "$sig" ]; then
+      echo "   ↳ 已记录本次缺口签名（${sig}，第 1 轮）—— 下轮若仍相同会报「连续第 N 轮」"
+    fi
     return 0
   fi
   echo "⚠️ 作废旧跳过依据写回失败（保留原 marker）: ${marker_path}" >&2
@@ -552,7 +594,7 @@ save_sync_marker() {
     fi
     # 让上面那句「下次运行将重新同步」成真（见 _invalidate_marker_skip_basis 头注释）:
     # 不清 last_success 的话，下轮会继续命中跳过窗口，这棵子树按 24h 周期空转。
-    _invalidate_marker_skip_basis "$marker_path" || true
+    _invalidate_marker_skip_basis "$marker_path" "$dest_count" "$source_count" || true
     return 1
   fi
 

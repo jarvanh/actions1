@@ -216,6 +216,57 @@ else
   bad "C7: 未在拒写分支找到作废调用（refuse=${REFUSE_LINE:-无} invalidate=${INVAL_LINE:-无}）"
 fi
 
+# ────────────────────────────────────────────────────────────
+# C8 · 同一缺口连续轮数（2026-11-17 加）
+#   今天靠手工 grep 三轮日志、比对"逐字节相同"的缺口数字才认出空转
+#   （2/149 · 0/297 · 52/422 · 19842/23818）。系统必须自己报出来。
+#   契约: 第 1 次记签名；第 2/3 次打「连续第 N 轮未补齐」；last_success 清掉、
+#         修复记录保留。
+# ────────────────────────────────────────────────────────────
+reset_state
+printf '{"last_success":"2026-11-17T00:00:00Z","source_count":23818,"fixed_files":[{"original":"a.mp4","alternative":"x.mp4","size_bytes":1}]}\n' > "$MARKER_FILE"
+
+_out8a=$(_invalidate_marker_skip_basis "$MARKER_PATH" 19842 23818 2>&1)
+if echo "$_out8a" | grep -q "已记录本次缺口签名（19842/23818，第 1 轮）"; then
+  ok "C8-1: 首次拒写记录缺口签名（第 1 轮）"
+else
+  bad "C8-1: 未记录签名（out=$_out8a）"
+fi
+if jq -e '.last_refusal.count == 1 and .last_refusal.sig == "19842/23818"' "$MARKER_FILE" >/dev/null 2>&1; then
+  ok "C8-2: marker 内 last_refusal.count=1 且签名正确"
+else
+  bad "C8-2: last_refusal 字段不正确: $(jq -c '.last_refusal' "$MARKER_FILE" 2>/dev/null)"
+fi
+
+_out8b=$(_invalidate_marker_skip_basis "$MARKER_PATH" 19842 23818 2>&1)
+if echo "$_out8b" | grep -q "同一缺口连续第 2 轮未补齐"; then
+  ok "C8-3: 第 2 次相同缺口 → 报「连续第 2 轮未补齐」"
+else
+  bad "C8-3: 未报连续轮数（out=$_out8b）"
+fi
+
+_out8c=$(_invalidate_marker_skip_basis "$MARKER_PATH" 19842 23818 2>&1)
+if echo "$_out8c" | grep -q "同一缺口连续第 3 轮未补齐"; then
+  ok "C8-4: 第 3 次 → 连续计数递增到 3"
+else
+  bad "C8-4: 计数未递增（out=$_out8c）"
+fi
+
+if jq -e 'has("last_success") | not' "$MARKER_FILE" >/dev/null 2>&1 \
+   && jq -e '(.fixed_files | length) == 1' "$MARKER_FILE" >/dev/null 2>&1; then
+  ok "C8-5: 作废后 last_success 已清、fixed_files 保留"
+else
+  bad "C8-5: marker 状态不正确: $(jq -c '{ls: has("last_success"), ff: (.fixed_files|length)}' "$MARKER_FILE" 2>/dev/null)"
+fi
+
+# 缺口变化 → 计数重置为 1（避免把"换了缺口"误报成"连续空转"）
+_out8d=$(_invalidate_marker_skip_basis "$MARKER_PATH" 220 221 2>&1)
+if jq -e '.last_refusal.count == 1 and .last_refusal.sig == "220/221"' "$MARKER_FILE" >/dev/null 2>&1; then
+  ok "C8-6: 缺口签名变化时计数重置为 1"
+else
+  bad "C8-6: 缺口变化未重置计数: $(jq -c '.last_refusal' "$MARKER_FILE" 2>/dev/null)"
+fi
+
 echo "----------"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
