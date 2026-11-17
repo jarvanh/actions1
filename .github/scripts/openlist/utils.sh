@@ -111,6 +111,18 @@ _norm_rel_path() {
   printf '%s' "$p"
 }
 
+# 传输字节数是否为**精确值**（1=精确 0=进度口径上界）
+# 2026-11-17 加（run 44027961070 实证）: 被 timeout 杀掉的 rclone **不打印**
+#   最终汇总块 ⇒ 本函数只能退化成抓最后一条进度行 "X / Y" 的 X。该 X 是
+#   **进度峰值**，含已失败/回滚文件的字节 ⇒ 是上界，不是落盘量。
+#   现场: r8 全日志 "Transferred:" 出现 **0 次**、进度行 1654 条、timeout 截断 23 次；
+#   同一对里写着「本批成功 0 个 / 直接失败 569 个」，pair 却报 40.736 GiB。
+#   调用方据此打口径说明，避免把上界当落盘量（我此前就据此算过"提速 2.5 倍"）。
+transferred_bytes_is_exact() {
+  local log_file="$1"
+  grep -q 'Transferred:' "$log_file" 2>/dev/null
+}
+
 # 从 rclone 日志中解析传输字节数
 # 解析 "Transferred: 1.234 GiB" 格式的行，返回字节数（整数）
 get_transferred_bytes_from_log() {

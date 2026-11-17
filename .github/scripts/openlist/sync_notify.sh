@@ -204,6 +204,14 @@ _send_sync_result_notification() {
 
   # 解析本次同步传输的字节数
   SYNC_TRANSFERRED_BYTES=$(get_transferred_bytes_from_log "$log_filename")
+  # 口径留痕（2026-11-17 加，run 44027961070 实证）: 被 timeout 收掉的 rclone
+  # **不打印**最终汇总块，此时上面的数只能取"进度峰值"，含失败/回滚字节 ⇒ 是
+  # 上界。不说明就会被当成落盘量: 该轮同一对里写着「本批成功 0 个 / 直接失败
+  # 569 个」，pair 却报 40.736 GiB；全日志 "Transferred:" 出现 0 次、进度行
+  # 1654 条、timeout 截断 23 次 ⇒ 所有轮的传输量其实都是这个口径。
+  if ! transferred_bytes_is_exact "$log_filename"; then
+    echo "  ↳ 传输量为进度口径（rclone 未输出最终 Transferred 汇总，通常是被 timeout 收掉）⇒ $(format_bytes "$SYNC_TRANSFERRED_BYTES") 是**上界**，含失败/回滚字节，不能当落盘量" | tee -a "$log_filename"
+  fi
   SYNC_SKIPPED=0
 
   # 子目录拆分模式下，如果没有文件变更且无错误，跳过通知
