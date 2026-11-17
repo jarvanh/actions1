@@ -451,11 +451,21 @@ _invalidate_marker_skip_basis() {
   #   实测归因: cat 失败（rclone 瞬态，4 秒前 check_sync_marker 刚成功读过
   #   同一 marker）。故 cat 失败降为 1（调用方 || true 兜底，不影响流程），
   #   其余静默路径各打一行原因。
-  cur=$(rclone cat "$marker_path" 2>/dev/null)
-  if [ $? -ne 0 ]; then
-    echo "   ↳ 跳过依据作废: 读取旧 marker 失败（rclone 瞬态），本轮放弃（下轮拒写时再试）: ${marker_path}" >&2
+  local _raw
+  _raw=$(rclone cat "$marker_path" 2>&1); local _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    # 「不存在」与「读取失败」必须分开（2026-11-17 加，run 44012598644 实证）:
+    #   该轮 3 次留痕全是"读取旧 marker 失败"，但 rclone cat 对**不存在的对象**
+    #   同样非零退出（not found）。两者混报会让人以为 onedrive 在抽风，
+    #   实际可能只是这些子目录本来就没有 marker ⇒ 无需作废。
+    if printf '%s' "$_raw" | grep -qiE 'not found|directory not found|object not found'; then
+      echo "   ↳ 跳过依据作废: marker 不存在（not found），无需作废: ${marker_path}" >&2
+      return 0
+    fi
+    echo "   ↳ 跳过依据作废: 读取旧 marker 失败（${_raw%%$'\n'*}），本轮放弃（下轮拒写时再试）: ${marker_path}" >&2
     return 1
   fi
+  local cur="$_raw"
   if [ -z "$cur" ]; then
     # marker 不存在 → 保持"不写"（不为从未有 marker 的子树凭空造文件）；
     # 计数只在已有 marker 的重复缺口场景生效（那正是空转的形态）
@@ -589,12 +599,18 @@ save_sync_marker() {
     # （两轮生产日志「已保存修复状态」0 次即为实证）。save_fix_state_marker 只合并
     # 保存 fixed_files/fix_blacklist（保留旧 marker 其余字段；无旧 marker 时建不含
     # last_success 的骨架，不会误触发跳过判断），与「本次同步未完成」语义不冲突。
+    # ★ 顺序（2026-11-17 调换，run 44012598644 实证）:
+    #   **先**作废跳过依据，**再**持久化修复记录。理由是两者的"被强杀概率"不同:
+    #   拒写恰好发生在同步对收摊的时间压力最大处（r6 实证: 21:18:51 拒写 →
+    #   21:19:01 强杀，10 秒），而作废要做 2 次远端读写；实测 7 次拒写里有
+    #   4 次**连一句输出都没有**（进程在跑到作废前就被 kill -9）。
+    #   把自己排在更贵的 save_fix_state_marker（含 carry-forward 探测 + 回写）
+    #   后面，等于让最关键的一步最容易被截断 —— 而那 4 棵子树恰恰是最需要
+    #   作废跳过依据的。调换后: 便宜且关键的先落地，贵的尽力而为。
+    _invalidate_marker_skip_basis "$marker_path" "$dest_count" "$source_count" || true
     if ! save_fix_state_marker "$source_path" "$dest_path" "$task_name"; then
       echo "⚠️ 拒写分支的修复记录保存失败（见上方日志）—— 下轮这些产物将无 filter 保护"
     fi
-    # 让上面那句「下次运行将重新同步」成真（见 _invalidate_marker_skip_basis 头注释）:
-    # 不清 last_success 的话，下轮会继续命中跳过窗口，这棵子树按 24h 周期空转。
-    _invalidate_marker_skip_basis "$marker_path" "$dest_count" "$source_count" || true
     return 1
   fi
 

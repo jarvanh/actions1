@@ -232,14 +232,10 @@ GLOBAL_FIX_BLACKLIST_JSON='{"fold/a.jpg|copyto_original":1}'
 SR9=$(save_sync_marker "onedrive:src" "openlist:dst" "taskZ" 2>&1); RC9=$?
 [ "$RC9" -ne 0 ] && ok "9a 拒写场景返回非零（游标未写）" || bad "9a: rc=$RC9"
 echo "$SR9" | grep -q "拒绝写入同步标记" && ok "9b 拒写日志在" || bad "9b: $SR9"
-# 9c 语义更新（2026-11-17）: 拒写分支现在会写两次 ——
-#   ① save_fix_state_marker 持久化修复记录
-#   ② _invalidate_marker_skip_basis 作废跳过依据 + 记录缺口签名（last_refusal）
-# 两次都是必需的（② 让"下次运行将重新同步"成真，并给空转子树留计数）。
-# 故断言从"恰好一次"改为"恰好两次"，且末次写回必须带 last_refusal。
-[ "$(rcat_count)" = "2" ] && ok "9c 拒写分支写入两次（修复记录 + 作废/缺口签名）" || bad "9c: [$(rcat_count)]"
-echo "$(cat "$RCAP_FILE")" | jq -e '.last_refusal.sig == "40/42"' >/dev/null 2>&1 \
-  && ok "9c2 末次写回记录了缺口签名（40/42）" || bad "9c2: $(cat "$RCAP_FILE")"
+# 9c（2026-11-17 语义）: 本场景旧 marker 为空 ⇒ 作废函数"无需作废"直接返回
+# （不为从未有 marker 的子树凭空造文件），故只有 save_fix_state_marker 写一次。
+# 有旧 marker 的场景见 9i 段（那里会写两次：作废/缺口签名 + 修复记录）。
+[ "$(rcat_count)" = "1" ] && ok "9c 无旧 marker 时只写修复记录一次（作废函数不造文件）" || bad "9c: [$(rcat_count)]"
 PAY9=$(cat "$RCAP_FILE")
 [ "$(echo "$PAY9" | jq -r '.fixed_count')" = "1" ] && ok "9d fold 记录已持久化" || bad "9d: $PAY9"
 echo "$PAY9" | jq -e 'has("last_success") | not' >/dev/null && ok "9e 骨架不含 last_success（不触发跳过判断）" || bad "9e: $PAY9"
@@ -260,6 +256,10 @@ PAY9B=$(cat "$RCAP_FILE")
 echo "$PAY9B" | jq -e 'has("last_success") | not' >/dev/null && ok "9i 旧 marker 的 last_success 已作废（下轮放行做真同步）" || bad "9i: $PAY9B"
 echo "$PAY9B" | jq -e '(.skip_basis_invalidated_at // "") != ""' >/dev/null && ok "9i2 作废留痕（可回溯）" || bad "9i2: $PAY9B"
 [ "$(echo "$PAY9B" | jq -r '.fixed_count')" = "1" ] && ok "9j 修复记录并入旧 marker" || bad "9j"
+# 9k-9l（2026-11-17 加）: 有旧 marker 的拒写要写两次，且末次带缺口签名
+[ "$(cat "$RCAT_N")" = "2" ] && ok "9k 有旧 marker 时两次写入（作废/缺口签名 + 修复记录）" || bad "9k: [$(cat "$RCAT_N")]"
+echo "$PAY9B" | jq -e '.last_refusal.sig == "40/42"' >/dev/null \
+  && ok "9l 缺口签名已记录（40/42），下轮相同即报连续轮数" || bad "9l: $PAY9B"
 
 echo "-----"
 echo "PASS=$PASS FAIL=$FAIL"
