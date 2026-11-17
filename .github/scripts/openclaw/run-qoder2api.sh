@@ -115,43 +115,69 @@ QODER_IMG_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$Q
 QODER_VERSION="${QODER_TAG} @ ${QODER_IMG_DIGEST:-digest未知}"
 # 幂等接管：清掉同名旧容器（可能来自上一轮或手工部署），再由本轮接管。
 # 启动失败必须出声（continue-on-error 会吞掉非零退出，TG 是唯一可见通道）。
-docker rm -f qoder2api >/dev/null 2>&1 || true
-# 网络护栏（2026-10-30 04:14 事故固化）：P5b 化后本步骤先于 OmniRoute 启动，而
-# omniroute_default 由 OmniRoute compose 首次 up 才创建 —— 全新 VM 上此刻尚不存在，
-# docker run 卡死 Created（error=failed to set up container networking: network
-# omniroute_default not found；--restart 救不了从未启动过的容器），监控侧即
-# 「qoder 数据源失联」告警。缺网时幂等预创建带 compose 收编标签的同名网络
-#（compose 2.38.2 沙盒实测：project/network 两标签齐即原样收编，不重建不改名），
-# OmniRoute 随后 up -d 直接复用同一网络，容器名 DNS（http://qoder2api:8790/v1）不变。
-if ! docker network inspect omniroute_default >/dev/null 2>&1; then
-  echo "   预创建 omniroute_default（OmniRoute 未启动场景护栏，compose 将收编）"
-  docker network create omniroute_default \
-    --label com.docker.compose.project=omniroute \
-    --label com.docker.compose.network=default >/dev/null \
-    || docker network inspect omniroute_default >/dev/null
+#
+# 2026-11-17（主人拍板 A）同镜像跳过：此前每轮（cron */5）无条件 rm -f + run，
+# 每轮 20~40s 通道中断 —— 既是看板「qoder 数据源失联」误报的来源（600s 启动
+# 宽限到期恰好撞上重建窗口，实测 11-10/11-16/11-17 三次），也让 OmniRoute 侧
+# 偶发 502。改为三条件同时满足才跳过：容器在跑 + 镜像 ID 与目标一致 + /ping 200。
+# 比对镜像 ID 而非 tag（re-release 同 tag 也能识别）；env/端口/挂载有变更时
+# 需先手工 docker rm -f qoder2api，下轮会按新参数重建。
+_q_target_id="$(docker image inspect -f '{{.Id}}' "$QODER_IMAGE" 2>/dev/null || true)"
+_q_running="$(docker inspect -f '{{.State.Running}}' qoder2api 2>/dev/null || true)"
+_q_cid_img="$(docker inspect -f '{{.Image}}' qoder2api 2>/dev/null || true)"
+_q_ping="$(curl -s --connect-timeout 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${QODER_PORT}/ping" || true)"
+_q_skip=0
+_q_why=""
+if [ "$_q_running" = "true" ] && [ "$_q_ping" = "200" ]; then
+  if [ -z "$_q_target_id" ]; then
+    # 镜像拉取失败且本地无目标 tag：沿用运行中容器，别把好服务换成起不来的镜像
+    _q_skip=1; _q_why="目标镜像本地不可用，沿用运行中容器"
+  elif [ "$_q_cid_img" = "$_q_target_id" ]; then
+    _q_skip=1; _q_why="已是目标镜像且 /ping 200"
+  fi
 fi
-# QD_QUEUE_FAST_MODELS 不设（2026-10-30 23:26 主人决定）：优先用免费腿——
-# dfmodel/deepseek-flash 排队时走默认 visible 流内等待（预算 QD_QUEUE_WAIT_BUDGET_SECS=600s），
-# 排到就继续用免费模型，不再秒拒切付费下一腿。要恢复秒拒把下行加回：
-#   -e QD_QUEUE_FAST_MODELS=dfmodel,deepseek-flash \
-# QD_ERROR_COOLDOWN_WAIT_MAX=30（fork v1.7.20）：短频控自吞预算从默认 10s 调大，
-# ≤30s 的上游短频控窗服务端 sleep 等过后正常服务，客户端不再看到瞬态 429
-#（2026-11-01 Kimi 21s 实锤：10s 预算接不住 + 客户端不认 Retry-After 直接抛错）。
-# 远小于排队既有 600s 等待预算，无占坑风险。
-if ! docker run -d --name qoder2api \
-  --restart unless-stopped \
-  --network omniroute_default \
-  -p ${QODER_PORT}:8790 \
-  -e HOST=0.0.0.0 -e PORT=8790 -e TZ=Asia/Shanghai \
-  -e QD_ERROR_COOLDOWN_WAIT_MAX=30 \
-  -v "$QODER_DATA/accounts:/app/accounts" \
-  -v "$QODER_DATA/usage:/app/usage" \
-  "$QODER_IMAGE"; then
-  qoder_notify "❌ qoder2api-hub 启动失败" "docker run 失败" \
-    "$QODER_VERSION" "" "镜像缺失或端口/挂载冲突（详见运行日志）" \
-    "$(docker logs --tail 40 qoder2api 2>&1 || true)" 0
-  exit 1
-fi
+if [ "$_q_skip" = "1" ]; then
+  echo "   ♻️ ${_q_why}，跳过重建（本轮零中断）"
+else
+# ↓ 以下仅在需要重建时执行（块内保持原缩进，便于与历史 diff 对照）
+  docker rm -f qoder2api >/dev/null 2>&1 || true
+  # 网络护栏（2026-10-30 04:14 事故固化）：P5b 化后本步骤先于 OmniRoute 启动，而
+  # omniroute_default 由 OmniRoute compose 首次 up 才创建 —— 全新 VM 上此刻尚不存在，
+  # docker run 卡死 Created（error=failed to set up container networking: network
+  # omniroute_default not found；--restart 救不了从未启动过的容器），监控侧即
+  # 「qoder 数据源失联」告警。缺网时幂等预创建带 compose 收编标签的同名网络
+  #（compose 2.38.2 沙盒实测：project/network 两标签齐即原样收编，不重建不改名），
+  # OmniRoute 随后 up -d 直接复用同一网络，容器名 DNS（http://qoder2api:8790/v1）不变。
+  if ! docker network inspect omniroute_default >/dev/null 2>&1; then
+    echo "   预创建 omniroute_default（OmniRoute 未启动场景护栏，compose 将收编）"
+    docker network create omniroute_default \
+      --label com.docker.compose.project=omniroute \
+      --label com.docker.compose.network=default >/dev/null \
+      || docker network inspect omniroute_default >/dev/null
+  fi
+  # QD_QUEUE_FAST_MODELS 不设（2026-10-30 23:26 主人决定）：优先用免费腿——
+  # dfmodel/deepseek-flash 排队时走默认 visible 流内等待（预算 QD_QUEUE_WAIT_BUDGET_SECS=600s），
+  # 排到就继续用免费模型，不再秒拒切付费下一腿。要恢复秒拒把下行加回：
+  #   -e QD_QUEUE_FAST_MODELS=dfmodel,deepseek-flash \
+  # QD_ERROR_COOLDOWN_WAIT_MAX=30（fork v1.7.20）：短频控自吞预算从默认 10s 调大，
+  # ≤30s 的上游短频控窗服务端 sleep 等过后正常服务，客户端不再看到瞬态 429
+  #（2026-11-01 Kimi 21s 实锤：10s 预算接不住 + 客户端不认 Retry-After 直接抛错）。
+  # 远小于排队既有 600s 等待预算，无占坑风险。
+  if ! docker run -d --name qoder2api \
+    --restart unless-stopped \
+    --network omniroute_default \
+    -p ${QODER_PORT}:8790 \
+    -e HOST=0.0.0.0 -e PORT=8790 -e TZ=Asia/Shanghai \
+    -e QD_ERROR_COOLDOWN_WAIT_MAX=30 \
+    -v "$QODER_DATA/accounts:/app/accounts" \
+    -v "$QODER_DATA/usage:/app/usage" \
+    "$QODER_IMAGE"; then
+    qoder_notify "❌ qoder2api-hub 启动失败" "docker run 失败" \
+      "$QODER_VERSION" "" "镜像缺失或端口/挂载冲突（详见运行日志）" \
+      "$(docker logs --tail 40 qoder2api 2>&1 || true)" 0
+    exit 1
+  fi
+fi  # ← 重建分支结束（_q_skip=1 时整段跳过，容器原样保留）
 
 echo "3. Health check..."
 _code=""
