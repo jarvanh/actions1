@@ -57,6 +57,12 @@ if [ ! -f "$SID_FILE" ] && [ "$REMAIN" -gt 0 ] && { [ "$FORCE" = 1 ] || [ "$REMA
     if [ -n "$_sid" ]; then
       echo "$_sid" > "$SID_FILE"
       : > "$ENABLED"
+      # 2026-11-17：把「已武装」写到 Dropbox，供额度看板显示交接状态
+      #（看板在另一台 VM/浏览器里，读不到本机 /tmp）。manual 区分手动/自动。
+      _manual_flag=0; [ "$FORCE" = 1 ] && _manual_flag=1
+      printf '{"protocol":1,"old_run":%s,"successor_run":%s,"manual":%s,"ts":%s}' \
+        "${GITHUB_RUN_ID:-0}" "$_sid" "$_manual_flag" "$(date +%s)" \
+        | rclone rcat "${HANDOFF_REMOTE_DIR%/}/request.json" >/dev/null 2>&1 || true
       # 2026-11-11 修：手动交接**不等死线**（继任者 ready 就交出，实测 3 分钟），
       # 不能再给「距死线还剩多少分钟」——那会让人以为还能写 4 小时（实测误导）。
       if [ "$FORCE" = 1 ]; then
