@@ -26,9 +26,14 @@
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
           source "${GITHUB_WORKSPACE}/.github/scripts/openclaw/notify_common.sh"
 
-          # 2026-11-02 主人拍板：代码+数据常驻 Dropbox（照 qingyan 范式），
-          # /tmp 只做临时克隆。机器重启不再丢 accounts.json/代码。
-          RUN_DIR="/dropbox/self-hosted/autoclaw-proxy"
+          # 2026-11-17 主人拍板（B 方案）：**代码与数据分离**
+          #   代码 → $HOME/autoclaw-proxy（持久、非 Dropbox，每轮 clone 覆盖）
+          #   数据 → /dropbox/self-hosted/autoclaw-proxy（账号/快照/统计/用量）
+          # 原因：/dropbox 是 rclone fuse 挂载，程序文件写入会被远端同步覆盖，
+          # 且程序真源在 GitHub，不该在云盘留副本。
+          CODE_DIR="${AUTOCLAW_CODE_DIR:-$HOME/autoclaw-proxy}"
+          DATA_DIR="/dropbox/self-hosted/autoclaw-proxy"
+          RUN_DIR="$DATA_DIR"   # 兼容：以下所有 RUN_DIR 用法都指数据目录
           AC_OK=0
           AC_REASON=""
           AC_ACCOUNTS=""
@@ -37,7 +42,7 @@
 
           # 0. 拉代码（GitHub，clone 到 /tmp 临时目录，同步 app/ 进 Dropbox
           #    持久目录；数据文件原地保留，绝不 rm -rf 运行目录）+ 票仓快照
-          SRC_DIR="/tmp/local_autoclaw-proxy-src"
+          SRC_DIR="$CODE_DIR"
           # 2026-11-02 22:52 二次实锤（/tmp/autoclaw-clone.err = "Repository not
           # found"）：job 级 GH_TOKEN=*** 前缀) 注入后，
           # gh auth setup-git 把 ghs_ 票排在 credential helper 首位；且
@@ -63,7 +68,7 @@
           done
           # 2026-11-02 兜底：代码+数据已常驻 Dropbox，clone 再挂也用上次同步的
           # 代码照常起服务（只损失新鲜度，不损失可用性）。
-          if [ "$_clone_ok" != "1" ] && [ ! -s "$RUN_DIR/app/proxy.py" ]; then
+          if [ "$_clone_ok" != "1" ] && [ ! -s "$CODE_DIR/app/proxy.py" ]; then
             echo "::warning::[autoclaw] 代码克隆失败（$AUTOCLAW_REPO）且 Dropbox 无常驻代码"
             AC_REASON="代码克隆失败"
           elif ! rclone copyto "$AUTOCLAW_SNAPSHOT_REMOTE" "$RUN_DIR/snapshot.json" 2>/dev/null && [ ! -s "$RUN_DIR/snapshot.json" ]; then
@@ -72,19 +77,32 @@
           else
             if [ "$_clone_ok" = "1" ]; then
               AC_COMMIT="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
-              mkdir -p "$RUN_DIR/app"
-              cp -a "$SRC_DIR/app/." "$RUN_DIR/app/"
-              printf '%s\n' "$AC_COMMIT" > "$RUN_DIR/COMMIT"
-              echo "代码: $AUTOCLAW_REPO @ $AC_COMMIT（已同步 $RUN_DIR/app）"
+              # 代码就在 CODE_DIR（clone 结果本身），不往 Dropbox 复制；
+              # 只确保数据目录与状态子目录存在。
+              mkdir -p "$DATA_DIR"
+              printf '%s\n' "$AC_COMMIT" > "$DATA_DIR/COMMIT"
+              echo "代码: $AUTOCLAW_REPO @ $AC_COMMIT（运行目录 $CODE_DIR）"
             else
-              AC_COMMIT="$(head -c 16 "$RUN_DIR/COMMIT" 2>/dev/null || true)"
-              [ -n "$AC_COMMIT" ] || AC_COMMIT="dropbox-resident"
-              echo "::warning::[autoclaw] clone 失败，回退 Dropbox 常驻代码 @ $AC_COMMIT"
+              AC_COMMIT="$(head -c 16 "$DATA_DIR/COMMIT" 2>/dev/null || true)"
+              [ -n "$AC_COMMIT" ] || AC_COMMIT="local-resident"
+              if [ -s "$CODE_DIR/app/proxy.py" ]; then
+                echo "::warning::[autoclaw] clone 失败，回退本机常驻代码 @ $AC_COMMIT"
+              else
+                echo "::error::[autoclaw] clone 失败且本机无常驻代码（$CODE_DIR）"
+              fi
             fi
             # 累计统计拉回续计：Dropbox 有则覆盖本地（/tmp 重建后为空），无则从零起计
-            rclone copyto "$AUTOCLAW_STATS_REMOTE" "$RUN_DIR/app/lifetime_stats.json" 2>/dev/null \
+            rclone copyto "$AUTOCLAW_STATS_REMOTE" "$DATA_DIR/lifetime_stats.json" 2>/dev/null \
               && echo "lifetime_stats: 已从 Dropbox 拉回续计" \
               || echo "lifetime_stats: 无云端存档，从零起计"
+            # 一次性迁移：旧布局把 lifetime_stats/pool_state 放在 app/（代码目录），
+            # 新布局放数据目录根。就地搬迁，避免累计统计归零。
+            for _f in lifetime_stats.json pool_state.json; do
+              if [ -s "$DATA_DIR/app/$_f" ] && [ ! -s "$DATA_DIR/$_f" ]; then
+                mv "$DATA_DIR/app/$_f" "$DATA_DIR/$_f" 2>/dev/null \
+                  && echo "已迁移 $_f: app/ → 数据目录根"
+              fi
+            done
             SNAP_ACCOUNTS="$(python3 -c "import json;print(len(json.load(open('$RUN_DIR/snapshot.json')).get('accounts',[])))" 2>/dev/null || echo 0)"
             if [ "${SNAP_ACCOUNTS:-0}" -eq 0 ]; then
               echo "::warning::[autoclaw] 快照为空（0 账号）"
@@ -137,7 +155,11 @@
                 || cp "$RUN_DIR/app/openclaw.json" "$HOME/.openclaw-autoclaw/openclaw.json"
               AC_SERVICES="${GITHUB_WORKSPACE}/.github/scripts/services/services.sh"
               if [ -f "$AC_SERVICES" ]; then
-                AUTOCLAW_RUN_DIR="$RUN_DIR" bash "$AC_SERVICES" ensure autoclaw || \
+                AUTOCLAW_RUN_DIR="$CODE_DIR" \
+                AUTOCLAW_DATA_DIR="$DATA_DIR" \
+                PROXY_STATE_DIR="$DATA_DIR" \
+                PROXY_USAGE_DIR="$DATA_DIR/usage" \
+                  bash "$AC_SERVICES" ensure autoclaw || \
                   echo "::warning::[autoclaw] systemd 托管失败（见 services 日志），自检将判定未就绪"
               else
                 echo "::error::[autoclaw] services.sh 缺失，无法托管"

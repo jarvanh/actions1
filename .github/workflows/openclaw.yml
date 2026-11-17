@@ -1307,6 +1307,10 @@ jobs:
           AUTOCLAW_SNAPSHOT_REMOTE: dropbox:self-hosted/autoclaw-proxy/auth-snapshot.json
           AUTOCLAW_STATS_REMOTE: dropbox:self-hosted/autoclaw-proxy/lifetime_stats.json
           AUTOCLAW_PORT: "8322"
+          # 2026-11-17 代码/数据分离：代码落 $HOME（每轮 clone 覆盖），
+          # 数据（账号/快照/统计/用量）留 Dropbox。Dropbox 是 rclone 挂载，
+          # 程序文件会被远端同步覆盖，程序真源在 GitHub。
+          AUTOCLAW_CODE_DIR: ${{ github.workspace }}/../autoclaw-proxy
         run: |
           set -uo pipefail
           OC_DIR="${GITHUB_WORKSPACE}/.github/scripts/openclaw"

@@ -361,13 +361,16 @@ EOF
     #
     # autoclaw 于 2026-10-12 接入托管（此前 workflow nohup 裸跑，PPID=1、
     # ~/.config/systemd/user 下无单元，本机重启即断连且无人自愈）。
-    # 代码真源在 GitHub（jarvanh/autoclaw-proxy）。2026-11-02 起代码+数据常驻
-    # Dropbox 持久目录（workflow 每轮 clone 到 /tmp 后仅同步 app/ 进来），
-    # 与 qingyan 同款；机器重启不再裸奔到下一轮。仍校验运行产物（fail-closed）。
+    # 代码真源在 GitHub（jarvanh/autoclaw-proxy）。2026-11-17 起**代码与数据分离**：
+    #   代码 → $HOME/autoclaw-proxy（AUTOCLAW_RUN_DIR，每轮 clone 覆盖）
+    #   数据 → /dropbox/self-hosted/autoclaw-proxy（AUTOCLAW_DATA_DIR）
+    # 原因：/dropbox 是 rclone fuse 挂载，程序文件会被远端同步覆盖；程序真源
+    # 在 GitHub，云盘不该留副本。仍校验运行产物（fail-closed）。
     autoclaw)
-      local ac_run_dir="${AUTOCLAW_RUN_DIR:-/dropbox/self-hosted/autoclaw-proxy}"
+      local ac_run_dir="${AUTOCLAW_RUN_DIR:-$HOME/autoclaw-proxy}"
+      local ac_data_dir="${AUTOCLAW_DATA_DIR:-/dropbox/self-hosted/autoclaw-proxy}"
       [ -s "$ac_run_dir/app/proxy.py" ] || { rm -f "$tmp"; die "autoclaw: $ac_run_dir/app/proxy.py 缺失（workflow 需先 clone 代码）"; }
-      [ -s "$ac_run_dir/accounts.json" ] || { rm -f "$tmp"; die "autoclaw: $ac_run_dir/accounts.json 缺失或为空（无凭据，拒绝起无凭据服务）"; }
+      [ -s "$ac_data_dir/accounts.json" ] || { rm -f "$tmp"; die "autoclaw: $ac_data_dir/accounts.json 缺失或为空（无凭据，拒绝起无凭据服务）"; }
       [ -n "${AUTOCLAW_GATEWAY_KEY:-}" ] || { rm -f "$tmp"; die "autoclaw: AUTOCLAW_GATEWAY_KEY 未注入，拒绝生成无鉴权单元"; }
       ensure_log_dir "$LOG_ROOT/autoclaw-proxy/logs/proxy.log"
       cat > "$tmp" <<EOF
@@ -382,8 +385,8 @@ StartLimitBurst=0
 Type=simple
 # WorkingDirectory 指到运行目录：proxy.py 用 __file__ 定位同目录的
 # pool_state.json 与 lifetime_stats.json，cwd 错位会写到别处去。
-# ⚠️ 代码在 /tmp：workflow 每轮 rm -rf + git clone 重新铺，真源不在本机；
-#    这是与 qingyan（Dropbox 真源）的本质差异，别照抄它的路径。
+# ⚠️ 代码在 $HOME/autoclaw-proxy：workflow 每轮 rm -rf + git clone 重新铺，
+#    真源在 GitHub；数据在 Dropbox（ac_data_dir）。别照抄 qingyan 的路径。
 WorkingDirectory=$ac_run_dir
 # 绑 0.0.0.0：OmniRoute 容器经 host.docker.internal 回连本机反代
 # （autoclaw 渠道已入网关），绑回环不可达。无 key 时上面已先 die，
@@ -391,7 +394,10 @@ WorkingDirectory=$ac_run_dir
 Environment=PROXY_HOST=0.0.0.0
 Environment=PROXY_PORT=${AUTOCLAW_PORT:-8322}
 Environment=PROXY_API_KEY=${AUTOCLAW_GATEWAY_KEY}
-Environment=PROXY_ACCOUNTS_FILE=$ac_run_dir/accounts.json
+Environment=PROXY_ACCOUNTS_FILE=$ac_data_dir/accounts.json
+# 状态文件（lifetime_stats / pool_state）与用量明细落数据目录，不落代码目录
+Environment=PROXY_STATE_DIR=$ac_data_dir
+Environment=PROXY_USAGE_DIR=$ac_data_dir/usage
 # 纯标准库单文件（urllib + http.server），系统 python3 直跑，无需 venv。
 ExecStart=/usr/bin/python3 $ac_run_dir/app/proxy.py
 Restart=always
