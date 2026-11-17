@@ -70,6 +70,12 @@ PREVIEW_FAIL_SRC_PAIRS=0
 # 命中时零额外列举；未命中（auto-split 子任务无独立预览条目）才现场估算
 declare -A PREVIEW_PENDING_MAP
 
+# 同步对 → 目标端**现有**总量缓存（键 "<task_name>|<dest_path>"，值 "bytes count"）
+# 2026-11-17 加: pending 只说明"还缺多少"，看不出"目标端有没有在涨"。两轮预览
+# 间 pending 逐字节相同、而 truth-check 持久化复核 690/690 全通过时，必须靠
+# 目标端总量才能判别是"没落地"还是"读到旧缓存/替代名未记账"。
+declare -A PREVIEW_DEST_TOTAL_MAP
+
 # 获取源端大小/文件数（带 --exclude 过滤，读 PREVIEW_SRC_LIST_CACHE 缓存）
 # 用法: _get_source_size_with_excludes <source_path> [原始 extra_args...]
 #   （可含 --delete-* 等非过滤参数，内部会剥离，仅保留过滤口径）
@@ -287,6 +293,24 @@ add_preview_pair() {
     PREVIEW_PENDING_MAP["${PREVIEW_TASK_NAME}|${dest_path}"]="unknown 0"
   else
     PREVIEW_PENDING_MAP["${PREVIEW_TASK_NAME}|${dest_path}"]="${sync_bytes} ${sync_count}"
+  fi
+  # 目标端**现有**总量（2026-11-17 加，供"数据到底有没有落地"的独立判据）:
+  #   动因: 两轮预览之间 pending 有 7/10 对逐字节相同，而同一窗口 truth-check
+  #   的持久化复核是 690/690 全通过 ⇒ 两个信号互相矛盾，无法判断是"没落地"
+  #   还是"预览读到旧缓存 / 替代名产物没被 fixed_files 覆盖"。
+  #   pending 只反映"还缺多少"，单看它区分不了这两种成因；把目标端**现有**
+  #   字节数一并报出来即可判别: 目标端在涨 ⇒ 数据确实在落地（pending 不降另有
+  #   原因）；目标端也一动不动 ⇒ 是列举/缓存口径问题。
+  #   纯读数、不参与任何决策，列举失败记 unknown。
+  if [ "$dst_fail" -eq 1 ]; then
+    PREVIEW_DEST_TOTAL_MAP["${PREVIEW_TASK_NAME}|${dest_path}"]="unknown 0"
+  else
+    local _dbytes _dcount
+    _dbytes=$(echo "$dst_json" | jq -r 'map(.Size // 0) | add // 0' 2>/dev/null) || _dbytes=0
+    _dcount=$(echo "$dst_json" | jq -r 'length' 2>/dev/null) || _dcount=0
+    [[ "$_dbytes" =~ ^[0-9]+$ ]] || _dbytes=0
+    [[ "$_dcount" =~ ^[0-9]+$ ]] || _dcount=0
+    PREVIEW_DEST_TOTAL_MAP["${PREVIEW_TASK_NAME}|${dest_path}"]="${_dbytes} ${_dcount}"
   fi
 }
 

@@ -156,29 +156,44 @@ jobs:
           # （见 task_preview.sh）。逐对打印而不是最后汇总: 万一 180min 到点被
           # 收掉，已算出的对仍然有用。
           echo ""
-          echo "===== 逐对未同步量 ====="
+          echo "===== 逐对未同步量 · 目标端现有量 ====="
           _total=0
           _pairs=0
           _unknown=0
+          _d_total=0
           for _k in "${!PREVIEW_PENDING_MAP[@]}"; do
             _v="${PREVIEW_PENDING_MAP[$_k]}"
             _b="${_v%% *}"
             _c="${_v##* }"
+            # 目标端现有量（2026-11-17 加）: pending 只说明"还缺多少"，两轮间
+            # 逐字节相同而持久化复核却 690/690 全通过时，必须靠这一列判别是
+            # "没落地"还是"读到旧缓存 / 替代名未记账"。目标端在涨即数据在落地。
+            _dv="${PREVIEW_DEST_TOTAL_MAP[$_k]:-unknown 0}"
+            _db="${_dv%% *}"; _dc="${_dv##* }"
+            _dcol="未知"
+            if [[ "$_db" =~ ^[0-9]+$ ]]; then
+              _dcol="$(format_bytes "$_db")/${_dc} 文件"
+              _d_total=$((_d_total + _db))
+            fi
             if ! [[ "$_b" =~ ^[0-9]+$ ]]; then
-              echo "  ${_k} → 未知（列举失败或未产出）"
+              printf '  %-64s %14s  目标端 %s\n' "$_k" "未知" "$_dcol"
               _unknown=$((_unknown + 1))
               continue
             fi
             _total=$((_total + _b))
             _pairs=$((_pairs + 1))
-            printf '  %-72s %14s  %8s 文件\n' "$_k" "$(format_bytes "$_b")" "$_c"
+            printf '  %-64s 缺 %14s (%s 文件)  目标端 %s\n' "$_k" "$(format_bytes "$_b")" "$_c" "$_dcol"
           done
           echo "-----"
           echo "有数据的对数: ${_pairs} · 未知: ${_unknown}"
           echo "合计未同步: $(format_bytes "$_total")（${_total} 字节）"
+          echo "目标端现有合计（含已对齐部分，仅可比对数）: $(format_bytes "$_d_total")（${_d_total} 字节）"
           echo ""
           echo "对照口径: 该数字 = 源端有、目标端无（或大小不一致）的文件字节合计；"
           echo "  与上一轮同名 workflow 的合计对比，即可判断是否单调收敛。"
+          echo "  ⚠️ 2026-11-17 补充: 仅凭 pending 下降与否会误判 —— 若 pending 两轮"
+          echo "  逐字节相同但「目标端现有」在涨，说明数据确实在落地（pending 不降"
+          echo "  另有原因，如替代名产物未记入 fixed_files 而被重复计为缺失）。"
 
       - name: 收尾清理
         if: ${{ always() }}
