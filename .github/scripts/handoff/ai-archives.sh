@@ -142,17 +142,29 @@ ACTIVE_BACKEND="omniroute"
 if [ -f /tmp/active-ai-backend.env ]; then
   ACTIVE_BACKEND="$(grep '^ACTIVE_BACKEND=' /tmp/active-ai-backend.env 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
 fi
+#
+# 2026-11-18 修（run 44205288565 实锤）：交接场景容器已停 →
+# create-omniroute-archive.sh 走 volume-snapshot 分支，而它要 tar 的
+# storage-backup.sqlite 是周期归档结束时删掉的中间产物（卷里没有）→
+# 打包必失败 → 「OmniRoute: 打包失败」→ fail_flag=1 → 不写 ai.json marker
+# → 继任者 gate 被迫超时放行（每轮白等）。
+# 而本步慢路径产物本来就会被 stage A（容器重新拉起后约 10min）用规范
+# VACUUM 打包覆盖上传；快路径 omnivol.tar 也已交付继任者 →
+# 这里直接跳过 OmniRoute 打包（不计失败），并标记需重新拉起容器供 stage A。
 case "${ACTIVE_BACKEND:-omniroute}" in
   clirelay)     archive_upload /tmp/create-clirelay-archive.sh    /tmp/CliRelay-early.tar.gz    ${_pfx}/CliRelay.tar.gz   CliRelay ;;
   cliproxyapi)  archive_upload /tmp/create-cliproxyapi-archive.sh /tmp/CLIProxyAPI-early.tar.gz ${_pfx}/CLIProxyAPI.tar.gz CLIProxyAPI ;;
-  *)            archive_upload /tmp/create-omniroute-archive.sh   /tmp/OmniRoute-early.tar.gz   ${_pfx}/OmniRoute.tar.gz   OmniRoute OmniRoute.tar.gz ;;
+  *)
+    echo "⏭️ OmniRoute 慢路径打包跳过（容器已停 → VACUUM 打包器必失败；stage A 会重新归档覆盖）"
+    _omni_restart=1
+    ;;
 esac
 
 
 # ── 4. omniroute 归档失败的兜底：重新拉起容器，保证旧轮 stage A 的在线备份
 #      （docker exec sqlite3）仍可用 —— 否则 stage A 每轮都会报归档失败 ──
-if [ "$fail_flag" != "0" ] && [ "${ACTIVE_BACKEND:-omniroute}" = "omniroute" ]; then
-  echo "⚠️ 有归档项失败；重新拉起 omniroute 以保证 stage A 在线备份可用"
+if { [ "$fail_flag" != "0" ] || [ "${_omni_restart:-0}" = "1" ]; } && [ "${ACTIVE_BACKEND:-omniroute}" = "omniroute" ]; then
+  echo "🔄 重新拉起 omniroute 以保证 stage A 在线备份可用"
   ( cd /home/runner/omniroute 2>/dev/null && docker compose up -d >/dev/null 2>&1 ) || true
 fi
 
