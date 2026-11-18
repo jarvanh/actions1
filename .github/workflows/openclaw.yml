@@ -2012,8 +2012,17 @@ jobs:
             _v="$(cat "$_rc")"
             if [ "$_v" = "0" ]; then
               echo "✅ [收口] 上游 autoclaw 已就绪（early dispatch，等待 ${_waited}s）"
+            elif (exec 3<>/dev/tcp/127.0.0.1/8322) 2>/dev/null; then
+              echo "⚠️ [收口] 上游 autoclaw 部署退出码 $_v，但 8322 已监听 → 视为可用"
             else
-              echo "⚠️ [收口] 上游 autoclaw 部署退出码 $_v（渠道降级，明细见 /opt/logs/upstream-autoclaw.log）"
+              # 2026-11-18 实锤（run 44115727005，autoclaw 整轮 5.5h down）：
+              # early dispatch 在 hosts.yml 接线前起跑，clone 3 连败写 rc≠0，
+              # 收口此前只报「渠道降级」就收工 —— 整轮再无人重试。此刻
+              # runtime-env 早已把 .env 的 PAT 接好线，前台补跑即成。
+              # 补跑幂等（脚本跳过已完成段；生产 05:09 那次成功就是补跑实证）。
+              echo "⚠️ [收口] 上游 autoclaw 部署退出码 $_v 且 8322 未监听 → 前台补跑 run-autoclaw.sh ..."
+              bash -eo pipefail "$GITHUB_WORKSPACE/.github/scripts/openclaw/run-autoclaw.sh" \
+                || echo "::warning::[autoclaw] 补跑仍失败（渠道降级，明细见 /opt/logs/upstream-autoclaw.log）"
             fi
             tail -n 8 "/opt/logs/upstream-autoclaw.log" 2>/dev/null | sed 's/^/    │ /' || true
           else

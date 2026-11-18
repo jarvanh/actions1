@@ -51,6 +51,40 @@
           # 私有仓 clone 全部 404（workbuddy/zcode 是公开仓，从不暴露此问题）。
           # 修复：剥掉全部 token 环境变量，git 走 credential helper 里的
           # hosts.yml ghp_ PAT（本机已实测剥掉 ghs_ 后克隆成功）。
+          # ── 2026-11-18 实锤（run 44115727005，autoclaw 整轮 5.5h down）──
+          # hosts.yml 的接线发生在 runtime-env 步，而 early dispatch 跑在它
+          # **之前**：fresh VM 上本脚本起跑时 hosts.yml 还不存在，剥掉 ghs_
+          # 后 helper 里空空如也 → "could not read Username" 3 连败。
+          # PAT 的真源是 ~/.openclaw/.env 的 GH_TOKEN（随主包恢复，Restore
+          # .env early 步先于本步就位）→ 照 runtime-env 同款逻辑就地接线，
+          # 不再依赖步骤顺序。已接线（gh auth status 过）则幂等跳过。
+          if ! env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+               gh auth status >/dev/null 2>&1; then
+            _ac_pat="$(sed -n 's/^GH_TOKEN=//p' "$HOME/.openclaw/.env" 2>/dev/null | head -1)"
+            if [ -n "${_ac_pat:-}" ]; then
+              _ac_ghdir="$(mktemp -d)"
+              _ac_login="$(GH_TOKEN="$_ac_pat" gh api user --jq .login 2>/dev/null || true)"
+              if [ -n "${_ac_login:-}" ]; then
+                {
+                  printf 'github.com:\n'
+                  printf '    user: %s\n' "$_ac_login"
+                  printf '    oauth_token: %s\n' "$_ac_pat"
+                  printf '    git_protocol: https\n'
+                } > "$_ac_ghdir/hosts.yml"
+                if GH_CONFIG_DIR="$_ac_ghdir" env -u GH_TOKEN -u GITHUB_TOKEN \
+                     gh auth status >/dev/null 2>&1; then
+                  mkdir -p "$HOME/.config/gh" && chmod 700 "$HOME/.config/gh"
+                  mv "$_ac_ghdir/hosts.yml" "$HOME/.config/gh/hosts.yml"
+                  chmod 600 "$HOME/.config/gh/hosts.yml"
+                  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+                    gh auth setup-git >/dev/null 2>&1 || true
+                  echo "[autoclaw] gh 凭据已从 .env 就地接线（user=$_ac_login，早于 runtime-env）"
+                fi
+              fi
+              rm -rf "$_ac_ghdir" 2>/dev/null || true
+            fi
+            unset _ac_pat _ac_ghdir _ac_login
+          fi
           unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
           export GIT_TERMINAL_PROMPT=0
           # 2026-11-02 首轮实测：偶发失败仍存在，三次重试兜网络抖动，
