@@ -1275,6 +1275,34 @@ jobs:
       # 脚本（幂等保底，覆盖 early dispatch 被跳过/失败的形态）。
       # env 注入：六个脚本的全部 secrets/常量在此集中注入（与原 step env 块逐一对应，
       # 改任一处需同步另一处 —— 两处都引用同名 secrets，不会取到错值）。
+      - name: Restore .env early (独立小文件，不等 3.7GB 主包)
+        # 2026-11-17 事故（run 44074148025）：主包 prefetch 没产出 → Install OpenClaw
+        # 失败 → ~/.openclaw 只有 124K、没有 .env → 无 GH_TOKEN/TG token/网关 key
+        # → Run OpenClaw 被跳过、18789 从未启动，整机「起来了但没法用」。
+        # .env 只有 4KB，没理由跟 3.7GB 状态包绑在一起。这里在安装之前先独立恢复，
+        # 后续所有步骤（通知、网关、看门狗）都不再依赖大包。
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          ENVF="$HOME/.openclaw/.env"
+          mkdir -p "$HOME/.openclaw"
+          # 已有非空 .env（同一轮重跑）→ 保留
+          if [ -s "$ENVF" ] && grep -q '^GH_TOKEN=.' "$ENVF" 2>/dev/null; then
+            echo "ℹ️ .env 已存在且含 GH_TOKEN，跳过独立恢复"
+            exit 0
+          fi
+          TMP="$(mktemp)"
+          if rclone copyto dropbox:self-hosted/openclaw.env "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
+            install -m 600 "$TMP" "$ENVF"
+            rm -f "$TMP"
+            echo "✅ .env 已从独立小文件恢复（$(grep -c '=' "$ENVF") 个键）"
+            exit 0
+          fi
+          rm -f "$TMP"
+          echo "⚠️ 独立 .env 不存在，回退：稍后由主包恢复（若主包失败则本轮无 .env）"
+
+
       - name: Dispatch upstream services (early, 与 install 段重叠)
         id: dispatch_upstream_early
         # 2026-10-22 口径：本步失败不得级联跳过后续（收口 step 会兜底）
@@ -1322,33 +1350,6 @@ jobs:
             _dispatched=$((_dispatched + 1))
           done
           echo "🚀 [early-dispatch] 已派发 ${_dispatched}/6 上游（真实部署后台进行，收口 step 等待 rc）"
-
-      - name: Restore .env early (独立小文件，不等 3.7GB 主包)
-        # 2026-11-17 事故（run 44074148025）：主包 prefetch 没产出 → Install OpenClaw
-        # 失败 → ~/.openclaw 只有 124K、没有 .env → 无 GH_TOKEN/TG token/网关 key
-        # → Run OpenClaw 被跳过、18789 从未启动，整机「起来了但没法用」。
-        # .env 只有 4KB，没理由跟 3.7GB 状态包绑在一起。这里在安装之前先独立恢复，
-        # 后续所有步骤（通知、网关、看门狗）都不再依赖大包。
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          ENVF="$HOME/.openclaw/.env"
-          mkdir -p "$HOME/.openclaw"
-          # 已有非空 .env（同一轮重跑）→ 保留
-          if [ -s "$ENVF" ] && grep -q '^GH_TOKEN=.' "$ENVF" 2>/dev/null; then
-            echo "ℹ️ .env 已存在且含 GH_TOKEN，跳过独立恢复"
-            exit 0
-          fi
-          TMP="$(mktemp)"
-          if rclone copyto dropbox:self-hosted/openclaw.env "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
-            install -m 600 "$TMP" "$ENVF"
-            rm -f "$TMP"
-            echo "✅ .env 已从独立小文件恢复（$(grep -c '=' "$ENVF") 个键）"
-            exit 0
-          fi
-          rm -f "$TMP"
-          echo "⚠️ 独立 .env 不存在，回退：稍后由主包恢复（若主包失败则本轮无 .env）"
 
       - name: Install OpenClaw
         id: install_openclaw
