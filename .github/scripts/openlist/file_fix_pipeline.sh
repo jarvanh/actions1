@@ -687,7 +687,11 @@ _sync_bulk_hash_dir_fold() {
   local min_files="${OPENLIST_BULK_FOLD_MIN_FILES:-2}"
   local max_dirs="${OPENLIST_BULK_FOLD_MAX_DIRS:-40}"
   # 最小工作片: 剩余预算不足它就在下一个目录前收摊（与逐文件循环/任务级同口径）
-  local _fold_slice="${OPENLIST_FIX_MIN_SLICE_SECONDS:-${OPENLIST_SYNC_MIN_SLICE_SECONDS:-600}}"
+      # ⚠️ 折叠路径原先也用 600s 做"是否开工"判据（与下方修复管线同病，2026-11-18 修）:
+      #    折叠跑在同步对尾部 ⇒ 剩余 < 600s ⇒ 恒收摊 ⇒ 一个目录都不折。
+      #    改为单目录起步阈值（默认 90s），到点仍由逐目录截止检查停。
+      #    回退: OPENLIST_FIX_START_FLOOR_SECONDS=600 即恢复旧行为。
+      local _fold_slice="${OPENLIST_FIX_START_FLOOR_SECONDS:-90}"
   local ol_dst_base="${dest_path#openlist:}"
   ol_dst_base="${ol_dst_base#/}"
 
@@ -721,7 +725,7 @@ _sync_bulk_hash_dir_fold() {
     [ "$dirs_done" -ge "$max_dirs" ] && break
     # 时间预算: 剩余不足一个工作片就停 —— 用 slice 语义而非"已过期才停"。
     # 单个目录的 rclone sync 可能跑很久，等到过期再收摊会把后面持久化复核
-    # 与收尾的时间一起吃掉（逐文件循环已改用同一口径，见下方 _fix_slice）
+    # 与收尾的时间一起吃掉（逐文件循环同口径，见下方 _fix_start_floor）
     # 终点改走 budget_deadline_epoch（2026-11-10）: 并行模式下还必须受"本同步对
     #   份额"约束 —— 否则份额到点的对会继续折叠/修复几十分钟~几小时
     #   （run 42706236473 的修复正发生在 04:00-04:11，早已越过任何合理份额 ⇒
@@ -1180,10 +1184,24 @@ _sync_fix_missing_files() {
       # 目录创建层连续失败计数（跨文件累积；成功一次归零）。用于在"后端整个
       # 建不出目录"时尽早收手，而不是逐个文件重复失败——见循环内判据注释。
       _FIX_MKDIR_FAIL_STREAK=0
-      # 修复管线专属最小工作片: 剩余预算不足它就在下一个文件前收摊，把尾部时间
-      # 留给后面的持久化复核与收尾。默认沿用全局 600s（可单独调小以压榨尾部，
-      # 但要给 _sync_persist_verify_and_retry 留够时间，否则复核被截断会丢条目）
-      local _fix_slice="${OPENLIST_FIX_MIN_SLICE_SECONDS:-${OPENLIST_SYNC_MIN_SLICE_SECONDS:-600}}"
+      # 修复管线"能不能开工"的最小起步阈值（2026-11-18 修，生产实证）
+      # ⚠️ 这里原先用的是 `_fix_slice`（默认沿用全局 600s）做"是否开工"判据:
+      #     `now + 600 >= deadline` ⇒ 剩余不足 600s 就整批收摊。
+      #   而修复管线的调用点恰恰在**同步对尾部**（`尾部 120s 留给修复管线`）⇒
+      #   剩余永远 < 600s ⇒ 恒真 ⇒ **每一批进去的第一件事就是收摊**。
+      #   现场（run 44207166413 等四轮一致）: 每轮 21 个「缺失文件修复 · 共 N 个」
+      #   批次（N 分别 400/324/227/52/1…），每批紧跟「预算将尽，优雅收摊: 剩余 N
+      #   个文件交下轮接力」⇒ **本轮处理 0 个**；FIX_ATTEMPT 只有 4~6，且
+      #   「方法1·原名直传」尝试次数为 **0**（连方法1 都没跑到）。
+      #   这也让 57365f0 的「删坏件重传」兜底不可达（它在方法1 内部）。
+      # 改法: 把"开工门槛"与"计划工作片"分开 —— 门槛取**单文件能起步**的量级
+      #   （默认 90s：够一次 mkdir+探测+copyto），到点仍由**逐文件**截止检查停。
+      #   状态是增量持久化的（_persist_fix_entry_now 每条即写），所以"多处理一个
+      #   文件再停"永远优于"一个都不处理"。
+      #   为什么不是更小: 低于 ~60s 连一次上传都开不了，只会留下半截件。
+      #   回退: OPENLIST_FIX_START_FLOOR_SECONDS=600 即恢复旧行为。
+      local _fix_start_floor="${OPENLIST_FIX_START_FLOOR_SECONDS:-90}"
+      [[ "$_fix_start_floor" =~ ^[0-9]+$ ]] || _fix_start_floor=90
       local _cb_threshold="${OPENLIST_FIX_CB_FILES:-3}"
       local _cb_done=0 _cb_total
       _cb_total=$(wc -l < "$missing_list" | tr -d ' ')
@@ -1206,8 +1224,8 @@ _sync_fix_missing_files() {
           _fix_dl="${OPENLIST_SYNC_DEADLINE_EPOCH:-}"
         fi
         if [ -n "$_fix_dl" ] \
-           && [ $(( $(date +%s) + _fix_slice )) -ge "$_fix_dl" ]; then
-          echo "⏳ 修复管线预算将尽，优雅收摊: 剩余 $((_cb_total - _cb_done)) 个文件交下轮接力（状态已增量持久化）" | tee -a "$LOG_FILENAME"
+           && [ $(( $(date +%s) + _fix_start_floor )) -ge "$_fix_dl" ]; then
+          echo "⏳ 修复管线预算将尽（剩余不足起步阈值 ${_fix_start_floor}s），优雅收摊: 剩余 $((_cb_total - _cb_done)) 个文件交下轮接力（状态已增量持久化）" | tee -a "$LOG_FILENAME"
           SYNC_TIME_EXHAUSTED=1
           break
         fi
