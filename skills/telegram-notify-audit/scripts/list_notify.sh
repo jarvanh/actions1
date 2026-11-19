@@ -36,10 +36,9 @@ CURL_ALLOW = {
     ".github/scripts/openlist/telegram.sh",
     ".github/scripts/openlist/sync_notify.sh",
     ".github/scripts/telegram/ensure-miniapp-menu.sh",
-    # services.sh 的 curl 位于 `cat > "$guard" <<'GUARD'` 生成的**宿主机独立守护
-    # 脚本**里（systemd timer 跑，脱离仓库上下文）⇒ 无法 source 仓库共用发送器。
-    # 那是生成物、不是仓库内发送点，静态扫描分不清 heredoc 内外，只能白名单。
-    ".github/scripts/services/services.sh",
+    # 注：services.sh 生成的 dropbox 守卫曾直连 curl（静态扫描分不清 heredoc 内外
+    # 而进过白名单）；2026-11-19 起改为安装时拷 tg_notify.sh、运行时 source，已
+    # 不再需要白名单，故移除。
 }
 
 ANY_SEND = re.compile(
@@ -323,7 +322,13 @@ def scopes_for(path, lines):
     """
     numbered = [(i + 1, l) for i, l in enumerate(lines)]
     if not path.endswith((".yml", ".yaml")):
-        return shell_scopes(numbered)
+        # .sh 同样按 heredoc 切作用域：`cat > x <<'EOF' … EOF` 生成的是独立脚本，
+        # 正文里的 source / 函数体不属于本文件的函数作用域（此前只对 YAML run 块切，
+        # 导致生成守卫的 source 被误判成「函数体内 source」）。
+        out = []
+        for _off, chunk in _split_heredocs(numbered):
+            out.extend(shell_scopes(chunk))
+        return out
 
     out = []
     i = 0
@@ -645,7 +650,8 @@ def check():
     # 14 🕒 只允许常驻服务
     bad = []
     for p in all_files:
-        if p.endswith("health/system_health.sh"):
+        # 允许：健康看门狗；services.sh 生成的 dropbox 守卫（无 run 上下文的常驻服务）
+        if p.endswith(("health/system_health.sh", "services/services.sh")):
             continue
         for i, l in enumerate(open(p, encoding="utf-8", errors="replace").read().split("\n"), 1):
             if "🕒" in l and not l.strip().startswith("#"):

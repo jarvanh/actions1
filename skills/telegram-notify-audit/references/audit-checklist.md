@@ -20,7 +20,7 @@
 | 11 | 速查表函数存在性 | 对 `skills/telegram-notify-send/references/api-reference.md` 的三套实现对照表，逐列取函数名 `grep -nE '^(函数名)\(\)\|^def 函数名\|^function 函数名'` 对真源 | **双向**（脚本已实现）：①表里的名字必须在真源存在；②bash / pwsh 真源的非 `_` 前缀公开助手必须登记进表。python 只做①（文件内大量测速业务函数不是通知助手）。只记函数名不记行号 |
 | 12 | **函数体内 `source` 真源** | `source .*tg_notify\.sh`，人工判断是否落在 `name() { … }` 之间 | 只允许在 step / heredoc 顶层。子 shell 内 source 只改子 shell 函数表，会还原调用点对 `send_tg` 的覆写、`local` 也失效（规范 · 通知函数的正确接法） |
 | 13 | 接力轮重复通知 | 长跑 workflow 里按「服务已就绪」发通知的调用点 | 默认每轮都发（服务确实重启过）；按接力轮静默的必须有 `/tmp` 标记文件，且域文档与调用点同时写明（当前只有 zcode2api，降级轮仍每轮必报） |
-| 14 | `🕒` 误用 | `🕒` | 只允许无 run 上下文的常驻服务收尾区（`health/system_health.sh`、`board.py`、`gateway-watchdog.py`）；正文分节 / 时间行不得使用 |
+| 14 | `🕒` 误用 | `🕒` | 只允许无 run 上下文的常驻服务收尾区（`health/system_health.sh`、`services.sh` 生成的 dropbox 守卫、`board.py`、`gateway-watchdog.py`）；正文分节 / 时间行不得使用 |
 | 15 | 展示时间时区 | 通知字符串里的 `UTC`；无 `TZ=` 的 `date +%F` | 展示时间一律东八区（`YYYY-MM-DD HH:MM（东八区）`）；仅机器值可 UTC。取展示值必须 `TZ=Asia/Shanghai` |
 | 16 | 分节计数形式 | `tg_add_section` 标题：分节后跟 `tree_` / `tg_add_entry` 时，` · ` 后必须是计数或变量 | 不出现「· 模型数量 N」这类文字 |
 | 17 | 通知正文时间 | `tg_add_` / `tg_append` / `caption` 行里的 `YYYY-MM-DDTHH:MM` 或 `UTC` | 零使用；解析失败写「未知」，原始值只留日志 |
@@ -82,6 +82,8 @@
 
 ### 3.4 冒烟必须能抓的契约（不是规范）
 
+- systemd 生成的 `dropbox-orphan-guard.sh` 从脚本同目录 source 安装时拷来的 `tg_notify.sh`，
+  版式/发送都复用真源，不是第二套发送层；`services.sh` 里出现 `tg_add_title` 是生成守卫的模板，不是第二处通知实现。
 - 资产段「📅 资产」节标题必须排在数据行之前（标题挂空即偏差）。
 - `_DAYS_CACHE` 必须已定义；`board.log` 出现 `NameError` 即偏差。
 - 空输出（任一源当日无数据、qingyan 回退快照）= 合法，非偏差。

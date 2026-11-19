@@ -480,6 +480,19 @@ EOF
       # 数据」。现在改成独立脚本：搬运 + 立刻发 TG + 落盘留痕。
       local guard="${HOME}/.openclaw/bin/dropbox-orphan-guard.sh"
       install -d -m 755 "${HOME}/.openclaw/bin" 2>/dev/null || true
+      # 守卫由 systemd 在每轮挂载时运行，那时没有 GITHUB_WORKSPACE；安装时把发送层真源
+      # 拷到守卫同目录，运行时从脚本自身位置 source。不复制发送逻辑、不在函数体内 source
+      # （规范 · 通知函数的正确接法）：HTML 转义 / 400 不重发 / 429 retry_after / 档位路由
+      # 全部复用全库唯一实现（规范 · 发送层要求）。
+      local _tg_src=""
+      if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh" ]; then
+        _tg_src="${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
+      else
+        _tg_src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/telegram/tg_notify.sh"
+      fi
+      if [ -f "$_tg_src" ]; then
+        install -m 644 "$_tg_src" "${HOME}/.openclaw/bin/tg_notify.sh" 2>/dev/null || true
+      fi
       cat > "$guard" <<'GUARD'
 #!/usr/bin/env bash
 # /dropbox 挂载点守卫：rclone 没挂上（或刚崩）时，写进挂载点目录的数据会被
@@ -509,22 +522,39 @@ if [ -r "$ENV_FILE" ]; then
   . "$ENV_FILE" 2>/dev/null || true
   set +a
 fi
-token="${TELEGRAM_BOT_TOKEN_ALERT:-${TELEGRAM_BOT_TOKEN:-}}"
-chat="${TELEGRAM_CHAT_ID_ALERT:-${TELEGRAM_CHAT_ID:-}}"
-if [ -z "$token" ] || [ -z "$chat" ]; then
-  logger -t rclone-dropbox "orphan alert skipped: no TG credentials"
+# 发送层真源由安装步骤拷到本脚本同目录；从这里 source 而不是自己 curl。
+# 不在发送前拿 token/chat 做静默守卫：alert 档凭据缺失由发送层失败留痕（规范 · 接线）。
+NOTIFY_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tg_notify.sh"
+if [ ! -f "$NOTIFY_SRC" ]; then
+  logger -t rclone-dropbox "orphan alert skipped: tg_notify.sh 缺失（$NOTIFY_SRC）"
   exit 0
 fi
+# shellcheck disable=SC1090
+source "$NOTIFY_SRC" 2>/dev/null || { logger -t rclone-dropbox "orphan alert skipped: tg_notify.sh source 失败"; exit 0; }
 
-text="🚨 /dropbox 挂载点非空，已隔离残留
-主机：$(hostname)
-数量：${count} 项 / ${size}
-位置：${dest}
-影响：这批写入没进 Dropbox，重启即丢；请检查上一轮 rclone 挂载失败原因。"
-curl -sS --max-time 15 "https://api.telegram.org/bot${token}/sendMessage" \
-  --data-urlencode "chat_id=${chat}" \
-  --data-urlencode "text=${text}" \
-  -o /dev/null 2>/dev/null || logger -t rclone-dropbox "orphan alert send failed"
+msg=""
+tg_add_title msg "🚨 /dropbox 挂载点非空，已隔离残留"
+tg_add_path msg "主机" "$(hostname)"
+tg_add_kv msg "数量" "${count} 项 / ${size}"
+tg_add_path msg "位置" "$dest"
+tg_add_note msg "这批写入没进 Dropbox，重启即丢；请检查上一轮 rclone 挂载失败原因。"
+# 守卫是常驻服务、没有 run 上下文：tg_add_footer 无 TG_RUN_URL 时整行跳过，
+# 补规范 · 收尾区允许的 🕒 报告时刻形态（与 system_health.sh 同口径）。
+tg_add_footer msg
+if [ -z "${TG_RUN_URL:-}" ]; then
+  case "$msg" in
+    *$'\n') tg_append msg $'\n' ;;
+    *) tg_append msg $'\n'$'\n' ;;
+  esac
+  tg_append msg "🕒 $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M（东八区）')"$'\n'
+fi
+# 🚨 数据丢失风险 = 需人动手 → alert 档（无回落）。失败原因由 send_tg 写 stderr，
+# systemd journal 可见；这里只补一条 logger 便于 grep。
+if send_tg "$msg" alert; then
+  logger -t rclone-dropbox "orphan alert sent: count=$count size=$size dest=$dest"
+else
+  logger -t rclone-dropbox "orphan alert send failed (see tg_notify.sh stderr)"
+fi
 exit 0
 GUARD
       chmod 755 "$guard" 2>/dev/null || true
