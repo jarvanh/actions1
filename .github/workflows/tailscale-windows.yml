@@ -37,6 +37,8 @@ jobs:
     env:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+      # 注册前清理 gh-win* 断联僵尸用（tskey-api-*，需 devices 读写权限；缺失时该步自动跳过）
+      TS_API_KEY: ${{ secrets.TS_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -49,6 +51,35 @@ jobs:
         run: |
           source "$GITHUB_WORKSPACE/.github/scripts/lib/run_elapsed.sh"
           run_elapsed_mark_start
+
+      # 2026-11-19 事故根治（gh-win 变 gh-win-1 且整轮不改回）：
+      # 自续接力比控制面清理快 —— 上一轮 ephemeral 节点还占着 gh-win 名时新节点注册，
+      # 被动加后缀 -1；Windows 侧没有 Linux 的 ts-reclaim 守护，过了改名的 60s 窗口
+      # 就整轮顶着后缀。这里在注册前用 API 直删已断联（connectedToControl=false）的
+      # gh-win* 僵尸，名字当场空出。安全红线：只删断联节点，绝不碰还连着的。
+      - name: Purge stale gh-win nodes (Tailscale API)
+        if: ${{ env.TS_API_KEY != '' }}
+        shell: pwsh
+        run: |
+          # 拉设备列表失败不阻塞主流程：注册后的改名重试仍会兜底
+          try {
+            $devs = (Invoke-RestMethod -Uri 'https://api.tailscale.com/api/v2/tailnet/-/devices' `
+              -Headers @{ Authorization = "Bearer $Env:TS_API_KEY" } -TimeoutSec 20).devices
+          } catch {
+            echo "⚠️ 设备列表拉取失败，跳过僵尸清理（注册后改名重试兜底）: $_"
+            exit 0
+          }
+          $zombies = @($devs | Where-Object {
+            ($_.hostname -like 'gh-win*' -or $_.name -like 'gh-win*') -and $_.connectedToControl -eq $false
+          })
+          if (-not $zombies) { echo "✅ 无 gh-win* 断联僵尸，无需清理"; exit 0 }
+          foreach ($z in $zombies) {
+            try {
+              Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/device/$($z.id)" -Method Delete `
+                -Headers @{ Authorization = "Bearer $Env:TS_API_KEY" } -TimeoutSec 20 | Out-Null
+              echo "🗑️ 已删除断联僵尸 $($z.hostname) / $($z.name)"
+            } catch { echo "⚠️ 删除 $($z.id) 失败: $_" }
+          }
 
       - name: Setup Tailscale (SSH 调试入口)
         id: ts
@@ -82,17 +113,20 @@ jobs:
           # 设置 runneradmin 密码，供 SSH / RDP 密码登录
           Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $Env:RUNNER_PASSWORD -Force)
 
-          # 固定主机名（singleton 并发下不会撞名）；节点为 ephemeral，job 结束自动移除
+          # 固定主机名（singleton 并发下不会同时撞名；残留僵尸由注册前 API 清理步骤删除）
+          # 节点为 ephemeral，job 结束自动移除
           # 兜底：action 已用 hostname 注册，这里再 set 一次并轮询等待控制面收敛
           # 每轮都重试 set：若 tailnet 残留同名旧节点导致本节点被加后缀（gh-win-1），
           # 旧节点释放后改名即可生效，保证域名跨 run 稳定为 gh-win.<tailnet>.ts.net
+          # 2026-11-19：注册前已加 API 清僵尸步骤，常规一次即中；窗口 60s→150s（5s×30）
+          # 兜底极端情况：旧 VM 尚未退场、控制面删除/改名生效延迟
           $tsDns = $null
-          for ($i = 0; $i -lt 20; $i++) {
+          for ($i = 0; $i -lt 30; $i++) {
             tailscale set --hostname=gh-win
             $status = tailscale status --json | ConvertFrom-Json
             $dns = ($status.Self.DNSName.TrimEnd('.'))
             if ($dns -and ($dns -split '\.')[0] -eq 'gh-win') { $tsDns = $dns; break }
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 5
           }
           if (-not $tsDns) { $tsDns = ((tailscale status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') }
           $tsHost = ($tsDns -split '\.')[0]
