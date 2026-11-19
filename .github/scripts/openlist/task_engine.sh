@@ -409,6 +409,21 @@ _run_registry_pairs_parallel() {
       fi
       (
         export OPENLIST_PAIR_DEADLINE_EPOCH="$_pd_epoch"
+        # 修复路径专用终点 = 份额终点 + 过份额宽限（2026-11-19 加）
+        # 为什么必须单独导出: 修复管线被调用在同步对**尾部**，那时份额已到点
+        #   ⇒ budget_deadline_epoch 返回的终点已过 ⇒ 剩余为负 ⇒ 无论起步阈值
+        #   多小都恒收摊。bd724a9 把开工门槛从 600s 降到 90s 仍恒真即是实证
+        #   （44349796740 / 44384544559: FIX_ATTEMPT 6 · 方法1 尝试 0 · 收摊 19~20 次）。
+        #   宽限窗口本是给"在途工作收尾"的；同步已结束而修复还没跑，用它做修复
+        #   正是它该有的用途。上界仍受平台硬顶约束（与 _pd_epoch 同口径预留）。
+        if [[ "$_pd_epoch" =~ ^[0-9]+$ ]] && [ "$_pd_epoch" -gt 0 ]; then
+          local _rd_epoch=$(( _pd_epoch + ${OPENLIST_PAIR_OVERRUN_GRACE_SECONDS:-600} ))
+          if [[ "${OPENLIST_STEP_HARD_LIMIT_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+            local _hl2=$(( OPENLIST_STEP_HARD_LIMIT_EPOCH - ${OPENLIST_STEP_TAIL_RESERVE_SECONDS:-480} ))
+            [ "$_rd_epoch" -gt "$_hl2" ] && _rd_epoch="$_hl2"
+          fi
+          export OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH="$_rd_epoch"
+        fi
         PROGRESS_WORKER_MUTE=1
         _rot_attempts=0
         SYNC_BACKEND_DEAD=0
@@ -669,6 +684,21 @@ budget_deadline_epoch() {
   if [ -z "$_d" ]; then echo "${_p:-}"; return 0; fi
   if [ -z "$_p" ]; then echo "$_d"; return 0; fi
   if [ "$_p" -lt "$_d" ]; then echo "$_p"; else echo "$_d"; fi
+}
+
+# 修复管线专用终点（2026-11-19 加）: 与 budget_deadline_epoch 的唯一区别是
+# **把份额过后的宽限窗口算进来**（OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH）。
+# 为什么必须单列: 修复管线被调用在同步对尾部，那时份额已到点 ⇒ 用
+#   budget_deadline_epoch 得到的终点已过 ⇒ 剩余为负 ⇒ 起步阈值再小也恒收摊
+#   （bd724a9 实证: 门槛降到 90s 后仍 19~20 次收摊、方法1 尝试 0）。
+# 上界仍受全局 deadline 约束（两者取小），平台硬顶由导出端预先夹住。
+repair_deadline_epoch() {
+  local _d="${OPENLIST_SYNC_DEADLINE_EPOCH:-}" _r="${OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH:-}"
+  [[ "$_d" =~ ^[0-9]+$ ]] || _d=""
+  [[ "$_r" =~ ^[0-9]+$ ]] || _r=""
+  if [ -z "$_d" ]; then echo "${_r:-}"; return 0; fi
+  if [ -z "$_r" ]; then echo "$_d"; return 0; fi
+  if [ "$_r" -lt "$_d" ]; then echo "$_r"; else echo "$_d"; fi
 }
 
 # 本同步对份额是否为**当前生效**的约束（存在且比全局锚点更近）。

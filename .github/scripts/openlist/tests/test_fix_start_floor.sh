@@ -38,5 +38,21 @@ grep -q '剩余不足起步阈值 \${_fix_start_floor}s' "$SRC" && ok "F6 收摊
 # F7: 折叠支路同修（同一病理）
 grep -q 'local _fold_slice="${OPENLIST_FIX_START_FLOOR_SECONDS:-90}"' "$SRC" && ok "F7 折叠支路同用起步阈值" || bad "F7"
 
+# ============================================================
+# F8..F11（2026-11-19 加）: 修复路径的**终点**必须含过份额宽限窗口
+#   为什么: bd724a9 把开工门槛降到 90s 后仍恒收摊（19~20 次/轮、方法1 尝试 0）
+#   —— 因为修复被调用在份额到点**之后**，旧终点（=份额终点）已过期 ⇒ 剩余为负。
+#   契约: task_engine 导出 OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH（=份额终点+宽限，
+#   并夹平台硬顶）；提供 repair_deadline_epoch()（与全局取小）；
+#   修复/折叠两个闸优先用它，且旧函数链仍在（向后兼容）。
+# ============================================================
+TE="$R/.github/scripts/openlist/task_engine.sh"
+grep -q 'export OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH=' "$TE" && ok "F8 task_engine 导出修复专用终点" || bad "F8 未导出"
+grep -q '+ ${OPENLIST_PAIR_OVERRUN_GRACE_SECONDS:-600}' "$TE" && ok "F9 终点 = 份额终点 + 宽限（默认 600s）" || bad "F9 未叠加宽限"
+grep -q '^repair_deadline_epoch()' "$TE" && ok "F10 repair_deadline_epoch 已定义" || bad "F10 缺函数"
+n_repair=$(grep -c 'declare -F repair_deadline_epoch' "$SRC")
+[ "$n_repair" -ge 2 ] && ok "F11 修复与折叠两个闸都优先用它（命中 $n_repair 处）" || bad "F11 仅 $n_repair 处"
+grep -q 'elif declare -F budget_deadline_epoch' "$SRC" && ok "F12 保留旧函数回退链（单测/调试环境兼容）" || bad "F12 缺回退链"
+
 echo "----------"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

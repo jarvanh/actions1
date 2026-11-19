@@ -726,12 +726,15 @@ _sync_bulk_hash_dir_fold() {
     # 时间预算: 剩余不足一个工作片就停 —— 用 slice 语义而非"已过期才停"。
     # 单个目录的 rclone sync 可能跑很久，等到过期再收摊会把后面持久化复核
     # 与收尾的时间一起吃掉（逐文件循环同口径，见下方 _fix_start_floor）
-    # 终点改走 budget_deadline_epoch（2026-11-10）: 并行模式下还必须受"本同步对
-    #   份额"约束 —— 否则份额到点的对会继续折叠/修复几十分钟~几小时
-    #   （run 42706236473 的修复正发生在 04:00-04:11，早已越过任何合理份额 ⇒
-    #   份额形同虚设）。本文件可被单测单独 source，故带 declare -F 兜底。
+    # 终点改走 repair_deadline_epoch（2026-11-19）: 与 budget_deadline_epoch 的
+    #   区别是**把份额过后的宽限窗口算进来** —— 修复恰好被调用在份额到点之后，
+    #   用旧终点会得到"已过期"⇒ 恒收摊（bd724a9 把门槛降到 90s 仍 19~20 次收摊、
+    #   方法1 尝试 0 的实证）。仍与全局 deadline 取小；本文件可被单测单独 source，
+    #   故带 declare -F 兜底。
     local _fold_dl=""
-    if declare -F budget_deadline_epoch >/dev/null 2>&1; then
+    if declare -F repair_deadline_epoch >/dev/null 2>&1; then
+      _fold_dl=$(repair_deadline_epoch)
+    elif declare -F budget_deadline_epoch >/dev/null 2>&1; then
       _fold_dl=$(budget_deadline_epoch)
     else
       _fold_dl="${OPENLIST_SYNC_DEADLINE_EPOCH:-}"
@@ -1218,7 +1221,9 @@ _sync_fix_missing_files() {
         #   份额"约束，否则份额到点的对会在修复管线里继续跑几十分钟~几小时
         #   （run 42706236473 的修复正发生在 04:00-04:11，早已越过任何合理份额）。
         local _fix_dl=""
-        if declare -F budget_deadline_epoch >/dev/null 2>&1; then
+        if declare -F repair_deadline_epoch >/dev/null 2>&1; then
+          _fix_dl=$(repair_deadline_epoch)
+        elif declare -F budget_deadline_epoch >/dev/null 2>&1; then
           _fix_dl=$(budget_deadline_epoch)
         else
           _fix_dl="${OPENLIST_SYNC_DEADLINE_EPOCH:-}"
