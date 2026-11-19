@@ -52,6 +52,11 @@ _build_exclude_patterns() {
   done
 }
 get_transferred_bytes_from_log() { echo 70185; }
+# transferred_bytes_is_exact 真源在 utils.sh；本测试不 source 它，必须一并 mock，
+# 否则 sync_notify.sh 调用它时报 "command not found"（CI tests 工作流的硬红线：
+# 任何测试输出出现 command not found 即判红）。返回 0=精确口径，避免多打一行
+# "传输量为进度口径" 扰乱版式断言。
+transferred_bytes_is_exact() { return 0; }
 progress_add_fixed_files() { return 0; }
 _fix_method_short() { echo "未知"; }
 SYNC_SKIP_QUIET=0
