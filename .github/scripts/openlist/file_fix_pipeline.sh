@@ -932,6 +932,36 @@ _sync_bulk_hash_dir_fold() {
 #   lsf，见 _batch_consolidate）。设定时直接复用，不再全量重扫目标端——
 #   大目录单次 lsf 递归动辄数分钟，同一轮内重复列两三次纯属浪费。
 #   仅在非 OVERRIDE 路径（需要 src-vs-dst diff 的场景）生效。
+#
+# 缺失清单两路差集（2026-11-19 加）:
+#   ① 源端有、目标端无 → 缺失（原 comm -23 语义）
+#   ② 源端有、目标端也有但**尺寸不符** → 409 死锁半截件
+# 为何必须加 ②: 115 后端拒绝更新已存在的同名文件（`unchunked simple update
+#   failed: Conflict: 409`），目标端那个同名件是历史上传坏的半截件（尺寸不符）。
+#   旧的仅按名求差集时它"存在"⇒ 不进清单 ⇒ 只能靠上一轮 `Failed to copy` 日志
+#   兜底；一旦上一轮不是真实传输轮（fix_test/空转）就整批漏掉，409 死锁永远解
+#   不开（bd724a9 三轮 409 去重 517/511/497 只增不减即此形态）。
+# 输入: <src_ls> <dst_ls>，均为 `rclone lsf -R --files-only --format ps --separator ;`
+#   输出（rel/path;size）。尺寸列非纯数字（"-"/空）的文件**不**判为"不符"，只按
+#   ① 判定（宁漏勿错: 尺寸误判会把正常文件塞进修复清单白下载几百 MB）。
+# 输出: stdout，每行一个 rel 路径（已去重前，调用方 sort -u）。
+_missing_list_two_way_diff() {
+  local _src="$1" _dst="$2"
+  awk '
+    BEGIN { FS=";" }
+    NR==FNR {
+      p=$0; sub(/;[^;]*$/,"",p); if (p=="") next
+      dsz[p]=$NF; dseen[p]=1
+      next
+    }
+    {
+      p=$0; sub(/;[^;]*$/,"",p); if (p=="") next
+      if (!(p in dseen)) { print p; next }
+      if ($NF ~ /^[0-9]+$/ && dsz[p] ~ /^[0-9]+$/ && dsz[p]+0 != $NF+0) print p
+    }
+  ' "$_dst" "$_src"
+}
+
 _sync_fix_missing_files() {
   if [[ "$dest_path" == openlist:* ]]; then
     # 收集缺失文件：
@@ -939,6 +969,8 @@ _sync_fix_missing_files() {
     #      源文件不存在，由后面专门章节记录，这里排除）
     #   2) 源端 vs 目标端 lsf 递归 diff 出的缺失文件（假成功文件没有 ERROR
     #      日志、退出码为 0，只能靠 diff 发现）
+    #   3) 目标端**同名但尺寸不符**的半截件（409 死锁；2026-11-19 加，见
+    #      _missing_list_two_way_diff）—— 旧的仅按名 comm -23 看不见它们
     local missing_list="/tmp/${task_name}_missing_${BASHPID:-$$}.txt"
     if [ -n "${SYNC_FIX_MISSING_OVERRIDE:-}" ]; then
       missing_list="$SYNC_FIX_MISSING_OVERRIDE"
@@ -959,7 +991,11 @@ _sync_fix_missing_files() {
       local src_ls="/tmp/${task_name}_src_ls_${BASHPID:-$$}.txt"
       local dst_ls="/tmp/${task_name}_dst_ls_${BASHPID:-$$}.txt"
       local src_ls_ok=0 dst_ls_ok=0
-      timeout "${OPENLIST_RCLONE_LISTING_TIMEOUT:-900s}" rclone lsf "$source_path" -R --files-only "${FILTER_ARGS[@]}" > "$src_ls" 2>/dev/null && src_ls_ok=1 || true
+      # 尺寸口径（2026-11-19）: 两端都改 `--format ps`，一次列举同时拿到名字与
+      #   尺寸（零额外列举成本），据此可判"同名尺寸不符"。缓存分支拿到的是调用方
+      #   的纯文件名清单（lsf 默认 format p）→ _lsf_meta=0 时退回纯名差集。
+      local _lsf_meta=0
+      timeout "${OPENLIST_RCLONE_LISTING_TIMEOUT:-900s}" rclone lsf "$source_path" -R --files-only --format "ps" --separator ";" "${FILTER_ARGS[@]}" > "$src_ls" 2>/dev/null && src_ls_ok=1 || true
       # 目标端清单复用: 调用方（如批次巩固 _batch_consolidate）刚做过 lsf 的
       # 话直接沿用，省掉一次全量递归（大目录数分钟）。缓存须非空才算有效，
       # 空/缺失仍回退到现场 lsf（宁慢勿漏）
@@ -969,7 +1005,9 @@ _sync_fix_missing_files() {
         echo "  复用调用方目标端清单（$(wc -l < "$dst_ls" | tr -d ' ') 项），跳过重复 lsf" | tee -a "$LOG_FILENAME"
       else
         local _dst_err
-        _dst_err=$(timeout "${OPENLIST_RCLONE_LISTING_TIMEOUT:-900s}" rclone lsf "$dest_path" -R --files-only 2>&1 > "$dst_ls") && dst_ls_ok=1 || true
+        _dst_err=$(timeout "${OPENLIST_RCLONE_LISTING_TIMEOUT:-900s}" rclone lsf "$dest_path" -R --files-only --format "ps" --separator ";" 2>&1 > "$dst_ls") && dst_ls_ok=1 || true
+        # 目标端清单由本函数现场列举 ⇒ 带尺寸列，可做 ② 同名尺寸不符判定
+        [ "$dst_ls_ok" -eq 1 ] && _lsf_meta=1
         # ★ 目标目录不存在 ≠ 列举失败（2026-11-10 修）:
         #   目标目录压根没建出来时 `lsf` 必然非零 ⇒ 旧逻辑 dst_ls_ok=0 → 跳过 diff
         #   → 缺失清单为空 → **修复管线根本不启动**。而这恰恰是"目录建不出来"
@@ -984,11 +1022,20 @@ _sync_fix_missing_files() {
           echo "  目标目录不存在 → 源端清单视为全量缺失（$(printf '%s' "$_dst_err" | head -1 | cut -c1-110)）" | tee -a "$LOG_FILENAME"
           dst_ls_ok=1
           : > "$dst_ls"
+          # dst 为空 ⇒ 两路差集等价于"全部缺失"，且能正确剥掉源端 ;size 后缀
+          _lsf_meta=1
         fi
       fi
       if [ "$src_ls_ok" -eq 1 ] && [ "$dst_ls_ok" -eq 1 ]; then
         # 仅当两端列表都完整获取时才做 diff，避免半截列表产生误报触发无谓修复
-        comm -23 <(sort -u "$src_ls") <(sort -u "$dst_ls") >> "$missing_list"
+        if [ "$_lsf_meta" -eq 1 ]; then
+          # 两路差集: ① 名缺失 + ② 同名尺寸不符（409 死锁半截件）
+          _missing_list_two_way_diff "$src_ls" "$dst_ls" >> "$missing_list"
+        else
+          # 缓存为纯文件名口径 → 退回仅按名差集；源端清单带 ;size，先剥掉再比
+          # （不剥会把 "path;size" 当成路径写进清单，修复时必然找不到文件）
+          comm -23 <(sed 's/;[^;]*$//' "$src_ls" | sort -u) <(sort -u "$dst_ls") >> "$missing_list"
+        fi
       else
         echo "⚠️ 源/目标文件列表获取不完整（src=${src_ls_ok}, dst=${dst_ls_ok}），跳过 lsf diff，仅用日志错误修复" | tee -a "$LOG_FILENAME"
       fi
