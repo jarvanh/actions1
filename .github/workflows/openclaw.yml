@@ -1569,6 +1569,8 @@ jobs:
         # 的 mtime 都是归档时间（整秒），且 env 里的 TG 凭据为空 → 看门狗全程
         # 无法告警（qb 事件里它一次都没出声，另一条 gateway-watchdog 才会报）。
         # 因此在还原完成之后无条件重装一次：脚本/凭据/单元都以仓库为准。
+        # 2026-11-19 同款事故：bin/dropbox-orphan-guard.sh 也被覆盖回旧版
+        # （mtime 回到整秒、内容仍是旧版 curl 直发）——还原后一并补装。
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
@@ -1583,6 +1585,12 @@ jobs:
               echo "::warning::健康看门狗重装失败（不影响主流程，但 VM 级告警可能失效）"
           else
             echo "::warning::install_health_watchdog.sh 缺失，跳过重装"
+          fi
+          # dropbox 守卫 + 发送层副本同样会被归档还原覆盖（2026-11-19 实锤）。
+          # 只补写脚本/单元文件，不 reload、不重启挂载（install-guard）。
+          if [ -f "$GITHUB_WORKSPACE/.github/scripts/services/services.sh" ]; then
+            bash "$GITHUB_WORKSPACE/.github/scripts/services/services.sh" install-guard || \
+              echo "::warning::dropbox 守卫重装失败（孤儿告警可能退回旧版）"
           fi
 
       - name: AI 网关优先恢复（交接轮：交出后立刻派发，OmniRoute 靠等齐门最后起）

@@ -26,6 +26,8 @@
 # ensure 语义是「每轮重启一次」而不是「已运行则跳过」：与原 nohup 方案每轮
 # pkill + 重启完全一致，重启点就是每轮 run 的起点。窗口期内的崩溃自愈由
 # systemd 的 Restart=always 负责，不经过本脚本。
+# install-guard：只重写 dropbox 守卫 + 发送层副本 + 单元文件，不 reload / 不重启
+# （归档还原覆盖 bin/ 后补装用，见 openclaw.yml 的还原后重装步骤）。
 #
 # 单元里内嵌的密钥本来就在进程 cmdline 和环境里可见（同机只有 runner 一个真实用户），
 # 单元文件按 600 落盘，没有扩大暴露面；通知/日志里依然绝不回显
@@ -823,5 +825,9 @@ case "${1:-}" in
   stop)   cmd_stop "${2:-}" ;;
   restart) cmd_ensure "${2:-}" ;;
   status) cmd_status "${2:-}" ;;
-  *) echo "用法: $0 {ensure|stop|status} [name]"; exit 1 ;;
+  # 只重写 dropbox 守卫脚本 + 发送层副本 + 单元文件，不 daemon-reload、不重启挂载。
+  # 用途：~/.openclaw 归档还原会把 bin/ 下的脚本覆盖回旧版（2026-11-19 实锤：
+  # 守卫 mtime 回到归档时间、内容仍是旧版 curl 直发），还原后补装一次。
+  install-guard) write_unit rclone-dropbox ;;
+  *) echo "用法: $0 {ensure|stop|status|install-guard} [name]"; exit 1 ;;
 esac
