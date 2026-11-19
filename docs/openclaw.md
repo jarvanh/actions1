@@ -918,8 +918,8 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 | bot | 职责 | 本机 | 仓库 |
 |---|---|---|---|
 | @openclaw_sb_bot | 主对话（不发通知） | ✓ | — |
-| @FuckSaberBot | 一般通知（业务结果与流水） | ✓ | ✓ |
-| @SaberFuckBot | 重要通知（告警 + 信息） | ✓ | ✓ |
+| @FuckSaberBot | 一般通知（业务结果与常态播报：就绪 / 停止 / 倍率 / 用量 / 交接进度） | ✓ | ✓ |
+| @SaberFuckBot | 重要通知（失败 / 中断 / 残留 / 风控 / 配额 / 熔断 / 灾难恢复、凭据与入口、停机倒计时） | ✓ | ✓ |
 | @sbsb / @sbsbsb / @sbsbsbsb / @sbsbsbsbsb | agent 各自对话窗口 | ✓ | — |
 | @ass_openclaw_bot | 内部消息隔离带（relay / 后台完成 / 串号排查） | ✓ | — |
 
