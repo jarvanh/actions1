@@ -202,7 +202,7 @@ fi
 #     06:10:10 ✅ 短哈希目录创建成功 (API)   ← 在此就认定建成
 #     06:13:26 ❌ 短哈希目录不可写…兜底终止  ← 2 分钟后才发现根本没建成
 #   ⇒ 契约: 凡是 `HTTP_CODE:(200|201|204)` 分支，**必须**紧跟一次
-#     `_fix_dir_exists_or_conflict`（读操作）复核，且"复核不过"不得置 ok。
+#     `_fix_dir_exists_or_conflict`（读操作）或封装它的 `_verify_dir_after_create`（2026-11-19: 先刷新父目录缓存再复核，治"刚建目录读不到"的缓存假阴性）复核，且"复核不过"不得置 ok。
 #
 # D7a 静态: file_fix.sh 的每个 200|201|204 分支**自己的 if 块内**都出现复核调用。
 #   ⚠️ 不能用"该行之后 N 行内出现"—— 会串到**后面 409 分支**的复核调用上，
@@ -225,7 +225,7 @@ _hash_200_bad=$(awk '
         if (line[m] ~ /^[[:space:]]*$/) continue
         ind=indent(line[m])
         if (ind <= base) break      # 块已结束（回到同级或更外层）
-        if (line[m] ~ /_fix_dir_exists_or_conflict/) { found=1; break }
+        if (line[m] ~ /(_fix_dir_exists_or_conflict|_verify_dir_after_create)/) { found=1; break }
       }
       if (!found) bad++
     }
@@ -254,7 +254,7 @@ _pipe_200_bad=$(awk '
       for (m=n+1; m<=NR; m++) {
         if (line[m] ~ /^[[:space:]]*$/) continue
         if (indent(line[m]) <= base) break
-        if (line[m] ~ /_fix_dir_exists_or_conflict/) { found=1; break }
+        if (line[m] ~ /(_fix_dir_exists_or_conflict|_verify_dir_after_create)/) { found=1; break }
       }
       if (!found) bad++
     }

@@ -889,6 +889,40 @@ _fix_dir_exists_or_conflict() {
   rclone lsd "$dir_remote" --retries 1 --timeout "$tmo" >/dev/null 2>&1
 }
 
+# 建目录后的复核（2026-11-19 加，run 44290230157 实证）
+# 现象: `OpenList API mkdir 响应: HTTP_CODE:200` 紧跟
+#   `⚠ OpenList API 报 200 但目录不存在（假成功），继续降级` —— 同一个目录
+#   三次复核（rclone lsd ×2 + API）全部失败，于是流程一路降级到 base64URL
+#   再折叠短哈希目录，**方法1·原名直传从未执行**（该轮「▶ 方法1」= 0 次）。
+# 根因: 复核的 lsd 读的是 OpenList **目录缓存**；刚 mkdir 的目录在缓存里
+#   还没有条目，读出来就是"不存在"。这与预览读到 DB 快照（12/13 对逐字节
+#   相同）是同一类问题: **写后立刻读，读到的是旧缓存**。把它判成"后端假
+#   成功"是误判，代价是所有文件都落到替代名、pending 永不下降。
+# 处置: mkdir 报成功后先对**父目录**做一次非递归缓存刷新（只刷一层，秒级），
+#   再复核存在性。刷新失败/函数不可用（单测桩环境）则退回原行为。
+# 用法: _verify_dir_after_create <dir_remote> <ol_dir 以 / 开头> [timeout]
+_verify_dir_after_create() {
+  local dir_remote="$1" ol_dir="${2:-}" tmo="${3:-${OPENLIST_DIR_PROBE_TIMEOUT:-120s}}"
+  # 先直接复核一遍: 目录真在（比如 mkdir 幂等命中已存在目录）就不用刷新
+  if _fix_dir_exists_or_conflict "$dir_remote" "$tmo"; then
+    return 0
+  fi
+  # 缓存刷新（父目录一层）；openlist_driver.sh 在本文件之后 source，
+  # 单测桩环境可能没有该函数，须带 declare -F 兜底
+  if declare -F _refresh_ol_cache_fast >/dev/null 2>&1 && [ -n "$ol_dir" ]; then
+    local parent="/${ol_dir#/}"
+    parent="${parent%/*}"
+    [ -z "$parent" ] && parent="/"
+    _refresh_ol_cache_fast "$parent" 0 || true
+  fi
+  # 刷新后再复核一次
+  if _fix_dir_exists_or_conflict "$dir_remote" "$tmo"; then
+    log_fix "${4:-/dev/null}" "  ↳ 刷新父目录缓存后复核: 目录可见（此前是缓存假阴性，不是假成功）"
+    return 0
+  fi
+  return 1
+}
+
 _fix_probe_dir_writable() {
   local dir_remote="$1" ol_dir="${2:-}"
   local probe_timeout="${OPENLIST_DIR_PROBE_TIMEOUT:-120}s"
@@ -1487,7 +1521,7 @@ _fix_switch_to_hash_dir() {
   # 上轮修过同目录时它**必然已存在** ⇒ mkdir 报错几乎总是"已存在"而非故障。
   if [ "$hash_dir_ok" -ne 1 ] && [ "$mkdir_status" -ne 0 ] \
      && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
-    if _fix_dir_exists_or_conflict "$hash_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+    if _verify_dir_after_create "$hash_dst_dir" "$hash_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
       hash_dir_ok=1
       log_fix "$fix_log" "   ✅ mkdir 报错但短哈希目录实际存在（409 已存在语义）→ 按幂等成功处理"
     fi
@@ -1513,15 +1547,16 @@ _fix_switch_to_hash_dir() {
         #   ⇒ 必须与其他三条分支同口径: 用**读操作**复核后再认定。
         #   不这么改的代价: 白等 ~2 分钟、日志给出"创建成功"的假象、
         #   且后续所有"换目录"修法都建立在不可信的判据上。
-        if _fix_dir_exists_or_conflict "$hash_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+        # ★ 2026-11-19: 复核走 _verify_dir_after_create（先刷新父目录缓存再读）
+        if _verify_dir_after_create "$hash_dst_dir" "$hash_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
           hash_dir_ok=1
           log_fix "$fix_log" "   ✅ 短哈希目录创建成功 (API · 已复核存在)"
         else
-          log_fix "$fix_log" "   ⚠ API 报 200 但短哈希目录不存在（假成功），继续尝试其它通路"
+          log_fix "$fix_log" "   ⚠ API 报 200 但短哈希目录不存在（刷新缓存后仍不可见 ⇒ 判假成功），继续尝试其它通路"
         fi
       elif echo "$mkdir_http" | grep -qE 'HTTP_CODE:409' \
            && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
-        if _fix_dir_exists_or_conflict "$hash_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+        if _verify_dir_after_create "$hash_dst_dir" "$hash_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
           hash_dir_ok=1
           log_fix "$fix_log" "   ✅ 短哈希目录 API 报 409 但实际存在 → 按幂等成功处理"
         fi
@@ -1721,7 +1756,7 @@ try_fix_failed_file() {
   # 而整文件判死。判据用**读操作**（lsd），与"后端真建不出来"可区分。
   if [ "$dir_ok" -ne 1 ] && [ "$mkdir_status" -ne 0 ] \
      && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
-    if _fix_dir_exists_or_conflict "$dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+    if _verify_dir_after_create "$dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
       dir_ok=1
       log_fix "$fix_log" "✅ mkdir 报错但目录实际存在（409 已存在语义）→ 按幂等成功处理，沿用原目录"
     fi
@@ -1744,17 +1779,21 @@ try_fix_failed_file() {
         #   坏子树上 API 报 200 而 rclone/WebDAV 报 409，两通路回报矛盾。
         #   必须用读操作复核后再认定，否则"目录已就绪"是假象，
         #   后续 4 种方法会在这个并不存在的目录上白跑。
-        if _fix_dir_exists_or_conflict "$actual_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+        # ★ 2026-11-19: 复核走 _verify_dir_after_create —— 它会在首次读不到时
+        #   先刷新父目录缓存再读一次。原因见该函数头注: 刚 mkdir 的目录在
+        #   OpenList 目录缓存里还没条目，直接 lsd 会把"建成"误判成"假成功"，
+        #   进而一路降级到短哈希目录（run 44290230157: 方法1 尝试恒为 0）。
+        if _verify_dir_after_create "$actual_dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
           dir_ok=1
           log_fix "$fix_log" "OpenList API mkdir 成功（已复核存在）"
         else
-          log_fix "$fix_log" "⚠ OpenList API 报 200 但目录不存在（假成功），继续降级"
+          log_fix "$fix_log" "⚠ OpenList API 报 200 但目录不存在（刷新缓存后仍不可见 ⇒ 判假成功），继续降级"
         fi
       elif echo "$mkdir_http" | grep -qE 'HTTP_CODE:409' \
            && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
         # 409 在 fs/mkdir 上同样优先解读为"目录已存在"（幂等），用读操作复核。
         # 旧行为只认 200|201|204 ⇒ 已存在的目录被判失败，一路降级到 base64URL/短哈希。
-        if _fix_dir_exists_or_conflict "$dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+        if _verify_dir_after_create "$dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
           dir_ok=1
           log_fix "$fix_log" "OpenList API mkdir 报 409 但目录实际存在 → 按幂等成功处理"
         fi
@@ -1822,7 +1861,7 @@ try_fix_failed_file() {
       # 与 Step 1 同口径: mkdir 报错时先判"是否已存在"，409 且目录在 ⇒ 幂等成功
       if [ "$dir_ok" -ne 1 ] && [ "$mkdir_status" -ne 0 ] \
          && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
-        if _fix_dir_exists_or_conflict "$actual_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+        if _verify_dir_after_create "$actual_dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
           dir_ok=1
           used_base64_dir=1
           dst_file="${actual_dst_dir}/${file_name}"
@@ -1841,17 +1880,19 @@ try_fix_failed_file() {
           # ⚠️ 同 Step 1 / 短哈希分支（2026-09-18 §12.14.8）: API 报 200 不等于建成。
           #   不复核就把"base64URL 目录创建成功"写进日志、并把 dir_ok 置 1，
           #   后续方法会在不存在的目录上白跑一遍。
-          if _fix_dir_exists_or_conflict "$actual_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+          # ★ 2026-11-19: 复核走 _verify_dir_after_create（先刷新父目录缓存再读），
+          #   否则刚 mkdir 的目录在缓存里还没条目 ⇒ 误判"假成功"⇒ 一路降级。
+          if _verify_dir_after_create "$actual_dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
             dir_ok=1
             used_base64_dir=1
             dst_file="${actual_dst_dir}/${file_name}"
             log_fix "$fix_log" "base64URL 目录创建成功 (API · 已复核存在)"
           else
-            log_fix "$fix_log" "⚠ base64URL 目录 API 报 200 但不存在（假成功）"
+            log_fix "$fix_log" "⚠ base64URL 目录 API 报 200 但不存在（刷新缓存后仍不可见 ⇒ 判假成功）"
           fi
         elif echo "$mkdir_http" | grep -qE 'HTTP_CODE:409' \
              && [ "${_FIX_MKDIR_409_SEMANTICS:-1}" != "0" ]; then
-          if _fix_dir_exists_or_conflict "$actual_dst_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s"; then
+          if _verify_dir_after_create "$actual_dst_dir" "$actual_ol_dir" "${OPENLIST_MKDIR_TIMEOUT:-120}s" "$fix_log"; then
             dir_ok=1
             used_base64_dir=1
             dst_file="${actual_dst_dir}/${file_name}"

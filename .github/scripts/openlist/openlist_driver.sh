@@ -658,18 +658,23 @@ _refresh_openlist_cache() {
 }
 
 # 轻量刷新 OpenList 单个路径缓存（无长等待，供校验流程使用）
-# 用法: _refresh_ol_cache_fast <ol_path（不带 openlist: 前缀）>
+# 用法: _refresh_ol_cache_fast <ol_path（不带 openlist: 前缀）> [recursive]
+#   recursive 默认 1（保持既有行为）。传 0 只刷该目录自身一层 ——
+#   建目录后"立刻复核这个新目录是否可见"就属于这种，递归刷一棵上万文件的
+#   父目录要几十秒~几分钟，完全不必要（2026-11-19 加）。
 _refresh_ol_cache_fast() {
   local ol_path="/${1#/}"
+  local _rec="${2:-1}"
+  case "$_rec" in 1|0) : ;; *) _rec=1 ;; esac
   local ol_token
   ol_token=$(_get_openlist_token) || true
   [ -z "$ol_token" ] && return 0
   curl -s -X POST "http://127.0.0.1:5244/api/fs/refresh" \
     -H "Authorization: $ol_token" \
     -H "Content-Type: application/json" \
-    -d "{\"path\":\"$ol_path\",\"recursive\":true}" \
+    -d "{\"path\":\"$ol_path\",\"recursive\":$([ "$_rec" = "1" ] && echo true || echo false)}" \
     >/dev/null 2>&1 || true
-  sleep 5
+  sleep "${OPENLIST_FIX_REFRESH_WAIT:-5}"
 }
 
 # ===== 容器级读写锁（并行子目录同步的互斥基础，串行模式无争用直通）=====
