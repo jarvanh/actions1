@@ -473,7 +473,8 @@ jobs:
           tg_add_link PW_MSG "入口" "https://oe.${VD}.eu.org" "OpenList 后台"
           tg_add_note PW_MSG "长期有效密码 = OPENLIST_ADMIN_PASSWORD · 下轮自动恢复为它 · 本条不会出现在公开日志"
           tg_add_footer PW_MSG
-          send_tg "$PW_MSG" alert \
+          # 2026-11-18 档位收紧（规范 · 档位判定）：入口与凭据属常态信号 → 普通档
+          send_tg "$PW_MSG" \
             && echo "已通过 TG 私信发送 OpenList 凭据（不落公开日志）" \
             || echo "::warning::OpenList 凭据 TG 通知发送失败（不影响链路）"
           shred -u /tmp/openlist-pw-note 2>/dev/null || rm -f /tmp/openlist-pw-note
@@ -1050,7 +1051,9 @@ jobs:
           tg_add_note START_MSG "网盘快捷方式 = 网盘里指向别处文件的 .url 文件；本服务会自动跟随它换成可直接播放的链接"
           tg_add_footer START_MSG
           echo "TG(启动): 已构建统一版式消息"
-          send_tg "$START_MSG" alert || true
+          # 2026-11-18 档位收紧（规范 · 档位判定）：启动成功 / 启动降级（取链自检
+          # 未通过但服务在）都是常态运行信号 → 普通档
+          send_tg "$START_MSG" || true
 
           if [ "$MODE" = "302" ]; then
             nohup cloudflared tunnel run --url http://127.0.0.1:8095 e > /opt/logs/cloudflared.log 2>&1 &
@@ -1125,7 +1128,8 @@ jobs:
               tg_add_kv WD_MSG "动作" "已自动切到中转模式（视频经服务器转发）"
               tg_add_footer WD_MSG
               # 不再吞 stderr：发送失败原因（429 重试耗尽 / 400 解析失败）必须可见（规范 · 发送层）
-              send_tg "$WD_MSG" alert || true
+              # 2026-11-18 档位收紧：回退后服务仍可用（自动转中转模式）→ 普通档
+              send_tg "$WD_MSG" || true
               exit 0
             fi
           done
@@ -2861,6 +2865,11 @@ jobs:
             # 未知状态用 ⚠️（❓ 不在规范 · 状态图标内，属自造前缀）
             *) STATUS_EMOJI="⚠️";;
           esac
+          # 2026-11-18 档位收紧（规范 · 档位判定）：正常收尾 → 普通；失败 / 中断 → alert
+          case "$STATUS" in
+            success) STATUS_TIER="";;
+            *)       STATUS_TIER="alert";;
+          esac
           # 运行时长不再在本 step 自算（旧 '%dh %dm' 写法与全库收尾区不一致）：
           # 统一交给 tg_add_footer（读 step env 的 TG_RUN_URL；时长走开机时刻兜底）
           # 302 链路统计：直链命中/未取到/解析失败/回落 OpenList 次数（odlink /stats）
@@ -2956,7 +2965,7 @@ jobs:
           echo "TG(收尾): 已构建统一版式消息"
           # 走发送层而非 curl 直发：429 重试已内建，HTML 解析失败直接报错（规范 · 发送层），
           # 429 限流自动等待重试，disable_web_page_preview 内置
-          send_tg "$msg" alert || echo "::warning::收尾 TG 通知发送失败"
+          send_tg "$msg" "${STATUS_TIER:-alert}" || echo "::warning::收尾 TG 通知发送失败"
 
       # ===== 自续触发（流式接力）=====
       # 一轮结束立刻 dispatch 下一轮，中间不留空档；cron 只做链条断裂时的兜底。
