@@ -3190,8 +3190,25 @@ jobs:
           # 退出码 5 = 配置不可用，调用方按归档失败处理：不覆盖云端。
           if command -v openclaw >/dev/null 2>&1; then
             if ! OPENCLAW_CONFIG_PATH="$STAGE_DIR/.openclaw/openclaw.json" openclaw config validate >/dev/null 2>&1; then
-              echo "openclaw_archive_config_invalid path=openclaw.json" >&2
-              exit 5
+              # 2026-11-19 修（主包周期归档每轮 rc=5 实锤）：
+              # CLI 2026.11.5 的 validate 会先做 Gateway 状态所有权核验；网关运行中
+              # 且其锁记录的 host 与当前进程不一致时（交接临时名 openclaw-next →
+              # 回收后 openclaw），直接抛 GatewayLockNamespaceError，配置本身根本没
+              # 进入 schema 校验 → 周期归档（网关跑着打包）每轮必失败，主包只剩
+              # 交接时那次。
+              # 修法：失败后用**隔离 state 目录**重试一次 —— 不碰活网关锁，只做纯
+              # schema 校验。实测：合法配置 exit 0（仅 env/插件警告）；注入弃用键
+              # （agents.*.heartbeat）仍 exit 1 → exit 5 保护不丢。
+              _iso="$(mktemp -d)"
+              if OPENCLAW_STATE_DIR="$_iso/state" OPENCLAW_CONFIG_PATH="$STAGE_DIR/.openclaw/openclaw.json" \
+                   openclaw config validate >/dev/null 2>&1; then
+                echo "openclaw_archive_config_valid_isolated (gateway lock mismatch; schema ok)" >&2
+                rm -rf "$_iso" 2>/dev/null || true
+              else
+                rm -rf "$_iso" 2>/dev/null || true
+                echo "openclaw_archive_config_invalid path=openclaw.json" >&2
+                exit 5
+              fi
             fi
           else
             # 校验器不可得时不拦（拦了会让主包永久冻结、风险更大），但明确留痕
