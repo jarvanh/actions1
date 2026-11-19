@@ -36,6 +36,10 @@ CURL_ALLOW = {
     ".github/scripts/openlist/telegram.sh",
     ".github/scripts/openlist/sync_notify.sh",
     ".github/scripts/telegram/ensure-miniapp-menu.sh",
+    # services.sh 的 curl 位于 `cat > "$guard" <<'GUARD'` 生成的**宿主机独立守护
+    # 脚本**里（systemd timer 跑，脱离仓库上下文）⇒ 无法 source 仓库共用发送器。
+    # 那是生成物、不是仓库内发送点，静态扫描分不清 heredoc 内外，只能白名单。
+    ".github/scripts/services/services.sh",
 }
 
 ANY_SEND = re.compile(
