@@ -218,15 +218,14 @@
         # catalogs + 免费实测，按站点分组、站点内倍率升序（价格低者在上）每模型一行、
         # **全量不截断**）。
         # 取数失败/缓存缺失时为空，整段跳过（与凭据段同口径），绝不编造倍率。
-        # 长度：send_tg 现在会自动分片（超过 3900 UTF-16 码元走 send_tg_chunked）；
-        # 倍率全量实测 2200+ B，与凭据 + 账号池（三行明细）叠加后实测 3912 B。
-        # 仍保留独立第二条：主消息保持完整版式，倍率段自成一篇（标题 + 收尾区），
-        # 既不砍数据，也避免主消息在客户端被折叠得太长。
-        WB_RATES_BLOCK=""
+        # 2026-11-18 并入主通知（原独立第二条）：send_tg 自动分片后不存在超限丢弃，
+        # 独立成篇只会让重要频道多一条常态播报（规范 · 档位判定）。
         if [ -n "${WB_RATES_TXT:-}" ]; then
-          # 计数形态与 gw_add_rates_section 同口径（📊 … · N，不带文字）；
-          # 来源前缀 `workbuddy-gateway · ` 区分它与 trae/zcode 各自的倍率独立通知
-          WB_RATES_BLOCK="$(tg_add_title WB_RATES_BLOCK "📊 workbuddy-gateway 模型倍率 · ${WB_RATES_N:-0}${WB_RATES_FREE_TAG:-}"; tg_add_pre WB_RATES_BLOCK "$WB_RATES_TXT"; tg_add_footer WB_RATES_BLOCK; printf '%s' "$WB_RATES_BLOCK")"
+          # 计数形态与 gw_add_rates_section 同口径（📊 … · N，不带文字）
+          tg_add_section _msg "📊 模型倍率 · ${WB_RATES_N:-0}${WB_RATES_FREE_TAG:-}"
+          tg_add_pre _msg "$WB_RATES_TXT"
+          # tg_add_pre 不补尾空行，对齐账号池段：块尾补一个，避免下一段紧贴
+          tg_append _msg $'\n'
         fi
         # 用量 + 流水（看板独有，2026-10-05 补进通知）：只渲染本网关自己，
         # 避免 wb 通知里出现 zcode 数据（语义串台）。调 board.py 的 CLI 子命令 ——
@@ -237,17 +236,16 @@
         gw_add_board_assets _msg workbuddy
         gw_add_board_usage _msg workbuddy 12
         gw_add_original_output _msg "$6"
-        if gw_send _msg alert; then
+        # 2026-11-18 档位收紧（规范 · 档位判定）：本函数服务三类调用点，按标题分诊——
+        # ❌ 启动失败 / ⚠️ 无可用账号（需人工扫码）→ alert；🟢 已就绪 → 普通档。
+        case "$1" in
+          ❌*|⚠️*) gw_send _msg alert ;;
+          *)       gw_send _msg "" ;;
+        esac
+        if [ $? -eq 0 ]; then
           echo "✅ workbuddy-gateway 通知已发送"
         else
           echo "::warning::TG 通知发送失败（不影响任务）"
-        fi
-        # 倍率段独立第二条（常驻：只要取到倍率就发）：数据全量保留，不与主条挤在
-        # 同一条里超限丢弃。它自带标题 + 收尾区，是可独立成篇的一条完整通知。
-        # 两条之间 sleep 1s：连续 sendMessage 撞 429 会让后一条直接丢失。
-        if [ -n "${WB_RATES_BLOCK:-}" ]; then
-          sleep 1
-          send_tg "$WB_RATES_BLOCK" alert || echo "::warning::模型倍率段独立通知发送失败（不影响任务）"
         fi
       else
         echo "⚠️ Telegram secrets missing, skip workbuddy-gateway notification."

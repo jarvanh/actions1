@@ -64,8 +64,9 @@ hc_txt="<code>20128 HTTP $(escape_html "${hc:-000}")</code>"
 [ -n "$st" ] && [ "$st" != "none" ] && hc_txt+=" · 容器 <code>$(escape_html "$st")</code>"
 tg_add_block m "自检：${hc_txt}"
 
-# alert 档，与同步路径同档
-if tg_add_footer m && send_tg "$m" alert; then
+# 2026-11-18 档位收紧（规范 · 档位判定）：🟢 已就绪 / 🟡 等即可都是常态运行信号
+# → 普通档；本脚本只发就绪态，失败/降级由 run-ai-gateway.sh 的同步路径按 alert 发。
+if tg_add_footer m && send_tg "$m"; then
   echo "[$(date '+%F %T')] 延后就绪通知已发送（容器=${st}）"
 else
   echo "::warning::OmniRoute 延后就绪通知发送失败（不影响任务）"

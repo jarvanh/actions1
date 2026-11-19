@@ -183,10 +183,12 @@
         gw_add_board_assets _msg trae
         gw_add_board_usage _msg trae 12
         gw_add_original_output _msg "$6"
-        if gw_send _msg alert; then
-          TRAE_NOTIFY_OK=1
+        # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
+        # 1（🟢 已就绪 / ⚠️ 签到无输出，服务在）→ 普通档；0（❌ 启动失败）→ alert。
+        if [ "${7:-0}" = "1" ]; then
+          if gw_send _msg ""; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
         else
-          echo "::warning::TG 通知发送失败（不影响任务）"
+          if gw_send _msg alert; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
         fi
       else
         echo "⚠️ Telegram secrets missing, skip trae2api notification."

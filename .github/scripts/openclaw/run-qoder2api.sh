@@ -70,10 +70,12 @@ qoder_notify() {
     fi
     [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
     gw_add_original_output _msg "$6"
-    if gw_send _msg alert; then
-      QODER_NOTIFY_OK=1
+    # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
+    # 1（🟢 已就绪）→ 普通档；0（❌ 启动失败）→ alert。
+    if [ "${7:-0}" = "1" ]; then
+      if gw_send _msg ""; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
     else
-      echo "::warning::TG 通知发送失败（不影响任务）"
+      if gw_send _msg alert; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
     fi
   else
     echo "⚠️ Telegram secrets missing, skip qoder2api notification."

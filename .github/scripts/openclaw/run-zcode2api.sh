@@ -557,7 +557,14 @@
       fi
       # 资产段（套餐到期 + 今日消耗）：路线 B —— 口径真源在看板（2026-11-01）。
       gw_add_board_assets _m zcode
-      if gw_send _m alert; then
+      # 2026-11-18 档位收紧（规范 · 档位判定）：🔴 风控 / 🟠 鉴权 / ❌ 启动失败是
+      # 「需人工动手」的信号 → alert；🟡 中间态（额度耗尽 / 账号池冷却 / 通道关闭）
+      # 服务本体健康、等即可 → 普通档。
+      case "$Z2A_FAIL_CLASS" in
+        risk_ban|auth) Z2A_NOTIFY_TIER="alert" ;;
+        *)             Z2A_NOTIFY_TIER="" ;;
+      esac
+      if gw_send _m "$Z2A_NOTIFY_TIER"; then
         # 风控停用留痕：发送成功才写（失败下轮重试，对齐就绪标记口径）
         if [ "$Z2A_FAIL_CLASS" = "risk_ban" ]; then
           mkdir -p "$(dirname "$Z2A_RISK_STATE_FILE")" 2>/dev/null || true
@@ -580,7 +587,8 @@
           tg_add_section _r "$Z2A_POOL_TITLE"
           tg_add_block _r "$Z2A_POOL_TEXT"
         fi
-        if gw_send _r alert; then
+        # 2026-11-18 档位收紧：风控解除是可喜的状态翻转、无需动手 → 普通档
+        if gw_send _r ""; then
           rm -f "$Z2A_RISK_STATE_FILE" 2>/dev/null || true
         else
           echo "::warning::TG 通知发送失败（不影响任务）"
@@ -620,7 +628,9 @@
         # 只渲染 zcode 自己的，调 board.py CLI 与看板共用渲染代码与数据源。
         # 用量 + 流水：看板 CLI，空输出静默跳过
         gw_add_board_usage _m zcode 12
-        if gw_send _m alert; then
+        # 2026-11-18 档位收紧（规范 · 档位判定）：🟢 已就绪 / 🟡 Plan 降级（服务在、
+        # 等即可）都是常态运行信号 → 普通档，每轮必报口径不变。
+        if gw_send _m ""; then
           printf '%s\n' "${GITHUB_RUN_ID:-manual}" > "$Z2A_RUN_TAG_FILE"
           if [ "$Z2A_RISK_BAN_COUNT" -gt 0 ]; then
             # 就绪卡已点名风控停用 → 同样留痕，供后续轮次补报解除

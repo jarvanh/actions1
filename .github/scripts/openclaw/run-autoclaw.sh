@@ -376,7 +376,8 @@
             # 无数据时输出空串静默跳过（与 wb/zcode 同口径）。
             _ac_ul_block="$(python3 /dropbox/self-hosted/quota-board/board.py usage-ledger autoclaw 12 2>/dev/null || true)"
             [ -n "$_ac_ul_block" ] && tg_append _m "$_ac_ul_block"
-            gw_send _m alert || echo "::warning::TG 通知发送失败（不影响任务）"
+            # 2026-11-18 档位收紧（规范 · 档位判定）：🟢 已就绪属常态运行信号 → 普通档
+            gw_send _m "" || echo "::warning::TG 通知发送失败（不影响任务）"
           fi
           exit 0
   )

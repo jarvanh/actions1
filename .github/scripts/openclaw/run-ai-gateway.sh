@@ -23,11 +23,15 @@ _ai_tg_avail() { [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}
 # ai-api 530/1033 事故根因，被步骤级 continue-on-error 掩盖成 success）。
 # shellcheck disable=SC1091
 source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh" 2>/dev/null || true
+# 2026-11-18 档位收紧（规范 · 档位判定）：tier 按分支传——
+# ❌ 未就绪 / ⚠️ 降级回退 → alert；🟢 已就绪 / 🟡 健康检查未通过（等即可）→ 普通档。
+# 缺省 alert（保守默认），调用点应显式传。
 _ai_notify() {
+  local _tier="${1-alert}"
   _ai_tg_avail || return 0
   # 真源已在顶层 source 一次；函数体内不再 source（子 shell 陷阱见规范 ·
   # 通知函数的正确接法）——子 shell 里 source 会还原调用点对 send_tg 的覆写。
-  ( tg_add_footer _ai_m && send_tg "$_ai_m" alert ) \
+  ( tg_add_footer _ai_m && send_tg "$_ai_m" "$_tier" ) \
     || echo "::warning::OmniRoute TG 通知发送失败（不影响任务）"
 }
 
@@ -718,7 +722,7 @@ if [ "$PINNED_BACKEND" = "omniroute" ]; then
   else
     echo "❌ OmniRoute（pinned）未就绪 —— pinned 模式不降级，直接失败"
     _ai_m=""; tg_add_title _ai_m "❌ OmniRoute（pinned）未就绪"
-    _ai_notify
+    _ai_notify alert
     docker logs omniroute --tail 100 || true
     exit 1
   fi
@@ -731,7 +735,7 @@ elif [ "$PINNED_BACKEND" = "clirelay" ]; then
   else
     echo "❌ CliRelay（pinned）未就绪 —— pinned 模式不降级，直接失败"
     _ai_m=""; tg_add_title _ai_m "❌ CliRelay（pinned）未就绪"
-    _ai_notify
+    _ai_notify alert
     $COMPOSE logs --tail 80 2>/dev/null || true
     exit 1
   fi
@@ -744,7 +748,7 @@ elif [ "$PINNED_BACKEND" = "cliproxyapi" ]; then
   else
     echo "❌ CLIProxyAPI（pinned）未就绪 —— pinned 模式不降级，直接失败"
     _ai_m=""; tg_add_title _ai_m "❌ CLIProxyAPI（pinned）未就绪"
-    _ai_notify
+    _ai_notify alert
     docker logs cliproxyapi --tail 100 || true
     exit 1
   fi
@@ -792,7 +796,7 @@ else
       printf 'ACTIVE_BACKEND=none\n' > "$BACKEND_STATE"
       [ -n "${FALLBACK_REASON:-}" ] && printf 'FALLBACK_REASON=%s\n' "$FALLBACK_REASON" >> "$BACKEND_STATE"
       _ai_m=""; tg_add_title _ai_m "❌ AI 网关全部未就绪"
-      _ai_notify
+      _ai_notify alert
       docker logs cliproxyapi --tail 100 2>/dev/null || true
       exit 1
     fi
@@ -833,16 +837,21 @@ if [ "${OMNIROUTE_NOTIFY:-1}" != "0" ]; then
       ""|none|healthy) ;;
       *) _ai_ct_bad=1 ;;
     esac
+    # 2026-11-18 档位收紧（规范 · 档位判定）：⚠️ 降级回退 = 主用后端没起来 → alert；
+    # 🟡 等即可 / 🟢 就绪 = 常态运行信号 → 普通档。
     if [ -n "${FALLBACK_REASON:-}" ]; then
       tg_add_title _ai_m "⚠️ AI 网关已降级 · ${ACTIVE_BACKEND}"
       tg_add_kv _ai_m "回退原因" "${FALLBACK_REASON}"
+      _ai_tier="alert"
     elif [ "$_ai_ct_bad" = "1" ]; then
       # 🟡 = 降级但服务在（等即可），不与 🟢 混用（规范 · 状态图标语义）
       tg_add_title _ai_m "🟡 AI 网关已就绪 · ${ACTIVE_BACKEND}"
       tg_add_kv _ai_m "结论" "服务已监听，容器健康检查未通过（${_ai_ct}），等即可"
+      _ai_tier=""
     else
       tg_add_title _ai_m "🟢 AI 网关已就绪 · ${ACTIVE_BACKEND}"
       tg_add_kv _ai_m "结论" "服务已就绪，健康检查通过"
+      _ai_tier=""
     fi
     # 2026-11-01 首弹实拍（run 41351683271，主人转发反馈）：原版只有标题+footer，
     # 比五网关就绪通知薄 —— 补齐 接口/镜像（omniroute）/自检 三件。统一端口方案：
@@ -858,7 +867,7 @@ if [ "${OMNIROUTE_NOTIFY:-1}" != "0" ]; then
       _ai_hc_txt="${_ai_hc_txt} · 容器 <code>$(escape_html "$_ai_ct")</code>"
     fi
     tg_add_block _ai_m "自检：${_ai_hc_txt}"
-    _ai_notify
+    _ai_notify "${_ai_tier:-}"
   fi
 fi
 
