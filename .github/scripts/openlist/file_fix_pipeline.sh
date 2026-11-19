@@ -1030,7 +1030,22 @@ _sync_fix_missing_files() {
         # 仅当两端列表都完整获取时才做 diff，避免半截列表产生误报触发无谓修复
         if [ "$_lsf_meta" -eq 1 ]; then
           # 两路差集: ① 名缺失 + ② 同名尺寸不符（409 死锁半截件）
-          _missing_list_two_way_diff "$src_ls" "$dst_ls" >> "$missing_list"
+          # 拆成"仅名缺失"与"两路"两算，只为可观测（先前只加注释不加日志 ⇒
+          # 尺寸维度有没有命中在日志里无从判断，无法确认代码跑到没跑到）
+          local _nm_only="/tmp/${task_name}_nm_${BASHPID:-$$}.txt"
+          local _tw_out="/tmp/${task_name}_tw_${BASHPID:-$$}.txt"
+          comm -23 <(sed 's/;[^;]*$//' "$src_ls" | sort -u) \
+                   <(sed 's/;[^;]*$//' "$dst_ls" | sort -u) > "$_nm_only"
+          _missing_list_two_way_diff "$src_ls" "$dst_ls" | sort -u > "$_tw_out"
+          local _n_tw _n_nm _n_size
+          _n_tw=$(wc -l < "$_tw_out" | tr -d ' ')
+          _n_nm=$(wc -l < "$_nm_only" | tr -d ' ')
+          [[ "$_n_tw" =~ ^[0-9]+$ ]] || _n_tw=0
+          [[ "$_n_nm" =~ ^[0-9]+$ ]] || _n_nm=0
+          _n_size=$(( _n_tw - _n_nm ))
+          cat "$_tw_out" >> "$missing_list"
+          echo "  lsf 两路差集: 名缺失 ${_n_nm} + 同名尺寸不符 ${_n_size}（合计 ${_n_tw}）" | tee -a "$LOG_FILENAME"
+          rm -f "$_nm_only" "$_tw_out"
         else
           # 缓存为纯文件名口径 → 退回仅按名差集；源端清单带 ;size，先剥掉再比
           # （不剥会把 "path;size" 当成路径写进清单，修复时必然找不到文件）

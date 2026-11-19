@@ -123,10 +123,18 @@ rclone() {
         [ "$_prev" = "--files-from" ] && cp "$_a" /tmp/bc_files_from
         _prev="$_a"
       done
-      [ "$RETRY_COPY_OK" = "1" ] || return 0
+      [ "$RETRY_COPY_OK" = "1" ] || [ "${RETRY_FAIL_LIST:-}" != "" ] || return 0
       local _f
       while IFS= read -r _f; do
         [ -z "$_f" ] && continue
+        # RETRY_FAIL_LIST: 该清单内的文件在串行重试里**仍然失败**（409 同名半截件
+        # 的形态：名字在目标端存在、内容永远更新不上）——用来锁住"重试日志里的
+        # Failed 必须进 stubborn"，否则它会被 comm 当"已补上"剔除、永不进修复管线。
+        if [ -n "${RETRY_FAIL_LIST:-}" ] && grep -qxF "$_f" "$RETRY_FAIL_LIST" 2>/dev/null; then
+          echo "ERROR : ${_f}: Failed to copy: unchunked simple update failed: Conflict: 409 Conflict"
+          continue
+        fi
+        [ "$RETRY_COPY_OK" = "1" ] || continue
         echo "INFO  : ${_f}: Copied (new)"
       done < /tmp/bc_files_from
       ;;
@@ -164,6 +172,7 @@ setup() {
   RESTART_RC=0
   RESTART_FAIL_FROM=0
   RETRY_COPY_OK=1
+  RETRY_FAIL_LIST=""
   LSF_OUT2=""
   LSF_OUT3=""
   FIX_METHOD_BLACKLIST=()
@@ -235,6 +244,35 @@ echo "$OUT" | grep -q "顽固缺失 0 个" && ok "4g 重试补全 → 顽固缺�
 [ "$(calls /tmp/bc_refresher_starts)" = "1" ] && [ "$(calls /tmp/bc_refresher_stops)" = "1" ] \
   && ok "4i 重试期间跑 token 保鲜循环（启停各 1 次）" || bad "4i: start=$(calls /tmp/bc_refresher_starts) stop=$(calls /tmp/bc_refresher_stops)"
 [ "$(cat /tmp/bc_backend_dead 2>/dev/null)" = "0" ] && ok "4j 重试有产出 → 不触发后端全拒" || bad "4j: dead=$(cat /tmp/bc_backend_dead 2>/dev/null)"
+
+# --- 场景4x: Failed to copy 且**名字已在目标端**（409 同名半截件）→ 必须进重试/修复 ---
+#   旧实现把 Copied 与 Failed 合并成 touched，再 `comm -23 touched dest_truth` ⇒
+#   名字在目标端存在就等于"已落盘"被剔除 ⇒ 永不重试、永不进修复管线。这正是
+#   115 后端 409 死锁永不收敛的根因（8e6c7ff 实证 409 唯一件 430→502 不降）。
+setup
+BC_DEST="openlist:wopan176Crypt/0"
+cat > "$LOG" <<'EOF'
+INFO  : ok/file1.mp4: Copied (new)
+INFO  : ghost/file2.mp4: Copied (new)
+ERROR : sub/conflict.mp4: Failed to copy: unchunked simple update failed: Conflict: 409 Conflict
+EOF
+# 目标端**三个名字都在**（含 409 半截件的名字——旧代码看不见它的原因）
+printf 'ok/file1.mp4\nsub/conflict.mp4\nghost/file2.mp4\n' > "$LSF_OUT"
+# 复核真值（LSF_OUT2 空 → 回落到 LSF_OUT）同样三个名字都在
+# 串行重试: ghost/file2 成功，sub/conflict 仍 409 失败
+printf 'sub/conflict.mp4\n' > /tmp/bc_retry_fail_list
+RETRY_FAIL_LIST="/tmp/bc_retry_fail_list"
+OUT=$(run_consolidate 0 "$LOG")
+[ "$(calls /tmp/bc_copy_calls)" = "1" ] && ok "4x-a 同名存在的失败件仍触发串行重试" || bad "4x-a: copy=$(calls /tmp/bc_copy_calls)"
+diff <(sort /tmp/bc_files_from 2>/dev/null) <(printf 'sub/conflict.mp4\n') >/dev/null 2>&1 \
+  && ok "4x-b 重试清单含同名存在的失败件（ghost 已在真值中故不再重试）" || bad "4x-b: $(cat /tmp/bc_files_from 2>/dev/null | tr '\n' ' ')"
+echo "$OUT" | grep -q "同名存在" && ok "4x-c 打出 409 半截件形态提示（可观测）" || bad "4x-c: $OUT"
+echo "$OUT" | grep -q "1 个顽固缺失" && ok "4x-d 重试仍 409 → 顽固缺失 1（旧代码此处为 0）" || bad "4x-d: $OUT"
+[ "$(calls /tmp/bc_fixpipe_calls)" = "1" ] && ok "4x-e 转修复管线（换方法兜底可达）" || bad "4x-e: fixpipe=$(calls /tmp/bc_fixpipe_calls)"
+_ovf="$(cat /tmp/bc_fixpipe_override 2>/dev/null)"
+[ -n "$_ovf" ] && grep -qF "sub/conflict.mp4" "$_ovf" 2>/dev/null \
+  && ok "4x-f 修复清单含该 409 件" || bad "4x-f: override=$_ovf ($(cat "$_ovf" 2>/dev/null | tr '\n' ' '))"
+RETRY_FAIL_LIST=""
 
 # --- 场景5: 容器重启失败 → 跳过校验 ---
 setup

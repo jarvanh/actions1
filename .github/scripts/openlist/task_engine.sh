@@ -2344,18 +2344,36 @@ _batch_consolidate() {
 
   # 本批触碰过的文件 = Copied（含假成功）+ Failed to copy（真失败）
   # 排除 object not found（源端文件不存在的，重试无意义）
+  local copied_set="${batch_dir}/copied_${batch_idx}.txt"
+  local failed_set="${batch_dir}/failed_${batch_idx}.txt"
   local touched="${batch_dir}/touched_${batch_idx}.txt"
-  {
-    grep -E 'Copied \((new|replaced existing)\)' "$batch_log" 2>/dev/null | \
-      sed -E 's/^.*INFO *: //; s/: Copied \(.*$//'
-    grep -E 'ERROR : .+: Failed to copy' "$batch_log" 2>/dev/null | \
-      grep -Ev 'object not found' | \
-      sed -E 's/^.*ERROR : //; s/: Failed to copy.*$//'
-  } | sort -u > "$touched"
+  grep -E 'Copied \((new|replaced existing)\)' "$batch_log" 2>/dev/null | \
+    sed -E 's/^.*INFO *: //; s/: Copied \(.*$//' | sort -u > "$copied_set"
+  grep -E 'ERROR : .+: Failed to copy' "$batch_log" 2>/dev/null | \
+    grep -Ev 'object not found' | \
+    sed -E 's/^.*ERROR : //; s/: Failed to copy.*$//' | sort -u > "$failed_set"
+  cat "$copied_set" "$failed_set" | sort -u > "$touched"
 
-  # 触碰过但真值清单里没有的 = 未落盘（假成功 / 失败）
+  # 重试清单 = ① Copied 但真值清单里没有（假成功）∪ ② Failed to copy（真失败）
+  # ⚠️ ② 必须**无条件**保留（2026-11-20 修；8e6c7ff 实证 409 唯一件 430→502 不降）:
+  #   旧实现把两类合并成一个 touched 再 `comm -23 touched dest_truth` —— 而 115
+  #   后端 409 死锁件的**名字在目标端是存在的**（历史上传坏的半截件，尺寸不符）
+  #   ⇒ 被 comm 当成"已落盘"剔除 ⇒ 永不重试、也永不进修复管线 ⇒ 4 种换方法兜底
+  #   （含 57365f0 的删坏件重传）全不可达。rclone 在 --size-only 下只在"尺寸不符"
+  #   时才尝试传输，故 "Failed to copy" 本身就证明目标端那份不是最新 ⇒ 必须重试。
   local retry_list="${batch_dir}/retry_${batch_idx}.txt"
-  comm -23 "$touched" "$dest_truth" > "$retry_list"
+  {
+    comm -23 "$copied_set" "$dest_truth"
+    cat "$failed_set"
+  } | sort -u > "$retry_list"
+
+  # 可观测: 有多少失败件的名字其实在目标端存在（= 409 半截件形态，旧代码会漏掉）
+  local _shadow_n=0
+  _shadow_n=$(comm -12 "$failed_set" "$dest_truth" 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$_shadow_n" =~ ^[0-9]+$ ]] || _shadow_n=0
+  if [ "$_shadow_n" -gt 0 ]; then
+    echo "${label} 巩固: ${_shadow_n} 个失败件在目标端**同名存在**（409 半截件形态）→ 保留进重试/修复清单"
+  fi
 
   local missing_n=0
   missing_n=$(wc -l < "$retry_list" | tr -d ' ')
@@ -2432,7 +2450,18 @@ _batch_consolidate() {
       timeout 900 rclone lsf "$dest_path" -R --files-only > "$truth2" 2>/dev/null || true
       if [ -s "$truth2" ]; then
         sort -u "$truth2" -o "$truth2"
-        comm -23 "$retry_list" "$truth2" > "$stubborn"
+        # 顽固 = ① 重试后真值里没有 ∪ ② 重试日志里明确 Failed 的
+        # ⚠️ ② 同 retry_list 的理由（2026-11-20）: 409 同名半截件的**名字在**真值
+        #   清单里，`comm -23` 会把它当"已补上"剔除 ⇒ 到头来还是进不了修复管线。
+        #   重试日志里的 "Failed to copy" 就是"这次也没落盘"的直接证据。
+        local retry_failed="${batch_dir}/retry_failed_${batch_idx}.txt"
+        grep -E 'ERROR : .+: Failed to copy' "$retry_log" 2>/dev/null | \
+          grep -Ev 'object not found' | \
+          sed -E 's/^.*ERROR : //; s/: Failed to copy.*$//' | sort -u > "$retry_failed"
+        {
+          comm -23 "$retry_list" "$truth2"
+          cat "$retry_failed"
+        } | sort -u > "$stubborn"
       else
         echo "⚠️ ${label} 巩固: 复核列表获取失败，重试清单全部转交修复管线（宁重复勿遗漏）"
         cp "$retry_list" "$stubborn"
