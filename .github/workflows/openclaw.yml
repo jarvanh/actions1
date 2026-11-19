@@ -3119,6 +3119,15 @@ jobs:
             echo "openclaw_pruned_derived_copies count=$prune_count bytes=$prune_bytes days=$PRUNE_DAYS"
           fi
 
+          # 2026-11-19 主人拍板：备份副本与项目工作区不进主包。
+          #   backups/**          = 本机回滚副本（30 天保留），恢复侧用不到；单是
+          #                         20261116-2340/storage.sqlite.bak 就 2.0GB
+          #   workspace/MinOrder/** = 独立 git 项目（含 node_modules 1.7GB / target 232MB）
+          #                         有自己的 git 远端，不属于 openclaw 状态
+          # 背景：主包已涨到 5.5GB，每 20 分钟一轮压缩+上传（rsync 120s + 压缩
+          # 140-190s + 上传 2.5min，占空比约 40%），既压磁盘水位又挤占隧道带宽，
+          # 期间 ai-api 公网探针与容器健康检查会因排队超时而误报。
+          # 恢复侧按目录白名单解包，未知目录不会报错，向后兼容。
           # Copy a stable snapshot first. rsync may return 24 when live files vanish
           # during copy; that is expected for active OpenClaw session/lock files, so
           # accept 24 and still validate the final tarball.
@@ -3126,6 +3135,8 @@ jobs:
           nice -n 19 ionice -c3 rsync -a --delete \
             --exclude 'logs/**' \
             --exclude 'cache/**' \
+            --exclude 'backups/**' \
+            --exclude 'workspace/MinOrder/**' \
             --exclude 'browser/*/Crashpad/**' \
             --exclude 'browser/*/GPUCache/**' \
             --exclude 'browser/*/Code Cache/**' \
@@ -4331,6 +4342,22 @@ jobs:
                 fi
                 ;;
             esac
+            # 2026-11-19 主人拍板：主包降频，20 分钟一轮 → 60 分钟一轮。
+            #   小包（OmniRoute / zcode / rsstt / zcode2api-data）保持 20 分钟不变，
+            #   回滚窗口仍压在本轮 job 之内；只有 GB 级主包降频。
+            # 判据用「上次成功上传」写下的 marker（内容时刻），无需新状态：
+            #   无 marker（新环境首轮）→ 立即归档；上传失败 marker 不更新 → 下轮照常重试。
+            # 降的是占空比：主包压缩+上传约 5-8 分钟，此前每 20 分钟跑一次 ≈ 40% 占空，
+            # 现在 ≈ 13%，磁盘水位与隧道带宽不再被周期性挤爆。
+            _MAIN_INTERVAL_SEC=3600
+            _main_last=$(cat /tmp/openclaw-archive-marker.openclaw 2>/dev/null || echo 0)
+            case "$_main_last" in ''|*[!0-9]*) _main_last=0 ;; esac
+            _main_now=$(date +%s)
+            MAIN_DUE=1
+            if [ "$_main_last" -gt 0 ] && [ $(( _main_now - _main_last )) -lt "$_MAIN_INTERVAL_SEC" ]; then
+              MAIN_DUE=0
+              echo "[$(date '+%F %T')] ⏭️ main package not due (last upload $(( (_main_now - _main_last) / 60 ))m ago, interval 60m)"
+            fi
             # 2026-11-10 Phase 0 埋点：记「本份快照的内容时刻」（不是上传完成时刻）。
             # 上传成功后落到 /tmp/openclaw-archive-marker.openclaw，供收尾 step 计算
             # 「最后一次周期归档之后改动了多少字节」—— warm-standby/rsync 交接方案
@@ -4339,7 +4366,9 @@ jobs:
             _oc_arch_start=$(date +%s)
             # 2026-10-11 失败现场包退役：不健康运行直接跳过 openclaw 包的归档/上传
             # （本轮状态本来就坏，没有保存价值；其余 rsstt/网关等数据包照常归档）。
-            if [ "$UNHEALTHY_RUN" = "1" ]; then
+            if [ "$MAIN_DUE" != "1" ]; then
+              : # 未到主包周期，跳过（上方已记录原因）
+            elif [ "$UNHEALTHY_RUN" = "1" ]; then
               echo "[$(date '+%F %T')] ⏭️ unhealthy run, skip openclaw package archive (main package keeps last healthy state)"
             # 2026-10-02：归档全程套 timeout —— 循环曾在一个悬挂的归档/上传迭代里卡死
             # 8 小时（无 timeout 的 rclone/网络调用），期间不归档、不告警、整条归档链静音。
