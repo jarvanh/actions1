@@ -2337,8 +2337,15 @@ _batch_consolidate() {
   local dest_truth="${batch_dir}/dest_truth_${batch_idx}.txt"
   timeout 900 rclone lsf "$dest_path" -R --files-only > "$dest_truth" 2>/dev/null || true
   if ! [ -s "$dest_truth" ]; then
-    echo "⚠️ ${label} 巩固: 目标端列表获取失败/为空，跳过校验（避免半截列表误判全量缺失）"
-    return 0
+    # ⚠️ 只能放弃**假成功甄别**（Copied 的真值无从判断），不能连 Failed 也一起丢
+    #   （2026-11-20 修，生产实证 run 44645708023: 「本批成功 0 / 直接失败 825 个」
+    #   的批次在此整体 return 0 ⇒ 825 个 409 失败件**整批漏掉**，永不重试/修复
+    #   ——这正是 409 唯一件 430→502→487 只增不减的出口）。
+    #   "Failed to copy" 不依赖真值清单（失败就是失败），照常进入重试链。
+    #   dest_truth 置空: ① comm -23 copied_set dst = 全部 Copied 视为假成功（保守
+    #   侧正确——宁可多试）；② 同名存在提示对空清单不触发，无误导。
+    echo "⚠️ ${label} 巩固: 目标端列表获取失败/为空 → 无法甄别假成功，但 ${failed_n} 个 Failed to copy 照常进重试链（失败就是失败，不依赖真值清单）"
+    : > "$dest_truth"
   fi
   sort -u "$dest_truth" -o "$dest_truth"
 

@@ -284,14 +284,21 @@ OUT=$(run_consolidate 0 "$LOG")
   && ok "5a 重启失败 → 不列表/不重试" || bad "5a: lsf/copy 异常"
 echo "$OUT" | grep -q "容器重启失败" && ok "5b 重启失败提示（最终检查兜底）" || bad "5b: $OUT"
 
-# --- 场景6: 目标端列表为空 → 跳过重试（防半截列表误判全量缺失）---
+# --- 场景6: 目标端列表为空 → **不能整批放弃**（2026-11-20 语义变更）---
+#   旧行为: 直接 return 0，整批漏掉。生产实证 run 44645708023: 「本批成功 0 个 /
+#   直接失败 825 个」在此整体跳过 ⇒ 825 个 409 失败件永不重试/修复，正是 409
+#   唯一件只增不减的出口。
+#   新行为: 只放弃**假成功甄别**（Copied 无从校验），Failed to copy 照常进重试链；
+#   且列表为空时 Copied 一律视为可疑（目录都不存在，自然没落盘）。
 setup
 BC_DEST="openlist:wopan176Crypt/0"
 write_batch_log "$LOG"
 : > "$LSF_OUT"
 OUT=$(run_consolidate 0 "$LOG")
-[ "$(calls /tmp/bc_copy_calls)" = "0" ] && ok "6a 列表为空 → 不重试" || bad "6a: copy=$(calls /tmp/bc_copy_calls)"
-echo "$OUT" | grep -q "列表获取失败/为空" && ok "6b 空列表提示" || bad "6b: $OUT"
+[ "$(calls /tmp/bc_copy_calls)" = "1" ] && ok "6a 列表为空 → 仍触发一次重试（不再整批放弃）" || bad "6a: copy=$(calls /tmp/bc_copy_calls)"
+diff <(sort /tmp/bc_files_from 2>/dev/null) <(printf 'bad/file3.mp4\nghost/file2.mp4\nok/file1.mp4\n') >/dev/null 2>&1 \
+  && ok "6a2 重试清单 = 两个 Copied（无从校验故保守重试）+ 失败件（gone 排除）" || bad "6a2: $(cat /tmp/bc_files_from 2>/dev/null | tr '\n' ' ')"
+echo "$OUT" | grep -q "照常进重试链" && ok "6b 空列表提示说明 Failed 不丢" || bad "6b: $OUT"
 
 # --- 场景7: 开关关闭 ---
 setup

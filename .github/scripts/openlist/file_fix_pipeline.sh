@@ -947,9 +947,16 @@ _sync_bulk_hash_dir_fold() {
 # 输出: stdout，每行一个 rel 路径（已去重前，调用方 sort -u）。
 _missing_list_two_way_diff() {
   local _src="$1" _dst="$2"
-  awk '
+  # ⚠️ 不能用 NR==FNR，也不能用 ARGIND（2026-11-20 修，生产实证 run 44602418951）:
+  #   "目标目录不存在 → dst 为空"时第一个文件 0 行 ⇒ 进入第二个文件时 NR==FNR
+  #   仍成立（NR=FNR=1..）⇒ 源端每行都被塞进 dseen 而**从不输出** ⇒ 两路差集返回
+  #   空 ⇒ 缺失清单为空 ⇒ 修复管线整个不启动。日志指纹: "名缺失 N + 同名尺寸
+  #   不符 -N（合计 0）" 的负数。
+  #   ARGIND 是 gawk 扩展，runner 上 awk 可能是 mawk ⇒ 改用 POSIX 的 FILENAME 判据
+  #   （空文件不产生记录，故第二条记录一定来自源端）。
+  awk -v df="$_dst" '
     BEGIN { FS=";" }
-    NR==FNR {
+    FILENAME==df {
       p=$0; sub(/;[^;]*$/,"",p); if (p=="") next
       dsz[p]=$NF; dseen[p]=1
       next

@@ -68,5 +68,19 @@ printf '%s\n' 'a.txt' > "$TMPD/dst_plain.ls"
 got2="$(_missing_list_two_way_diff "$TMPD/src_plain.ls" "$TMPD/dst_plain.ls" | sort | tr '\n' ' ')"
 [ "$got2" = "b.txt " ] && ok "T7 纯名口径仅按名差集（b.txt）" || bad "T7 纯名口径错误: got=[$got2]"
 
+# T8: **目标端为空**（目录不存在 → dst 清单空）—— 必须把源端全部判为缺失。
+# 这是生产回归（run 44602418951）: NR==FNR 在第一个文件 0 行时无法区分文件，
+# 源端每行都被当成 dst 记录吞掉 ⇒ 返回空 ⇒ 修复管线不启动。日志指纹是
+# "同名尺寸不符 -N（合计 0）" 的负数。
+: > "$TMPD/dst_empty.ls"
+got3="$(_missing_list_two_way_diff "$TMPD/src.ls" "$TMPD/dst_empty.ls" | sort | tr '\n' ' ')"
+want3="a/b.txt c.txt d.txt e;f.txt g.txt i.txt "
+[ "$got3" = "$want3" ] && ok "T8 目标端为空 → 源端全部判缺失（回归: NR==FNR 陷阱）" \
+  || bad "T8 目标端为空时漏判: got=[$got3] want=[$want3]"
+
+# T8b: 源端为空 → 无输出（不应把 dst 当源端反着判）
+got4="$(_missing_list_two_way_diff "$TMPD/dst_empty.ls" "$TMPD/dst.ls" | sort | tr '\n' ' ')"
+[ -z "$got4" ] && ok "T8b 源端为空 → 无输出" || bad "T8b 源端为空却有输出: [$got4]"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
