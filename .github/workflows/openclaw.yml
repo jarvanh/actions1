@@ -4817,6 +4817,7 @@ jobs:
           if [ -f /tmp/openclaw-guard-declined ]; then
             echo "ℹ️ 本轮由 handoff guard 让位取消（从未部署任何服务），跳过最终归档与告警"
             echo "handoff_done=0" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=guard 让位取消（本轮从未部署服务）" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # 2026-11-15：归档辅助脚本由「Start background archive loop」步骤生成。
@@ -4826,6 +4827,7 @@ jobs:
           if [ ! -f /tmp/create-openclaw-archive.sh ] || [ ! -f /tmp/create-zcode-archive.sh ]; then
             echo "ℹ️ 归档脚本未生成（本轮未完成启动或已被取消），跳过最终归档与告警"
             echo "handoff_done=0" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=归档脚本未生成（本轮未完成启动或已被取消）" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # 通知真源在 step 顶层 source 一次（勿挪进下面的函数体，理由见启动步骤同名注释 / 规范 · 通知函数的正确接法）
@@ -5927,6 +5929,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ARCHIVE_STEP_CONCLUSION: ${{ steps.final_archive.conclusion }}
+          # 2026-11-20：归档步骤「主动跳过」时 exit 0 且不写结果文件，空结果分支会把它
+          # 误判成「该有明细却没有」并走 alert 档（run 44644410298 实测）。跳过原因由
+          # 归档步骤显式外抛，通知侧据此静默。
+          ARCHIVE_SKIP_REASON: ${{ steps.final_archive.outputs.skip_reason }}
           # 2026-11-11：交接轮的最终归档只是「交接后备份」，标题必须写明 ——
           # 同一个 ✅ 文案在传统轮=本轮结束、在交接轮=旧轮冻结态备份（服务早已在新轮上）。
           HANDOFF_DONE: ${{ steps.final_archive.outputs.handoff_done }}
@@ -5935,9 +5941,12 @@ jobs:
           # 变成「静默不发」；发送失败由末尾的 || echo ::warning:: 留痕（规范 · 发送层）
           set -uo pipefail
           # 凭据校验在 source 之前（规范 · 接线）
-          # 2026-11-11：guard 让位取消的轮次没有归档可报，别发「未完成」噪音
-          if [ -f /tmp/openclaw-guard-declined ]; then
-            echo "ℹ️ 本轮由 handoff guard 让位取消，跳过归档结果通知"
+          # 2026-11-11 / 2026-11-20：归档步骤**主动跳过**（guard 让位、归档脚本未生成）
+          # 的轮次没有归档可报，别发「未完成」噪音。归档步骤那两条 exit 0 路径不写结果
+          # 文件，靠结论判断不出来（conclusion=success）—— 必须由它外抛 skip_reason；
+          # /tmp 标记保留作兜底（归档步骤根本没跑到时也能静默）。
+          if [ -n "${ARCHIVE_SKIP_REASON:-}" ] || [ -f /tmp/openclaw-guard-declined ]; then
+            echo "ℹ️ 归档步骤已主动跳过（${ARCHIVE_SKIP_REASON:-guard 让位取消}），跳过归档结果通知"
             exit 0
           fi
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
