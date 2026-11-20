@@ -384,6 +384,9 @@ EOF
     # 在 GitHub，云盘不该留副本。仍校验运行产物（fail-closed）。
     autoclaw)
       local ac_run_dir="${AUTOCLAW_RUN_DIR:-$HOME/autoclaw-proxy}"
+      # systemd 对含 `..` 的非规范 WorkingDirectory 直接 fatal（unit 不启动），
+      # 单元生成点统一收口规范化，任何调用方传参都不再能炸（2026-11-20 实锤）。
+      ac_run_dir="$(realpath -m "$ac_run_dir")"
       local ac_data_dir="${AUTOCLAW_DATA_DIR:-/dropbox/self-hosted/autoclaw-proxy}"
       [ -s "$ac_run_dir/app/proxy.py" ] || { rm -f "$tmp"; die "autoclaw: $ac_run_dir/app/proxy.py 缺失（workflow 需先 clone 代码）"; }
       [ -s "$ac_data_dir/accounts.json" ] || { rm -f "$tmp"; die "autoclaw: $ac_data_dir/accounts.json 缺失或为空（无凭据，拒绝起无凭据服务）"; }

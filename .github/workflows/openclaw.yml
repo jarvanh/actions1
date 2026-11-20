@@ -1338,7 +1338,10 @@ jobs:
           # 2026-11-17 代码/数据分离：代码落 $HOME（每轮 clone 覆盖），
           # 数据（账号/快照/统计/用量）留 Dropbox。Dropbox 是 rclone 挂载，
           # 程序文件会被远端同步覆盖，程序真源在 GitHub。
-          AUTOCLAW_CODE_DIR: ${{ github.workspace }}/../autoclaw-proxy
+          # ⚠️ 2026-11-20 撤掉 AUTOCLAW_CODE_DIR：原值 ${{ github.workspace }}/../autoclaw-proxy
+          #   带 `..` 的非规范路径 → systemd 判 WorkingDirectory fatal（unit 不启动）
+          #   → 早跑实例自检 8322 必失败发 ❌ 假告警，且与收口补跑的 $HOME 目录分叉
+          #   （两份 clone、两套代码）。目录由 run-autoclaw.sh 默认值单点决定。
         run: |
           set -uo pipefail
           OC_DIR="${GITHUB_WORKSPACE}/.github/scripts/openclaw"

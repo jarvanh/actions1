@@ -31,7 +31,10 @@
           #   数据 → /dropbox/self-hosted/autoclaw-proxy（账号/快照/统计/用量）
           # 原因：/dropbox 是 rclone fuse 挂载，程序文件写入会被远端同步覆盖，
           # 且程序真源在 GitHub，不该在云盘留副本。
-          CODE_DIR="${AUTOCLAW_CODE_DIR:-$HOME/autoclaw-proxy}"
+          # 路径必须规范化：含 `..` 的路径写进 systemd WorkingDirectory 会判
+          # fatal（unit 不启动）。2026-11-20 实锤：早跑实例整轮自检 8322 连不上，
+          # 假 ❌ 告警 + 与收口补跑双份 clone。
+          CODE_DIR="$(realpath -m "${AUTOCLAW_CODE_DIR:-$HOME/autoclaw-proxy}")"
           DATA_DIR="/dropbox/self-hosted/autoclaw-proxy"
           RUN_DIR="$DATA_DIR"   # 兼容：以下所有 RUN_DIR 用法都指数据目录
           AC_OK=0
