@@ -498,6 +498,19 @@ EOF
       if [ -f "$_tg_src" ]; then
         install -m 644 "$_tg_src" "${HOME}/.openclaw/bin/tg_notify.sh" 2>/dev/null || true
       fi
+      # alert 档凭据单独落一个 env（同 health-watchdog.env 的做法）：主 .env 只有
+      # 普通档 bot（TELEGRAM_BOT_TOKEN/CHAT_ID），把 alert 键写进主 .env 会污染
+      # 其它读取方；守卫在 unit 的 EnvironmentFile 之外自己 source 这个文件。
+      # 凭据只从调用方 env（workflow secrets）读，空值不写 —— 不覆盖已有文件为半空。
+      local _alert_env="${HOME}/.openclaw/dropbox-orphan-guard.env"
+      if [ -n "${TELEGRAM_BOT_TOKEN_ALERT:-}" ] && [ -n "${TELEGRAM_CHAT_ID_ALERT:-}" ]; then
+        ( umask 077
+          printf 'TELEGRAM_BOT_TOKEN_ALERT=%s\nTELEGRAM_CHAT_ID_ALERT=%s\n' \
+            "$TELEGRAM_BOT_TOKEN_ALERT" "$TELEGRAM_CHAT_ID_ALERT" > "$_alert_env" )
+        chmod 600 "$_alert_env" 2>/dev/null || true
+      elif [ ! -f "$_alert_env" ]; then
+        echo "::warning::[services] alert 凭据未注入且 $(_basename "$_alert_env") 不存在——dropbox 守卫将无法发 alert 告警" >&2 || true
+      fi
       cat > "$guard" <<'GUARD'
 #!/usr/bin/env bash
 # /dropbox 挂载点守卫：rclone 没挂上（或刚崩）时，写进挂载点目录的数据会被
@@ -525,6 +538,14 @@ echo "[$(date '+%F %T')] orphan moved count=$count size=$size dest=$dest" >> "$O
 if [ -r "$ENV_FILE" ]; then
   set -a
   . "$ENV_FILE" 2>/dev/null || true
+  set +a
+fi
+# alert 档凭据在专属 env（安装时由 services.sh 写入，600）：主 .env 只有普通档 bot，
+# 把 _ALERT 键塞进主 .env 会污染其它读取方，故单独一份。
+ALERT_ENV="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dropbox-orphan-guard.env"
+if [ -r "$ALERT_ENV" ]; then
+  set -a
+  . "$ALERT_ENV" 2>/dev/null || true
   set +a
 fi
 # 发送层真源由安装步骤拷到本脚本同目录；从这里 source 而不是自己 curl。
