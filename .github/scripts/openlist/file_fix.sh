@@ -907,6 +907,10 @@ _verify_dir_after_create() {
   if _fix_dir_exists_or_conflict "$dir_remote" "$tmo"; then
     return 0
   fi
+  # 可观测（2026-11-20 加）: 此前只有"刷新后可见"一条日志 ⇒ 该行命中数 0 时无法
+  #   区分"首读就可见（一切健康）"与"刷新后仍不可见（目录确实没建出来）"。
+  #   补入口 + 失败两侧，让这个分支的三种结局都可从日志读出。
+  log_fix "${4:-/dev/null}" "  ↳ 首读不可见 → 先刷新父目录缓存再复核（缓存假阴性候选）"
   # 缓存刷新（父目录一层）；openlist_driver.sh 在本文件之后 source，
   # 单测桩环境可能没有该函数，须带 declare -F 兜底
   if declare -F _refresh_ol_cache_fast >/dev/null 2>&1 && [ -n "$ol_dir" ]; then
@@ -920,6 +924,7 @@ _verify_dir_after_create() {
     log_fix "${4:-/dev/null}" "  ↳ 刷新父目录缓存后复核: 目录可见（此前是缓存假阴性，不是假成功）"
     return 0
   fi
+  log_fix "${4:-/dev/null}" "  ↳ 刷新父目录缓存后复核: 仍不可见（目录确实没建出来，非缓存问题）"
   return 1
 }
 
