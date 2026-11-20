@@ -909,7 +909,7 @@ jobs:
         # gpg 对称加密（passphrase 在 Secrets.TS_CERT_GPG_KEY，fork PR 与
         # 缓存本身都拿不到明文私钥）。无 secret/无缓存时优雅降级为本轮现签。
         if: ${{ always() }}
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/ts-cert-cache
           # 精确 key 永不命中（证书到期日只有签发后才知道），靠 restore-keys
@@ -1191,7 +1191,7 @@ jobs:
 
       - name: Save Tailscale certs cache
         if: ${{ always() && inputs.handoff_of == '' && steps.ts_certs_stash.outputs.saved == 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/ts-cert-cache
           key: ${{ steps.ts_certs_stash.outputs.key }}
