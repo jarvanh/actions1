@@ -1490,11 +1490,18 @@ _fix_switch_to_hash_dir() {
     #   409 退避一窗就是 ${_409_sleep}s 量级，份额到点还在等纯属浪费。
     #   本文件可被单测单独 source，故带 declare -F 兜底。
     local _409_dl=""
-    if declare -F budget_deadline_epoch >/dev/null 2>&1; then
-      _409_dl=$(budget_deadline_epoch)
-    else
-      _409_dl="${OPENLIST_SYNC_DEADLINE_EPOCH:-}"
+    # 修复侧终点（2026-11-20 统一）: dc75912 起修复管线的终点是"份额终点 + 宽限
+    #   600s"，但这里原先仍按**份额终点**判 ⇒ 宽限窗口里明明还有 600s，却因为
+    #   "份额已过"直接放弃 409 退避 ⇒ 那 600s 被白白浪费，"⏰ 预算不足一个 409
+    #   退避窗"在生产日志里反复出现（44722385809 实测该轮仍有该提示）。
+    #   优先用 repair_deadline_epoch（= min(全局, 份额+宽限)），缺失则退化到旧口径。
+    if declare -F repair_deadline_epoch >/dev/null 2>&1; then
+      _409_dl=$(repair_deadline_epoch)
     fi
+    if [ -z "$_409_dl" ] && declare -F budget_deadline_epoch >/dev/null 2>&1; then
+      _409_dl=$(budget_deadline_epoch)
+    fi
+    [ -n "$_409_dl" ] || _409_dl="${OPENLIST_SYNC_DEADLINE_EPOCH:-}"
     if [ "${_FIX_HASHDIR_409_TRIED[$hash_dst_dir]:-0}" = "1" ]; then
       log_fix "$fix_log" "   ⏭ 该目录本轮已做过 409 退避重试，本次不再等待（结果已定）"
     # 预算不足则放弃等待（不把整轮预算烧在一个目录上；下轮接力）

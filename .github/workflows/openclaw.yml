@@ -3133,27 +3133,32 @@ jobs:
           # 2026-11-19 主人拍板：备份副本与项目工作区不进主包。
           #   backups/**          = 本机回滚副本（30 天保留），恢复侧用不到；单是
           #                         20261116-2340/storage.sqlite.bak 就 2.0GB
+          # 2026-11-20 修：logs/cache/backups 用 /logs/** 前导斜杠锚定传输根。
+          #   不锚定时 rsync 按路径尾部匹配，MinOrder 内同名目录会被连带排除 ——
+          #   实测 cache/** 吞掉 yudao-common/.../util/cache/CacheUtils.java。
           # 2026-11-20 主人更正：workspace/MinOrder = **本地工作目录，不能丢**。
           #   改为随包带走源码与 .git，只排可重建的构建产物：
           #     workspace/MinOrder/**/node_modules（1.66GB）
           #     workspace/MinOrder/**/target      （316MB，Maven 产物）
           #   净增约 300MB（源码 ~150MB + .git 151MB）。此前的整目录排除导致
           #   冷启动/交接后该目录为空，用户实测丢过一次（见 memory/2026-11-20）。
-          #   交接侧（takeover.sh）**不排** MinOrder —— 温交接要保住完整工作树，
-          #   含 node_modules/target；两条路径的口径差异在那边有注释。
+          #   交接侧（takeover.sh）用**同一份**排除清单（2026-11-20 对齐）：
+          #   源码与 .git 必传，node_modules/target 同样排除（可重建）。
           # 背景：主包已涨到 5.5GB，每 20 分钟一轮压缩+上传（rsync 120s + 压缩
           # 140-190s + 上传 2.5min，占空比约 40%），既压磁盘水位又挤占隧道带宽，
           # 期间 ai-api 公网探针与容器健康检查会因排队超时而误报。
-          # 恢复侧按目录白名单解包，未知目录不会报错，向后兼容。
+          # 恢复侧整包解压后整树 mv，不做目录白名单 —— 排除只在打包侧生效。
           # Copy a stable snapshot first. rsync may return 24 when live files vanish
           # during copy; that is expected for active OpenClaw session/lock files, so
           # accept 24 and still validate the final tarball.
           set +e
           nice -n 19 ionice -c3 rsync -a --delete \
-            --exclude 'logs/**' \
-            --exclude 'cache/**' \
-            --exclude 'backups/**' \
+            --exclude '/logs/**' \
+            --exclude '/cache/**' \
+            --exclude '/backups/**' \
+            --exclude 'workspace/MinOrder/node_modules' \
             --exclude 'workspace/MinOrder/**/node_modules' \
+            --exclude 'workspace/MinOrder/target' \
             --exclude 'workspace/MinOrder/**/target' \
             --exclude 'browser/*/Crashpad/**' \
             --exclude 'browser/*/GPUCache/**' \
@@ -3766,8 +3771,8 @@ jobs:
           # Copy a stable snapshot first. Exclude volatile request logs/caches; persist
           # config, auth, and stats.
           sudo rsync -a --delete \
-            --exclude 'logs/**' \
-            --exclude 'cache/**' \
+            --exclude '/logs/**' \
+            --exclude '/cache/**' \
             --exclude 'tmp/**' \
             --exclude 'temp/**' \
             --exclude '*.lock' \
@@ -5027,7 +5032,7 @@ jobs:
             # ⚠️ 判定必须在 awk 里按**路径字段**做：find 输出是 `size\tpath`，用
             # grep '^logs/' 锚定会恒不匹配（行首是字节数）—— 2026-11-10 合成树实测：
             # 5 个该被排除的文件全被算进增量（虚高 96%），差点据此把方案判死。
-            # 相对路径口径与 rsync 的 'logs/**' 一致（均锚定传输根，不含子目录同名项）。
+            # 相对路径口径与归档脚本的 '/logs/**' 一致（均锚定传输根，不含子目录同名项）。
             read -r total_n total_b < <(find "$src" -type f -printf '%s\n' 2>/dev/null \
               | awk '{n++; b+=$1} END {printf "%d %d\n", n+0, b+0}')
             echo "[phase0] tree_files=$total_n tree_bytes=$total_b"
@@ -5076,8 +5081,8 @@ jobs:
               mkdir -p /tmp/phase0-empty-ref
               t0=$(date +%s%3N)
               nice -n 19 ionice -c3 rsync -a --dry-run --stats --delete \
-                --exclude 'logs/**' \
-                --exclude 'cache/**' \
+                --exclude '/logs/**' \
+                --exclude '/cache/**' \
                 --exclude 'browser/*/Crashpad/**' \
                 --exclude 'browser/*/GPUCache/**' \
                 --exclude 'browser/*/Code Cache/**' \
@@ -6097,8 +6102,9 @@ jobs:
             source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
             _msg=""
             tg_add_title _msg "🔄 新 run 已启动"
-            tg_add_path _msg "旧 run" "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            tg_add_path _msg "新 run" "https://github.com/${{ github.repository }}/actions/runs/${_new}"
+            # 读者要跳转的链接 → tg_add_link（规范 · 机器值：外部可点 URL 用 <a>，不进 <code>）
+            tg_add_link _msg "旧 run" "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" "run ${{ github.run_id }}"
+            tg_add_link _msg "新 run" "https://github.com/${{ github.repository }}/actions/runs/${_new}" "run ${_new}"
             tg_add_footer _msg
             if send_tg "$_msg"; then
               echo "✅ 新 run 链接已发送: #${_new}"

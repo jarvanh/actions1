@@ -82,7 +82,7 @@ tg_add_footer msg
 send_tg_chunked "$msg"
 ```
 
-**学什么**：清单唯一正确管线 `tg_add_entry` → `tree_fold` → `tg_add_block`；`source` 在明细构建**之前**；清单可能上百条 → 折叠 + `send_tg_chunked`。（此段曾是 `du -h` + 手写截断的旧版，已按实现更新——范例与实现漂移时以实现为准改范例。）
+**学什么**：清单唯一正确管线 `tg_add_entry` → `tree_fold` → `tg_add_block`；`source` 在明细构建**之前**；清单可能上百条 → 折叠 + `send_tg_chunked`。范例与实现漂移时，以实现为准改范例。
 
 空清单跳过与两种折叠分工看 `openlist/sync_notify.sh` 的 `_notify_add_excludes`（`tree_code_fold` 收裸文本的排除规则）与 `fix_total -gt 0` 分节（避免渲染 `✅ … · 0`）。
 
@@ -92,7 +92,7 @@ send_tg_chunked "$msg"
 
 - 机器值（对象 / Run ID）走 `tg_add_path` 进 `<code>`，自然语言（结论 / 原因）走 `tg_add_kv` 裸文本；
 - 分节 `🧾 原始输出` **不带** ` · N`（计数只用于条目列表）；
-- `tg_add_pre full_msg "$(printf '%s' "$detail" | tail -c 1200)"` —— 尾部 1200 字节（python 侧分片无标签闭合，超长 `<pre>` 跨分片会破版）；
+- `tg_add_pre full_msg "$(tg_tail_safe "$detail" 1200)"` —— 尾部 1200 字节（裸 `tail -c` 会切断 UTF-8，用真源 `tg_tail_safe`；python 侧分片无标签闭合，超长 `<pre>` 跨分片会破版）；
 - `<pre>` 是正文最后一块，其后只跟收尾区。
 
 复制即用命令块的固定形态看 `openlist/sync_marker.sh` 的 `▸ 强制同步` 段：`tg_add_note "▸ 描述"` + `tg_add_pre "命令"` 成对出现（`file_split.sh` 的 `tg_add_pre` 同形态）。

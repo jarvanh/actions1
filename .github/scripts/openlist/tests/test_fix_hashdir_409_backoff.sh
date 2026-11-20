@@ -127,6 +127,27 @@ fi
 [ "$SLEPT" = "0" ] && ok "3b 预算不足时不等待（不烧预算）" || bad "3b: sleep=$SLEPT（期望 0）"
 grep -q "预算不足一个 409 退避窗" "$WORK/fixlog.txt" && ok "3c 日志说明跳过原因" || bad "3c: 未说明"
 
+# --- 3d/3e: 份额已过但仍在宽限窗口 → 必须照常退避（dc75912 的宽限不能被浪费）---
+#   旧实现按 budget_deadline_epoch（份额终点）判 ⇒ 份额一过就放弃等待；
+#   而 dc75912 之后修复管线的合法终点是"份额 + 宽限 600s" ⇒ 那 600s 白扔。
+reset_case
+export OPENLIST_409_RETRY_ATTEMPTS=2
+export OPENLIST_409_RETRY_SLEEP_SECONDS=1
+OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 100 ))          # 份额只剩 100s
+OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH=$(( $(date +%s) + 900 ))   # 修复终点还有 900s
+sync_hard_limit_stop() { return 1; }
+repair_deadline_epoch() { echo "$OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH"; }
+budget_deadline_epoch() { echo "$OPENLIST_SYNC_DEADLINE_EPOCH"; }
+MK_FAIL_TIMES=1        # 首次失败 + 1 次重试成功
+if _fix_switch_to_hash_dir; then
+  ok "3d 宽限窗口内仍退避并建成（份额终点不再是修复终点）"
+else
+  bad "3d 宽限窗口内放弃了退避（repair_deadline_epoch 未生效）"
+fi
+[ "$SLEPT" = "1" ] && ok "3e 宽限窗口内确实等待过（3d 的机制证据）" || bad "3e: sleep=$SLEPT（期望 1）"
+unset OPENLIST_PAIR_REPAIR_DEADLINE_EPOCH
+unset -f repair_deadline_epoch budget_deadline_epoch 2>/dev/null || true
+
 # --- 4: 全部重试仍失败 ---
 reset_case
 export OPENLIST_409_RETRY_ATTEMPTS=2

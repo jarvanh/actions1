@@ -19,9 +19,9 @@ handoff_is_successor || { echo "ℹ️ [takeover] 非 handoff 轮，跳过"; exi
 
 EXCLUDES="/tmp/handoff-oc-excludes.txt"
 cat > "$EXCLUDES" <<'EOF_EXCL'
-logs/**
-cache/**
-backups/**
+/logs/**
+/cache/**
+/backups/**
 browser/*/Crashpad/**
 browser/*/GPUCache/**
 browser/*/Code Cache/**
@@ -34,12 +34,25 @@ SingletonCookie
 *.pid
 *.jsonl.lock
 health-watchdog.env
+workspace/MinOrder/node_modules
+workspace/MinOrder/**/node_modules
+workspace/MinOrder/target
+workspace/MinOrder/**/target
 EOF_EXCL
-# 与 create-openclaw-archive.sh 的 rsync 排除清单**刻意差一项**（改任一侧先看这里）：
-#   • 一致项：logs/cache/backups/浏览器缓存/锁文件/health-watchdog.env
-#   • 差异项：workspace/MinOrder 归档包侧排除（主包瘦身 2.3G），交接侧**必须传**
-#     —— 它是本地工作目录，旧机销毁后这里是唯一副本（主人 2026-11-20 明确要求，
-#     曾因跟排 MinOrder 导致交接后目录为空）。
+# 与 create-openclaw-archive.sh 的 rsync 排除清单**必须逐条一致**（改任一侧先看这里）：
+#   • 一致项：logs/cache/backups/浏览器缓存/锁文件/health-watchdog.env/MinOrder 构建产物
+#   • 2026-11-20 修：logs/cache/backups 必须写成 /logs/**（前导斜杠锚定传输根）。
+#     不锚定时 rsync 按「路径尾部」匹配，会把 MinOrder 里任何同名目录一起排掉 ——
+#     实测 `cache/**` 吞掉了 yudao-common/.../util/cache/CacheUtils.java，
+#     冷启动后工作树缺文件（.git 里还有，但构建先炸）。
+#   • 口径：workspace/MinOrder 的**源码内容与 .git 必须传**（本地工作目录，旧机
+#     销毁后是唯一副本，主人 2026-11-20 明确要求）；**node_modules/target 排除**，
+#     与归档侧逐条一致（2026-11-20 起不再有「刻意差异」）。
+#     2026-11-20 事故（run 44685554069）：MinOrder 里 root 属主的
+#     node_modules/.bin/* 读不了 → rsync 发送端 Permission denied (13) → rc=23
+#     → 继任者 abort → 退化冷启动（下线 8.5 分钟，正常 2-4 分钟）。
+#     这两类都是可再生构建产物（npm install / cargo build），且体积占 MinOrder
+#     绝大部分 —— 排除即可，源码一并传输不受影响。
 # 2026-11-20 对齐（实测 run 44644410298）：backups/** 与 health-watchdog.env 是
 # 2026-11-19 归档瘦身时加到归档侧的，takeover 侧漏改 → 继任者基座里本就没有这两个，
 # 旧轮却把 backups（2.2G）当「增量」整目录重传，白吃 780s 超时的一大半余量。

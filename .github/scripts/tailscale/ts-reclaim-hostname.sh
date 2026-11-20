@@ -149,7 +149,9 @@ _notify_reclaimed() {
   tg_add_section _msg "🔐 SSH · 1"
   tg_add_block _msg "$(tree_lines "命令：<code>ssh runner@openclaw</code>")"
   tg_add_footer _msg
-  send_tg "$_msg" alert || true
+  # 入口推送属常态信息 → 普通档（规范 · 档位判定：入口与凭据推送不占 alert；
+  # alert 只留给入口设置失败等故障态）。
+  send_tg "$_msg" || true
   echo "[ts-reclaim] $(date -u +%FT%TZ) 📨 已补发正名入口通知"
 }
 

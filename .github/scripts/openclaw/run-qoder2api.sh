@@ -58,7 +58,8 @@ qoder_notify() {
       # 看板入口 + 面板密码（与看板 admin_entries 统一走 https 8447）：
       # ts.env 由 Tailscale 步骤在本 step 之前写出；缺失时两行整体跳过。
       if [ -n "${TS_FQDN:-}" ]; then
-        tg_add_path _msg "看板" "https://${TS_FQDN}:8447/"
+        # 看板是读者点得开的外部链接 → <a>（规范 · 机器值）；接口地址是本机回环，仍走 <code>
+        tg_add_link _msg "看板" "https://${TS_FQDN}:8447/" "打开看板"
         # 设计如此：看板密码明文进 TG 通知（便于手机端直接登录）。
         local _qp="$(cat "$QODER_DATA/.panel-password" 2>/dev/null || true)"
         tg_add_path _msg "看板密码" "${_qp:-未取到}"

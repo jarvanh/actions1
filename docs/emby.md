@@ -372,8 +372,8 @@ ge2o 据此发出 302。
 bash skills/telegram-notify-audit/scripts/list_notify.sh   # 关注 emby.yml
 ```
 
-版式见 [`telegram-notify.md`](telegram-notify.md)，档位见台账「Emby」行（启停 / 回退 /
-凭据 **alert**，播放 **普通**）。两条非显然约定：
+版式见 [`telegram-notify.md`](telegram-notify.md)，档位见台账「Emby」行（正常启停 /
+回退 / 凭据 / 播放 **普通**，失败 / 中断 **alert**）。两条非显然约定：
 
 - **凭据通知只在改密时发**（secret 为空随机生成、或库内密码漂移纠正）；密码明文走
   `<code>`（自动转义），**绝不落运行日志**；长期有效密码仍是 secret 本身。
