@@ -21,6 +21,7 @@ EXCLUDES="/tmp/handoff-oc-excludes.txt"
 cat > "$EXCLUDES" <<'EOF_EXCL'
 logs/**
 cache/**
+backups/**
 browser/*/Crashpad/**
 browser/*/GPUCache/**
 browser/*/Code Cache/**
@@ -32,9 +33,18 @@ SingletonCookie
 *.lock
 *.pid
 *.jsonl.lock
+health-watchdog.env
 EOF_EXCL
-# ↑ 与 create-openclaw-archive.sh 的 rsync 排除清单逐条一致（改那边同步改这里）：
-#   两份排除语义必须相同，否则「基座+增量」与「归档包」内容口径分叉。
+# 与 create-openclaw-archive.sh 的 rsync 排除清单**刻意差一项**（改任一侧先看这里）：
+#   • 一致项：logs/cache/backups/浏览器缓存/锁文件/health-watchdog.env
+#   • 差异项：workspace/MinOrder 归档包侧排除（主包瘦身 2.3G），交接侧**必须传**
+#     —— 它是本地工作目录，旧机销毁后这里是唯一副本（主人 2026-11-20 明确要求，
+#     曾因跟排 MinOrder 导致交接后目录为空）。
+# 2026-11-20 对齐（实测 run 44644410298）：backups/** 与 health-watchdog.env 是
+# 2026-11-19 归档瘦身时加到归档侧的，takeover 侧漏改 → 继任者基座里本就没有这两个，
+# 旧轮却把 backups（2.2G）当「增量」整目录重传，白吃 780s 超时的一大半余量。
+# health-watchdog.env 由本机 watchdog 每轮重装重建，搬旧版还有覆盖凭据的前科
+#（2026-11-11 / 11-19 两次事故）。
 
 abort_takeover() { # <原因>
   echo "⛔ [takeover] 接管失败：$1 → 自我取消（数据由旧轮传统收尾兜底，零丢失）"
@@ -94,7 +104,9 @@ _zc_rc=0
 # 传输量降一个数量级，压缩不再是关键路径，但留着无害。
 # 代价：两端都是 ubuntu-latest 的 rsync 3.4.x，协议一致；不支持时 rsync 会报错，
 # 由 timeout/失败分支兜底（交接回退传统路径，零丢失不变）。
-( timeout 780 rsync -a --delete --timeout=60 --stats \
+# 2026-11-20：780 → 540，与 oc 通道同口径 —— 两条通道是并行的，交接总时长取
+# max(oc, zc)，只收 oc 的话 zc 仍能把交接拖出旧轮的 600s serving 窗口。
+( timeout 540 rsync -a --delete --timeout=60 --stats \
     --exclude 'cli/rollout/**' \
     --compress --compress-choice=zstd --compress-level=1 \
     rsync://"${OLD_TS_IP}:${HANDOFF_RSYNC_PORT}"/zc/ "$HOME/.zcode/" 2>&1 \
@@ -105,14 +117,23 @@ _rs_t0=$(date +%s)
 # 旧代码把所有非 0 都当失败：run 43678802340 就因 zc rc=24 自我取消，交接白失败一次。
 # 现在 0/24 都放行（24 记警告），真正的错误（23/超时 124 等）仍 abort。
 _oc_rc=0
-timeout 780 rsync -a --delete --exclude-from="$EXCLUDES" --timeout=60 --stats \
+# 2026-11-20：780 → 540。旧轮等 serving 的上限是 600s（protocol.sh
+# HANDOFF_SERVING_WAIT_SEC），780 比它还长 —— rsync 在 600–780s 之间「成功」时，
+# 旧轮已经回退传统收尾，takeover 下面那道 handing_over 复核必然把成果丢掉
+#（白等 4 分钟才 abort）。超时收到 540s 让「rsync 成功」恒等于「仍在旧轮窗口内」；
+# 正常量 275–280s，对齐排除清单后会更短，540s 仍有 ~2x 余量。
+timeout 540 rsync -a --delete --exclude-from="$EXCLUDES" --timeout=60 --stats \
   rsync://"${OLD_TS_IP}:${HANDOFF_RSYNC_PORT}"/oc/ "$HOME/.openclaw/" > /tmp/handoff-rsync-oc.log 2>&1 || _oc_rc=$?
 case "$_oc_rc" in
   0) ;;
   24) echo "⚠️ [takeover] openclaw rsync rc=24（部分文件传输中消失，活跃树正常现象）" ;;
   *)
     wait "$_zc_pid" 2>/dev/null || true
-    abort_takeover "openclaw 增量 rsync 失败 rc=$_oc_rc（$(tail -n 3 /tmp/handoff-rsync-oc.log 2>/dev/null | tr '\n' ' ')）"
+    # 2026-11-20：超时(124)时日志里没有任何 --stats 收尾行，tail -3 只能拿到
+    # rsync 的两行 SIGTERM 报错 —— 看不到「传了多少 / 卡在哪」。放宽到 20 行，
+    # 并带上已落盘的树大小，供事后判「数据大」还是「链路慢」。
+    _oc_partial=$(du -sm "$HOME/.openclaw" 2>/dev/null | cut -f1 || true)
+    abort_takeover "openclaw 增量 rsync 失败 rc=$_oc_rc（已落盘 ${_oc_partial:-?}MB，日志 $(tail -n 20 /tmp/handoff-rsync-oc.log 2>/dev/null | tr '\n' ' ')）"
     ;;
 esac
 wait "$_zc_pid" || _zc_rc=$?

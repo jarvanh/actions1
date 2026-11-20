@@ -3133,8 +3133,14 @@ jobs:
           # 2026-11-19 主人拍板：备份副本与项目工作区不进主包。
           #   backups/**          = 本机回滚副本（30 天保留），恢复侧用不到；单是
           #                         20261116-2340/storage.sqlite.bak 就 2.0GB
-          #   workspace/MinOrder/** = 独立 git 项目（含 node_modules 1.7GB / target 232MB）
-          #                         有自己的 git 远端，不属于 openclaw 状态
+          # 2026-11-20 主人更正：workspace/MinOrder = **本地工作目录，不能丢**。
+          #   改为随包带走源码与 .git，只排可重建的构建产物：
+          #     workspace/MinOrder/**/node_modules（1.66GB）
+          #     workspace/MinOrder/**/target      （316MB，Maven 产物）
+          #   净增约 300MB（源码 ~150MB + .git 151MB）。此前的整目录排除导致
+          #   冷启动/交接后该目录为空，用户实测丢过一次（见 memory/2026-11-20）。
+          #   交接侧（takeover.sh）**不排** MinOrder —— 温交接要保住完整工作树，
+          #   含 node_modules/target；两条路径的口径差异在那边有注释。
           # 背景：主包已涨到 5.5GB，每 20 分钟一轮压缩+上传（rsync 120s + 压缩
           # 140-190s + 上传 2.5min，占空比约 40%），既压磁盘水位又挤占隧道带宽，
           # 期间 ai-api 公网探针与容器健康检查会因排队超时而误报。
@@ -3147,7 +3153,8 @@ jobs:
             --exclude 'logs/**' \
             --exclude 'cache/**' \
             --exclude 'backups/**' \
-            --exclude 'workspace/MinOrder/**' \
+            --exclude 'workspace/MinOrder/**/node_modules' \
+            --exclude 'workspace/MinOrder/**/target' \
             --exclude 'browser/*/Crashpad/**' \
             --exclude 'browser/*/GPUCache/**' \
             --exclude 'browser/*/Code Cache/**' \
