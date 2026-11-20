@@ -4899,6 +4899,17 @@ jobs:
             wait "$_sp" || echo "⚠️ 停服并行分支 $_sp 非零退出（明细见上方分支日志）"
           done
 
+          # ── 2.5 前置：落「切换中」标记（2026-11-20 假告警事故）──
+          # cutover.sh 的第 1b 步也会落这个标记，但它在网关**停稳之后**才跑；实测
+          # run 44648409212：06:20:01.5 网关退出 → 06:20:04.0 health 看门狗的在途
+          # oneshot 探到「18789 未监听 + 7/8」发出「🚨 系统级故障」误报，而标记
+          # 06:20:04.25 才落 —— 2.5s 竞态窗口。标记必须在任何服务开始停之前写：
+          # 它是「本轮为故意停机」的静默开关，system_health.sh / gateway-watchdog.py
+          # 都认它；交接失败时由 cutover.sh 的 abort_handoff 删除（服务会拉起），
+          # 传统收尾路径 VM 随 job 销毁，无需清理。
+          mkdir -p /tmp/openclaw-handoff 2>/dev/null || true
+          : > /tmp/openclaw-handoff/switching 2>/dev/null || true
+
           echo "2.5. Stopping OpenClaw gateway (2026-11-02 A1 反转，主人拍板：先停机 → 后归档)..."
           # ── A1 反转的理由（快照语义）：主包归档是 tar 快照，只含归档启动时刻的
           # ~/.openclaw —— 归档期间网关继续在线写盘的新会话**不在包里**，VM 销毁即丢。

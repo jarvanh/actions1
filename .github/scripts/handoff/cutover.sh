@@ -31,6 +31,19 @@ stop_rsyncd() {
   pkill -f "rsyncd-handoff.conf" 2>/dev/null || true
 }
 
+# ── 0a. 提前落「切换中」标记（2026-11-20 假告警事故）──
+# 调用方的顺序是「2.5 网关停稳」→ cutover.sh；而 health 看门狗的在途 oneshot
+# 可能在网关退出后秒级内探到 18789 未监听并发出「系统级故障」误报。原先标记要
+# 等 checkpoint 跑完（1b）才落 —— 实测 run 44648409212：06:20:01.5 网关退出，
+# 06:20:04.0 误报发出，06:20:04.25 标记才落，2.5s 竞态窗口。现在提到脚本最前，
+# 窗口缩到调用开销（亚秒级）；同时 workflow 的 2.5 段也会提前落（改版后双保险）。
+# abort 时删除（服务会拉回来），成功则留着（旧 VM 随 job 销毁）。
+# 仅在 Actions 内生效：手工在本机调试跑 cutover 时不要留下静默标记。
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  mkdir -p "$HANDOFF_STATE_DIR" 2>/dev/null || true
+  : > "$HANDOFF_STATE_DIR/switching" 2>/dev/null || true
+fi
+
 abort_handoff() { # <原因>
   echo "⛔ [cutover] 交接失败：$1 → 回退传统收尾（归档+Trigger next）"
   handoff_put "$HANDOFF_OLD_REMOTE" "$(handoff_old_json handoff_aborted "${SID:-0}" "${TS_IP:-}" "${CUTOVER_TS:-0}" "${BASE_MARKER:-0}")"
@@ -101,13 +114,9 @@ done < <(find "$HOME/.zcode" -name '*.sqlite-wal' -size +0c -printf '%h\n' 2>/de
   | sed 's/-wal$//' | sort -u)
 echo "✅ [cutover] sqlite checkpoint 完成"
 
-# ── 1b. 打「切换中」标记（2026-11-11）──
-# 目的：在途的 health/gateway 探测（oneshot 已开跑）可能在服务停掉之后才发告警 ——
-# 实际发生：21:22 旧轮 cutoff 瞬间收到「18789 未监听 + 7/8」的误报。
-# 两个看门狗都认这个标记：存在即静默（服务此刻是故意停的）。
-# abort 时删除（服务会拉回来），成功则留着（旧 VM 随 job 销毁）。
-mkdir -p "$HANDOFF_STATE_DIR" 2>/dev/null || true
-: > "$HANDOFF_STATE_DIR/switching"
+# ── 1b. 切换标记已在 0a 提前落（2026-11-20 上提）──
+# 历史：标记原在本步（checkpoint 之后）才写，导致网关停稳→标记落盘之间出现在途
+# oneshot 误报。现在 0a 无条件下落，这里不再重复；语义与清理路径不变。
 
 # ── 2. 停本机自愈看门狗（必须在停隧道/停 AI 栈**之前**）──
 # openclaw-health 有「cftun-* 隧道自愈」：停掉的隧道 ≤5min 内会被它 sudo start
@@ -163,6 +172,37 @@ for _c in omniroute rss-to-telegram trae2api qoder2api; do
 done
 sudo systemctl stop cftun-oc.service cftun-qb.service cftun-ai-api.service 2>/dev/null || true
 echo "✅ [cutover] 全部服务与入口已停（切换空窗期不留半活实例）"
+
+# ── 3a. 交接源可读性归一（2026-11-20 rc=23 事故）──
+# rsync daemon 以 runner 身份读源树（read only = yes、不 chroot）。历史上用 sudo tar
+# 从归档恢复的目录（如 workspace/MinOrder 的 node_modules/.bin）会留下 root-600 / 000
+# 的文件，sender open 失败 → rc=23 → 继任者 takeover 把「部分失败」当致命并自我取消
+#（run 44685554069：165,507 个文件里仅 2 个 .bin 不可读，8.2GB 已落盘后整轮交接
+# 回退，下线 8.5min）。源树本来就要整体交给继任者，单租户 runner 不存在「对本机
+# 其他用户保密」的需求；这里只补权限位、不动内容。find -perm 是元数据检查，
+# 165k 文件约 1-2s，对交接窗口可忽略。
+_perm_sudo=""
+sudo -n true 2>/dev/null && _perm_sudo=1
+_perm_run() { if [ -n "$_perm_sudo" ]; then sudo -n "$@"; else "$@"; fi; }
+# 只针对「非 runner 属主」的条目：runner 自己拥有的 600 文件 daemon 照样能读，
+# 不动它们（避免把 ~/.openclaw/.env 这类本就收紧的权限白放宽）。
+_perm_scan() {
+  _perm_run find "$1" -not -user "$(id -un)" \
+    \( -type d ! -perm -o+x -o -type f ! -perm -o+r \) -print0 2>/dev/null
+}
+_perm_fixed=0
+for _root in "$HOME/.openclaw" "$HOME/.zcode"; do
+  [ -d "$_root" ] || continue
+  _perm_scan "$_root" > /tmp/handoff-perm-fix.list 2>/dev/null || true
+  _n=$(tr -cd '\000' < /tmp/handoff-perm-fix.list 2>/dev/null | wc -c)
+  if [ "${_n:-0}" -gt 0 ]; then
+    _perm_run xargs -0 -r -n 200 chmod o+rX < /tmp/handoff-perm-fix.list 2>/dev/null || true
+    _perm_fixed=$((_perm_fixed + _n))
+    echo "ℹ️ [cutover] ${_root}: ${_n} 个非 runner 属主条目补 o+r/o+x（rsync rc=23 防复发）"
+  fi
+  rm -f /tmp/handoff-perm-fix.list 2>/dev/null || true
+done
+[ "$_perm_fixed" -gt 0 ] || echo "✅ [cutover] 交接源权限检查通过（无需放宽）"
 
 # ── 3. rsync 只读 daemon（绑 tailscale IP；模块 oc/zc 映射状态树，ai 放 AI 整包）──
 mkdir -p /tmp/handoff-ai-payload
