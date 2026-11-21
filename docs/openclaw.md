@@ -310,7 +310,8 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
 - **保留清理必须按前缀过滤后再排序删除**：本区与 rsstt/zcode 等归档同处根目录，
   直接 `lsf | tail` 会把别人的包删掉。
 - 除这三区外，最终归档还上传 `dropbox:self-hosted/rsstt.tar.gz`（rss-to-telegram 数据）
-  与 AI 网关归档（见第六节）。
+  与 AI 网关归档（见第六节）；另上传 `dropbox:self-hosted/actions1.tar.gz`
+  （仓库全量镜像 + Actions Secrets + 迁移说明，见 `docs/migration.md`）。
 - rsstt 归档带空数据保护：数据目录内只有占位 `.keep`（本轮容器没起来）时不打包、不上传，
   只发一条「归档跳过」告警——空包上传会用几百字节的 tar 覆盖掉云端正常归档。
 - **派生副本 7 天自动清理（2026-10-21）**：归档脚本在 rsync 暂存**之前**剪两类只增不减的
@@ -925,3 +926,20 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 
 **仓库侧只用两个通知 bot**（按档位路由，判定见规范 · 全库 bot 分工）；本机的对话窗口
 与隔离带不接收业务通知。
+
+## 十、仓库全量迁移
+
+最终归档除服务数据外，还会上传 `dropbox:self-hosted/actions1.tar.gz`：
+
+- `repo/repo.git`：仓库全量 git mirror（所有分支、标签、历史）；
+- `secrets/secrets.json` + `secrets/values/`：Actions Secrets 明文；
+- `metadata/variables.json`：仓库 Variables；
+- `MIGRATION.md`：全量迁移说明（恢复顺序、Secrets 清单、验证清单）；
+- `restore.sh`：一键恢复仓库 + Secrets + Variables。
+
+生成逻辑：`openclaw.yml` 的「Snapshot actions1 repository」步骤在最终归档前打包，
+最终归档阶段作为独立对象并行上传；脚本真源
+`.github/scripts/archive/create-actions1-archive.sh`。完整步骤见
+[`docs/migration.md`](migration.md)。
+
+> 该包含全部明文密钥，只应放在受控的离线/加密介质；迁移完成后立即轮换全部 Secrets。

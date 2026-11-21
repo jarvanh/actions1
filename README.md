@@ -26,6 +26,7 @@ proxy-speedtest/            测速结果数据
 | [`docs/telegram-notify-registry.md`](docs/telegram-notify-registry.md) | **Telegram 通知台账**（域级出口与档位路由；不登记逐条通知，清单用 `list_notify.sh` 现场枚举） |
 | [`docs/emby.md`](docs/emby.md) | Emby 媒体服务器 + 302 直链子系统（架构、凭据体系、通知、排查手册） |
 | [`docs/openclaw.md`](docs/openclaw.md) | OpenClaw Runner：自愈五层机制 + 常驻服务（rss-to-telegram / AI 网关）+ Tailscale 远程入口 |
+| [`docs/migration.md`](docs/migration.md) | **全量迁移说明**：仓库代码 + Actions Secrets + Variables + Dropbox 归档的恢复顺序与验证清单 |
 | [`docs/proxy-speedtest-gitee.md`](docs/proxy-speedtest-gitee.md) / [`-cdn.md`](docs/proxy-speedtest-cdn.md) / [`-taier.md`](docs/proxy-speedtest-taier.md) | 代理测速三套（按测速点命名）：Gitee 上行/下行/延迟 / 国内 CDN 延迟+下载 / 泰尔三网 |
 | [`docs/proxy-speedtest-gistnodes.md`](docs/proxy-speedtest-gistnodes.md) | 从 gist 搜索抓节点 → Sub-Store 去重出 mihomo YAML → 选一套测速（引擎由环境变量切换） |
 | [`docs/archive/`](docs/archive/README.md) | **已完结**文档的归档（存史与查证用，不是进行中计划）：OpenList 同步修复蓝图、同步健康检查 |
