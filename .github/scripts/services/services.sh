@@ -702,11 +702,18 @@ StartLimitBurst=0
 
 [Service]
 Type=simple
-# 让位等待最长 6h，默认 90s 的 TimeoutStartSec 会把等待判成启动失败
-TimeoutStartSec=0
+# 2026-11-21 修：删掉旧的「已有健康实例就让位最多 6h」逻辑。
+#   原逻辑把 systemd 拖进 activating (start-pre) 假死：action 起的裸 tailscaled
+#   占着默认 socket 时，unit 的 ExecStartPre 每 5s 探测一次、一直等到 6h 超时，
+#   期间没有托管实例、`systemctl is-active` 永远不是 active，交接脚本也拿不到
+#   稳定的 daemon。新顺序：ensure 在 Tailscale action **之前**跑，此刻没有裸实例，
+#   unit 直接起 tailscaled 并占住默认 socket；随后 action 的 `tailscale up`
+#   检测到已有 daemon 会复用它，不再产生第二个实例。真遇到裸实例抢占时，
+#   tailscaled 会因 socket in use 快速失败，由 Restart=always 在裸实例退出后接管
+#   （最多 5s 重试间隔，不会假死）。
+TimeoutStartSec=90
 ExecStartPre=/bin/mkdir -p /run/tailscale /var/lib/tailscale
 # 与 tailscale/github-action 的 statedir 入参同路径，共享同一份登录态
-ExecStartPre=/bin/sh -c 'if /usr/local/bin/tailscale --socket=/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then echo "[services] tailscaled: 已有健康实例，让位等待其退出（5s 一探，最多 6h）"; timeout 21600 sh -c "until ! /usr/local/bin/tailscale --socket=/run/tailscale/tailscaled.sock status >/dev/null 2>&1; do sleep 5; done"; fi'
 ExecStart=/usr/local/bin/tailscaled --statedir=/var/lib/tailscale --socket=/run/tailscale/tailscaled.sock
 Restart=always
 RestartSec=5
