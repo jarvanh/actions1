@@ -172,7 +172,7 @@ jobs:
         run: docker ps    
       - name: run cloudflared
         run: |
-          cloudflared tunnel route dns p p.'${{ secrets.VD }}'.eu.org
+          cloudflared tunnel route dns p p.${{ secrets.VD }}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure p || true
           else

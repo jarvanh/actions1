@@ -122,7 +122,7 @@ jobs:
           exit 1
       - name: run cloudflared
         run: |
-          cloudflared tunnel route dns subs-check subs-check.'${{ secrets.VD }}'.eu.org
+          cloudflared tunnel route dns subs-check subs-check.${{ secrets.VD }}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure subs-check || true
           else

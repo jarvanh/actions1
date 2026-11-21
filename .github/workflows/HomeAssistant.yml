@@ -299,6 +299,9 @@ jobs:
             exit 0
           fi
           echo "回传前 db 指纹: $(md5sum /opt/ha-config/home-assistant_v2.db 2>/dev/null | awk '{print $1}' || echo none)（拉取时 ${HA_DB_MD5_PULL:-none}）"
+          # 2026-11-21 修：HA 容器以 root 运行，会在 .storage 下留 root:root 600 文件；
+          # runner 身份 rclone sync 读不了 → 先把本地副本属主交给 runner（只动本地 /opt 副本）
+          sudo chown -R runner:runner /opt/ha-config
           rclone sync /opt/ha-config dropbox:self-hosted/HomeAssistant \
             --exclude "home-assistant_v2.db-wal" \
             --exclude "home-assistant_v2.db-shm" \
