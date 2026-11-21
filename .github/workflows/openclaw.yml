@@ -5508,6 +5508,26 @@ jobs:
               *)
                 echo "生效后端: OmniRoute → Final 归档 OmniRoute.tar.gz"
                 if [ -f /home/runner/omniroute/docker-compose.yml ]; then
+                  # 2026-11-21 交接轮修复：cutover「交出即全停」会在 T0 把 omniroute
+                  # 容器停掉，而 create-omniroute-archive.sh 的 VACUUM INTO 在线快照
+                  # 要求容器在跑；否则每轮交接都以 rc=4
+                  #「omniroute_container_not_running_skip_archive」结束，云端包停留在
+                  # 上一份（OPENCLAW_AI_EARLY≠1 时 ai-archives 不会跑，也没人负责拉起）。
+                  # 这里在阶段 A 前按部署目录把容器拉回并等它就绪，归档完成后旧 VM 即销毁。
+                  if [ "${HANDOFF_DONE:-0}" = "1" ] && ! docker ps --format '{{.Names}}' | grep -q '^omniroute$'; then
+                    echo "🚀 [handoff] omniroute 已被 cutover 停止，重新拉起供阶段A VACUUM 归档..."
+                    ( cd /home/runner/omniroute 2>/dev/null && docker compose up -d >/tmp/omniroute-final-restart.log 2>&1 ) || true
+                    _omni_up=0
+                    for _i in $(seq 1 90); do
+                      if docker exec omniroute true >/dev/null 2>&1; then _omni_up=1; break; fi
+                      sleep 2
+                    done
+                    if [ "$_omni_up" = "1" ]; then
+                      echo "✅ [handoff] omniroute 容器已就绪（等待 $((_i * 2))s）"
+                    else
+                      echo "⚠️ [handoff] omniroute 拉起失败/超时（≤180s）：$(tail -n 3 /tmp/omniroute-final-restart.log 2>/dev/null | tr '\n' ' ')"
+                    fi
+                  fi
                   OMNIROUTE_FINAL_TAR="/tmp/OmniRoute-final.tar.gz"
                   if omniroute_final_output=$(flock -w 600 -E 200 "$LOCK_AIGW" timeout 40m bash /tmp/create-omniroute-archive.sh "$OMNIROUTE_FINAL_TAR" 2>&1); then
                     upload_final_archive "OmniRoute.tar.gz" "$OMNIROUTE_FINAL_TAR" "dropbox:self-hosted/OmniRoute.tar.gz" "$MIN_SIZE" || true
