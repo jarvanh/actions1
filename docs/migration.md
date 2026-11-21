@@ -38,8 +38,10 @@ actions1.tar.gz
 └── MANIFEST.sha256              # 全包文件校验和
 ```
 
-> ⚠️ `secrets/` 与 `secrets.json` 是**明文密钥**。这个包等同于账号的钥匙串：
-> 只应放在受控的离线介质或加密存储中，迁移完成后立即轮换全部 Secrets。
+> ⚠️ `secrets/` 与 `secrets.json` 是**明文密钥**。这个包等同于账号的钥匙串。
+> 按主人 2026-11-21 的决定：**Dropbox 视为可信存储**，该包可长期保存在
+> `dropbox:self-hosted/actions1.tar.gz`；迁移完成后仍建议轮换 Secrets（降低历史泄露面），
+> 但不必为此删除或额外加密云端归档。
 
 ---
 
@@ -255,14 +257,16 @@ ZCODE_GATEWAY_API_KEY
 
 ## 八、安全与收尾
 
-1. **轮换全部 Secrets**：迁移完成后，在旧账号/新账号均重新生成 token、bot token、
-   OAuth 凭据、rclone 配置等，再更新新仓库。
-2. **删除明文归档**：确认新环境稳定后，删除 `actions1.tar.gz` 的在线副本；
-   如需保留，放进加密容器（如 age / GPG）并离线保存。
+1. **Dropbox 是可信存储（主人拍板）**：`actions1.tar.gz` 长期保存在
+   `dropbox:self-hosted/actions1.tar.gz` 即可，不需要额外加密或迁移后立即删除。
+2. **轮换 Secrets**：迁移完成后建议在旧账号/新账号均重新生成 token、bot token、
+   OAuth 凭据、rclone 配置等，再更新新仓库（降低历史泄露面，非本次归档的前置条件）。
 3. **撤销旧授权**：旧账号的 PAT、Tailscale OAuth client、Cloudflare 证书、
    Telegram bot token 全部吊销或轮换。
 4. **只保留一套调度**：确认旧仓库 Actions 已禁用，避免两套环境同时运行。
-5. **合规提醒**：迁移和使用 GitHub Actions 需遵守 GitHub Terms of Service；
+5. **不得把该包带进其他通道**：不要提交进 Git 仓库、不要上传为 Actions artifact、
+   不要发到 Telegram/邮件等聊天通道；唯一去向就是 Dropbox。
+6. **合规提醒**：迁移和使用 GitHub Actions 需遵守 GitHub Terms of Service；
    不要用新账号规避平台处罚或继续被禁止的用途。
 
 ---
@@ -291,4 +295,5 @@ ZCODE_GATEWAY_API_KEY
 - [ ] `.cloudflared` 证书、`rclone.conf`、workbuddy 凭据已就位
 - [ ] `openclaw.yml` 首轮运行成功、`/health` 200
 - [ ] Telegram 通知与 Tailscale SSH 入口验证通过
-- [ ] 全部 Secrets 已轮换，明文归档已删除/加密
+- [ ] 全部 Secrets 已轮换（建议，非阻塞项）
+- [ ] 确认 `actions1.tar.gz` 仅存在于 Dropbox，未进入 Git / artifact / 聊天通道

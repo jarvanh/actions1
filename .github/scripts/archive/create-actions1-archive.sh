@@ -58,8 +58,10 @@ if [ -n "$TOKEN" ]; then
   CLONE_URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 fi
 if ! git clone --mirror "$CLONE_URL" "$STAGE_DIR/repo/repo.git" >/tmp/actions1-archive-git.log 2>&1; then
+  # 失败日志可能包含带 token 的 clone URL（调试信息里最典型的泄密点），
+  # 任何环节都不回显原文，只报固定错误码；Detail 字段留给调用方自行排查网络/权限。
   echo "actions1_repo_clone_failed repo=${REPO}" >&2
-  tail -n 8 /tmp/actions1-archive-git.log >&2 || true
+  rm -f /tmp/actions1-archive-git.log
   exit 1
 fi
 # token 只用于本次 clone；归档里的 origin 必须是无凭据 URL

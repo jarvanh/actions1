@@ -942,4 +942,6 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 `.github/scripts/archive/create-actions1-archive.sh`。完整步骤见
 [`docs/migration.md`](migration.md)。
 
-> 该包含全部明文密钥，只应放在受控的离线/加密介质；迁移完成后立即轮换全部 Secrets。
+> 该包含全部明文密钥。按主人 2026-11-21 拍板：Dropbox 视为可信存储，
+> 包长期保存在 `dropbox:self-hosted/actions1.tar.gz`；迁移完成后建议轮换 Secrets，
+> 无需删除或额外加密云端归档。该包不得进入 Git 仓库、Actions artifact 或聊天通道。
