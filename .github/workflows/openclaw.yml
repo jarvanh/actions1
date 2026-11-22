@@ -929,6 +929,27 @@ jobs:
           TS_CERT_GPG_KEY: ${{ secrets.TS_CERT_GPG_KEY }}
         run: bash -eo pipefail "$GITHUB_WORKSPACE/.github/scripts/openclaw/ts-cert-cache.sh" install
 
+      - name: Install Tailscale CLI (binary precheck)
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          # 2026-11-22 修：systemd 单元 ExecStart 写死 /usr/local/bin/tailscaled，
+          # 而官方 install.sh 走 apt 装到 /usr/sbin，路径不匹配仍会 203/EXEC。
+          # 这里按 tailscale/github-action 同款做法装静态包到 /usr/local/bin。
+          if [ ! -x /usr/local/bin/tailscaled ] || [ ! -x /usr/local/bin/tailscale ]; then
+            echo "✅ /usr/local/bin 缺少 tailscale 二进制，安装最新稳定静态包"
+            _tgz=/tmp/tailscale-latest.tgz
+            curl -fsSL --retry 3 --max-time 180 -o "$_tgz" \
+              https://pkgs.tailscale.com/stable/tailscale_latest_amd64.tgz
+            _dir=$(tar tzf "$_tgz" | head -1 | cut -d/ -f1)
+            rm -rf /tmp/ts-install && mkdir -p /tmp/ts-install
+            tar xzf "$_tgz" -C /tmp/ts-install
+            sudo install -m 755 "/tmp/ts-install/${_dir}/tailscaled" /usr/local/bin/tailscaled
+            sudo install -m 755 "/tmp/ts-install/${_dir}/tailscale" /usr/local/bin/tailscale
+            rm -rf /tmp/ts-install "$_tgz"
+          fi
+          /usr/local/bin/tailscale version | head -1
+
       - name: Tailscale daemon 纳管 (systemd)
         id: ts_daemon
         # 2026-10-23：本步骤与 OpenClaw 无关，不能因前置 Install OpenClaw 失败而被
