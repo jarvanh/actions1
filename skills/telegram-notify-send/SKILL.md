@@ -47,7 +47,7 @@ agent_created: true
   不存在的属性求值为空串；时长由助手侧的 `/proc/1` 开机时刻兜底，无需注入。
 - 凭据校验在**调用方**、且要放在 `source` **之前**：`if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then echo "未配置，跳过"; exit 0; fi`。真源本身不校验。
 - bash 真源有 `TG_BOT_TOKEN` / `TG_CHAT_ID` 别名回退（变量定义处搜 `TELEGRAM_BOT_TOKEN:=`）；**pwsh 没有**，必须注入 `TELEGRAM_*`。
-- **告警/入口/凭据类通知（alert 档）还要多注两行**：`TELEGRAM_BOT_TOKEN_ALERT` / `TELEGRAM_CHAT_ID_ALERT`（照上面主 bot 两行的格式换成 `_ALERT` 后缀）。alert 档**无回落**：凭据缺失直接发送失败留痕，通知静默丢失——不传 tier 的通知不需要这两行。哪些通知走 alert 见台账档位列。
+- **告警/入口/凭据类通知（alert 档）还要多注两行**：`TELEGRAM_BOT_TOKEN_ALERT` / `TELEGRAM_CHAT_ID_ALERT`（照上面主 bot 两行的格式换成 `_ALERT` 后缀）。alert 档**无回落**：凭据缺失直接发送失败留痕，通知静默丢失——不传 tier 的通知不需要这两行。哪些通知走 alert 见规范 · 档位判定。
 - python：凭据从传入的 `env` dict 读，但 `TG_RUN_URL` **只读 `os.environ`**，只给 dict 不够。
 - pwsh step 要 `shell: pwsh`。
 - **汇总类通知建议独立成 step**：业务步骤里常有 `exit 1` 早退（预检失败 / 磁盘不足），
@@ -99,7 +99,7 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 |---|---|
 | `send_tg "$msg"` | 短消息单条（>3900 UTF-16 码元自动转分片） |
 | `send_tg_chunked "$msg"` | 长消息（按 3800 UTF-16 码元分片，断在换行处、分片边界自动闭合/重开 HTML 标签）。**依赖 runner 上有 python3**，且分片失败被 `|| true` 吞掉 |
-| `send_tg "$msg" alert` | **重要通知**（告警 + 信息：备份失败、归档告警、网关启动失败、入口/凭据等，档位清单见台账）。step 必须注入 `_ALERT` 凭据（第 2 步），否则失败留痕、通知丢失 |
+| `send_tg "$msg" alert` | **重要通知**（告警 + 信息：备份失败、归档告警、网关启动失败、入口/凭据等，档位判定见规范 · 档位判定）。step 必须注入 `_ALERT` 凭据（第 2 步），否则失败留痕、通知丢失 |
 
 - 失败**不许吞**：用 `|| echo "::warning::..."` 或 `|| true`，**不要** `>/dev/null 2>&1`。
 - 已 source 发送层就**不得 curl 直发**。唯一例外是需要 `message_id` 的进度面板原地刷新（`openlist/telegram.sh`）。
@@ -114,7 +114,7 @@ send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
 
 1. **渲染预览**（能抓到纯代码审查漏掉的问题）：
    `bash skills/telegram-notify-audit/scripts/render_preview.sh`
-   它会跑 16 项校验（分隔线 18 条、转义是否二次处理、树形前缀、折叠行、说明段空行、二层列表子行是否与条目正文同列等）。
+   它会逐项校验（分隔线 18 条、转义是否二次处理、树形前缀、折叠行、说明段空行、二层列表子行是否与条目正文同列等；项目数随脚本演进，不要记数字）。
 2. **逐条过这 8 项**：
    - [ ] 标题 emoji 与结论一致？
    - [ ] 机器值走 `tg_add_path`、自然语言走 `tg_add_kv`？

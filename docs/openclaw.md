@@ -919,8 +919,7 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 | bot | 职责 | 本机 | 仓库 |
 |---|---|---|---|
 | @openclaw_sb_bot | 主对话（不发通知） | ✓ | — |
-| @FuckSaberBot | 一般通知（业务结果与常态播报：就绪 / 停止 / 倍率 / 用量 / 交接进度 / 入口与凭据推送） | ✓ | ✓ |
-| @SaberFuckBot | 重要通知（失败 / 中断 / 残留 / 风控 / 配额 / 熔断 / 灾难恢复、入口故障、停机倒计时） | ✓ | ✓ |
+| @FuckSaberBot / @SaberFuckBot | 仓库通知双 bot（普通 / alert）。职责与档位判定以规范 · 全库 bot 分工 为唯一口径，本表不复述 | ✓ | ✓ |
 | @sbsb / @sbsbsb / @sbsbsbsb / @sbsbsbsbsb | agent 各自对话窗口 | ✓ | — |
 | @ass_openclaw_bot | 内部消息隔离带（relay / 后台完成 / 串号排查） | ✓ | — |
 

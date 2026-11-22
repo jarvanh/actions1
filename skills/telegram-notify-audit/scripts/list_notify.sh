@@ -4,7 +4,7 @@
 #   bash skills/telegram-notify-audit/scripts/list_notify.sh [域过滤子串]
 #       枚举发送点 / 标题字面量 / 档位汇总（替代手工逐条清单）
 #   bash skills/telegram-notify-audit/scripts/list_notify.sh --check
-#       跑审计清单 1–19 项的机械校验，有 FAIL 时退出码 1
+#       跑审计清单的全部机械项，有 FAIL 时退出码 1（项目数随实现演进，脚本自己数）
 #
 # 判据:
 #   档位 —— 调用点显式传 alert 才算重要档；tier 是变量则标「动态」并提示人工确认；
@@ -730,7 +730,7 @@ def check():
                 bad.append(f"{p}:{i}: 示例大小应用 IEC：{l.strip()[:90]}")
     add(19, "文档示例大小用 IEC", bad)
 
-    print("# Telegram 通知机械校验（审计清单 1–19 项）")
+    print("# Telegram 通知机械校验（审计清单机械项）")
     print(f"# 仓库: {root}")
     print()
     fails = 0

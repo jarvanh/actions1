@@ -26,7 +26,7 @@
 | 17 | 通知正文时间 | `tg_add_` / `tg_append` / `caption` 行里的 `YYYY-MM-DDTHH:MM` 或 `UTC` | 零使用；解析失败写「未知」，原始值只留日志 |
 | 18 | caption 大小口径 | `PART_CAPTION=` / `CAPTION=` 行里的 `MiB`/`MB` 字面量 | 大小必须走 `format_bytes` |
 | 19 | 文档示例大小 | `docs/telegram-notify.md` 与 send skill 参考里的 `1.7 GB` 式写法 | 只用 IEC 三位小数（`1.700 GiB`） |
-| 20 | 通知清单枚举 / 一键校验 | `bash scripts/list_notify.sh`（清单）/ `--check`（机械项 1–19，FAIL 退出 1） | 发送点 / 标题 / 档位三段可正常输出；档位为「动态」的必须逐个回文件确认取值。**清单不落文档** |
+| 20 | 通知清单枚举 / 一键校验 | `bash scripts/list_notify.sh`（清单）/ `--check`（全部机械项，FAIL 退出 1；项目数会变，别记数字） | 发送点 / 标题 / 档位三段可正常输出；档位为「动态」的必须逐个回文件确认取值。**清单不落文档** |
 | 21 | 业务步内嵌通知 | 找「通知写在业务 step 末尾、该 step 无 `always()`」的调用点 | 按规范 · 接线的判据分类：依赖落盘产物的拆独立 step；依赖运行时变量的加失败兜底；「已就绪」与长驻循环**不拆**。别把「不拆」报成缺陷 |
 
 ## 2. 四域判据（派 worker 时写进 prompt 的摘要）

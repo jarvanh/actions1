@@ -34,7 +34,7 @@ agent_created: true
 折叠规则判定、「发送层」（硬约束）、「验证与交付」；既有基线见
 `references/audit-checklist.md`。
 
-机械项一条命令跑完（1–19 项，FAIL 时退出码 1）：
+机械项一条命令跑完（FAIL 时退出码 1；项目数随脚本演进，不要记数字）：
 
 ```bash
 bash scripts/list_notify.sh --check
@@ -106,7 +106,7 @@ bash scripts/list_notify.sh --check
 
 ### 第 4 步：渲染预览
 
-执行 `scripts/render_preview.sh`，用真源助手构造数据渲染一遍（现为 16 项自动校验）。
+执行 `scripts/render_preview.sh`，用真源助手构造数据渲染一遍（项目数随脚本演进，不要记数字）。
 这一步能抓到纯代码审查漏掉的四类问题：转义被二次处理、空行数量不对、
 `$( )` 吃掉尾换行导致条目粘连、二层列表的子行与条目正文不同列。
 
@@ -139,9 +139,9 @@ bash scripts/list_notify.sh --check
   写 `[^ ]*` / `[^/]*`，或改用 Grep 工具。bash `grep` 的 `|` 是字面量同理。
 - **`tg_notify.sh` 是 bash 语法**（`printf -v` / `${!var}` / `$'\n'`）→ 默认 shell 是 zsh，
   直接 source 会 `bad substitution`，必须 `bash -c '...'`。
-- **`tg_add_entry` 收的是裸主体 + 元数据**，传 `$(tg_entry …)` 会套出双层 `<code>`；
-  `$( )` 还会吃掉尾换行导致条目粘连——累积多行用 `tg_add_entry`，不要拼 `$(tg_entry A)$(tg_entry B)`。
-  这个坑极易在写渲染预览时踩到。
+- **通知实现坑的唯一清单在 `references/api-reference.md` 第 4 节**（二次转义、尾换行、
+  footer 两步写法、`exit 1` 早退、pwsh 自检、python 吞异常等），本处不重复；写渲染
+  预览前至少过一遍。
 - **回归跑期间绝对不要并发跑单个测试**：多个测试共用 `tests/extracted.sh`，
   并发会报出**假的** `command not found`。
 - **改 `docs/*.md` 不要用 Edit 工具**（会触发全局重排版，把实质改动淹没在格式噪音里）。

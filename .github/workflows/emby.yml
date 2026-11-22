@@ -2971,7 +2971,9 @@ jobs:
           echo "TG(收尾): 已构建统一版式消息"
           # 走发送层而非 curl 直发：429 重试已内建，HTML 解析失败直接报错（规范 · 发送层），
           # 429 限流自动等待重试，disable_web_page_preview 内置
-          send_tg "$msg" "${STATUS_TIER:-alert}" || echo "::warning::收尾 TG 通知发送失败"
+          # 档位直取 "$STATUS_TIER"：写成 ${STATUS_TIER:-alert} 会把 success 分支的
+          # 空串当缺省 → ✅ 成功也进告警 bot（2026-11 文档核对发现）
+          send_tg "$msg" "$STATUS_TIER" || echo "::warning::收尾 TG 通知发送失败"
 
       # ===== 自续触发（流式接力）=====
       # 一轮结束立刻 dispatch 下一轮，中间不留空档；cron 只做链条断裂时的兜底。
