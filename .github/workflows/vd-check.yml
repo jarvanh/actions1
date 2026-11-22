@@ -1,0 +1,40 @@
+# VD secret 体检（只 workflow_dispatch，无任何副作用）
+#
+# 为什么单独一个 workflow：
+#   VD 坏了的时候，业务 workflow 只会在几十分钟后、在深处某步抛一句
+#   "xxx.***.eu.org is not a valid hostname"，而 GitHub 的打码又把真正的原因
+#   （空格/下划线/引号/换行）全盖成 ***。本工作流 10 秒内把「长度 + 各类字符是否
+#   出现 + 是否合法 DNS 标签」打出来，**不打印值本身**，用于区分
+#   「secret 坏了」还是「workflow 拼接写坏了」。
+#
+# 触发：Actions → VD secret 体检 → Run workflow
+name: vd-check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: vd-check
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: VD 元信息（不打印值）
+        env:
+          VD: ${{ secrets.VD }}
+        run: |
+          set -u
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          if require_vd vd-check; then
+            echo "✅ VD 可用于拼主机名"
+          else
+            echo "❌ VD 不可用：请到 Settings → Secrets and variables → Actions 更新 VD"
+            exit 1
+          fi
