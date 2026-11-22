@@ -162,6 +162,7 @@ ZCODE_GATEWAY_API_KEY
 ```
 
 > `GITHUB_TOKEN` 不需要手工设置：每个 workflow run 由 GitHub 自动签发。
+> `TG_SESSION` 可在本机交互生成：`python3 .github/scripts/tg-channel/tg_login.py`（二维码或手机号验证码登录，凭据读环境变量或 `~/.tg_creds`），session 直写 GitHub Secret，不打印、不落盘。
 
 ---
 

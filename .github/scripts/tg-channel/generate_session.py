@@ -1,4 +1,10 @@
-import os
+"""交互式生成 Telethon StringSession（手动复制粘贴方式）。
+
+逐账号生成时优先用同目录 tg_login.py：凭据免输入、二维码扫码、
+session 直写 GitHub Secret 不落盘；本脚本保留用于多账号批量场景，
+或需要 session 明文自行保管的情况。
+"""
+
 import sys
 
 try:

@@ -12,7 +12,7 @@
     ├── openlist/           OpenList 同步工具 —— 最复杂的子系统，详见下文
     ├── emby302/            Emby 302 直链服务 —— 详见 docs/emby.md
     ├── telegram/           Telegram 通知（tg_notify.sh = 全库发送层真源）
-    ├── tg-channel/         Telegram 频道内容管线（同步/上传/去重/清理）
+    ├── tg-channel/         Telegram 频道内容管线（同步/上传/去重/清理；tg_login.py 交互生成 TG_SESSION）
     └── proxy-speedtest/    代理测速脚本（common 共享层 + gitee 上行/下行/延迟 + CDN 延迟/下载 + 泰尔三网 + Speedtest 官方测速点 + gist 抓节点喂 Sub-Store 去重；tests/ 为离线自检）
 docs/                       子系统文档
 proxy-speedtest/            测速结果数据
