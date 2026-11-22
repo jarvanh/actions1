@@ -119,6 +119,18 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
+          # 缺 secret 早失败：只列名称、不打印值。
+          # 2026-11-22：迁移时漏配 TELEGRAM_CHANNEL_ID_PH，sync_to_tg.sh 只回一句
+          # "Usage: ... <SOURCE_REMOTE> <CHANNEL_ID>..."，完全看不出是配置缺失。
+          missing=""
+          [ -z "${TELEGRAM_CHANNEL_ID:-}" ] && missing="$missing TELEGRAM_CHANNEL_ID_PH"
+          [ -z "${TG_API_ID:-}" ] && missing="$missing TG_API_ID"
+          [ -z "${TG_API_HASH:-}" ] && missing="$missing TG_API_HASH"
+          [ -z "${TG_SESSION_STRING:-}" ] && missing="$missing TG_SESSION"
+          if [ -n "$missing" ]; then
+            echo "::error::ph-dl 缺少必需 secret：$missing（仅列名称，不打印值）"
+            exit 1
+          fi
           sudo apt-get install -y ffmpeg
           pip3 install telethon
           bash "${GITHUB_WORKSPACE}/.github/scripts/tg-channel/sync_to_tg.sh" \
@@ -137,6 +149,16 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION }}
         run: |
+          # 同上前置校验（本步也会用到 TG 凭据）
+          missing=""
+          [ -z "${TELEGRAM_CHANNEL_ID:-}" ] && missing="$missing TELEGRAM_CHANNEL_ID_PH"
+          [ -z "${TG_API_ID:-}" ] && missing="$missing TG_API_ID"
+          [ -z "${TG_API_HASH:-}" ] && missing="$missing TG_API_HASH"
+          [ -z "${TG_SESSION_STRING:-}" ] && missing="$missing TG_SESSION"
+          if [ -n "$missing" ]; then
+            echo "::error::ph-dl 缺少必需 secret：$missing（仅列名称，不打印值）"
+            exit 1
+          fi
           sudo apt-get update
           sudo apt-get install python3 -y
           sudo apt-get install ffmpeg -y
