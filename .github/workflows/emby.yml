@@ -284,9 +284,9 @@ jobs:
               return 0
             fi
 
-            # 恢复：优先 openlist-emby 目录（config.json+data.db，无日志）；旧 tarball 仅作迁移兜底
+            # 恢复：优先 openlist-emby 目录（config.json/data.db 任一存在即恢复，适配旧备份形态）；旧 tarball 仅作迁移兜底
             RESTORED=false
-            if rclone lsf dropbox:self-hosted/openlist-emby/data/ 2>/dev/null | grep -q "config.json"; then
+            if rclone lsf dropbox:self-hosted/openlist-emby/data/ 2>/dev/null | grep -qE '^(config\.json|data\.db)$'; then
               rclone copy dropbox:self-hosted/openlist-emby/data/ /opt/openlist/ 2>/dev/null \
                 && RESTORED=true \
                 || echo "::warning::openlist-emby 恢复失败"
@@ -420,7 +420,8 @@ jobs:
               RID=$(printf '%s\n' "$SECTION" | grep -o '^[[:space:]]*client_id[[:space:]]*=.*' | head -1 | sed 's/^[[:space:]]*client_id[[:space:]]*=[[:space:]]*//' || true)
               RSEC=$(printf '%s\n' "$SECTION" | grep -o '^[[:space:]]*client_secret[[:space:]]*=.*' | head -1 | sed 's/^[[:space:]]*client_secret[[:space:]]*=[[:space:]]*//' || true)
               RTOK=$(printf '%s\n' "$SECTION" | grep -o '^[[:space:]]*token[[:space:]]*=.*' | head -1 | sed 's/^[[:space:]]*token[[:space:]]*=[[:space:]]*//' | jq -r '.refresh_token // empty' 2>/dev/null || true)
-              if [ -n "$RID" ] && [ -n "$RTOK" ]; then
+              # Onedrive storage 允许空 client_id/secret（旧版本兼容 + OpenList 默认客户端 fallback）
+              if [ -n "$RTOK" ]; then
                 ADDITION=$(jq -nc --arg rt "$RTOK" --arg cid "$RID" --arg csec "$RSEC" \
                   '{region:"global",is_sharepoint:false,use_online_api:true,api_url_address:"https://api.oplist.org/onedrive/renewapi",client_id:$cid,client_secret:$csec,redirect_uri:"https://api.oplist.org/onedrive/callback",refresh_token:$rt,site_id:"",chunk_size:5}')
                 BODY=$(jq -nc --arg add "$ADDITION" \
