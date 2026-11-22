@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# ── actions1 仓库全量快照归档（最终归档对象 actions1.tar.gz.age）──
+# ── actions 仓库全量快照归档（最终归档对象 actions.tar.gz）──
 #
 # 目的：把「仓库本身」也纳入最终归档，迁移到新 GitHub 账号/仓库时无需再从
 # 旧账号逐项抄 —— 代码全历史、Actions Secrets 明文、仓库变量、元数据与全量
 # 迁移说明都在同一个包里。
 #
-# 调用方：openclaw.yml 的 "Snapshot actions1 repository" 步骤（最终归档之前）
+# 调用方：openclaw.yml 的 "Snapshot actions repository" 步骤（最终归档之前）
 # 关键输入：
 #   SECRETS_JSON   = ${{ toJSON(secrets) }}，GitHub 在运行时注入的全部 Secrets
 #   GH_TOKEN       = ${{ github.token }}，用于 mirror clone 与元数据 API
-#   ARCHIVE_AGE_RECIPIENTS = age 收件人（每行一个 SSH/age 公钥）；私钥只在主人手里
 #   各 Secret 同名环境变量 = 兜底（toJSON 偶发缺项时按名补）
-# 产物布局（age 解密后解包即得）：
+# 产物布局（解包即得）：
 #   MIGRATION.md  README.md  restore.sh  MANIFEST.sha256
 #   repo/repo.git/           git mirror（全部分支/标签/历史）
 #   repo/repo-worktree.tar.gz 当前 HEAD 工作树快照
@@ -22,12 +21,9 @@
 #   metadata/*.json          仓库、分支、标签、Release、Workflow、Variables 元数据
 #
 # 安全口径：
-#   - 明文 tar 只在 runner 本地短暂存在；打包完成后立即用 age 加密并删除明文。
-#   - age 收件人是主人的 SSH 公钥；私钥不在仓库/Secrets/Dropbox 中。
-#   - 未配置收件人或 age 不可用时 fail-closed，绝不回退上传明文。
 #   - umask 077，包与暂存全部仅属主可读；任何值都不写日志、不进 stdout。
 #   - mirror clone 后立刻把带 token 的 URL 换成无凭据 URL，并扫描 token 残留。
-#   - 本包是「迁移用高敏材料」，解密后仍应离线保存并尽快轮换 Secrets。
+#   - 本包是「迁移用高敏材料」，迁移完成后应离线保存或删除，并轮换全部 Secrets。
 set -euo pipefail
 
 OUTPUT_TAR="${1:-}"
@@ -36,42 +32,24 @@ if [ -z "$OUTPUT_TAR" ]; then
   exit 2
 fi
 
-# ── 加密前置检查（fail-closed）──
-# 收件人来自仓库变量 ARCHIVE_AGE_RECIPIENTS（每行一个 SSH/age 公钥）。
-# 没有收件人就拒绝生成/上传任何明文包；这是防止 GitHub 误判和云端泄露的关键。
-ARCHIVE_AGE_RECIPIENTS="${ARCHIVE_AGE_RECIPIENTS:-${ARCHIVE_AGE_RECIPIENT:-}}"
-if [ -z "${ARCHIVE_AGE_RECIPIENTS//[[:space:]]/}" ]; then
-  echo "actions1_archive_encryption_recipient_missing" >&2
-  exit 5
-fi
-if ! command -v age >/dev/null 2>&1; then
-  echo "actions1_archive_age_missing" >&2
-  exit 5
-fi
-
 umask 077
 
-REPO="${GITHUB_REPOSITORY:-jarvanh/actions1}"
+REPO="${GITHUB_REPOSITORY:-jarvanh/actions}"
 SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 SRC_WS="${GITHUB_WORKSPACE:-$(pwd)}"
 MIN_SIZE=$((100 * 1024))
 STAGE_DIR=""
 
-ENCRYPTED=0
 cleanup() {
   if [ -n "${STAGE_DIR:-}" ] && [ -d "$STAGE_DIR" ]; then
     rm -rf "$STAGE_DIR"
-  fi
-  # 加密失败/中途退出时不留明文 tar
-  if [ "${ENCRYPTED:-0}" -ne 1 ]; then
-    rm -f "$OUTPUT_TAR" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
 
 rm -f "$OUTPUT_TAR"
-STAGE_DIR=$(mktemp -d /tmp/actions1-repo-archive-stage.XXXXXX)
+STAGE_DIR=$(mktemp -d /tmp/actions-repo-archive-stage.XXXXXX)
 mkdir -p "$STAGE_DIR/repo" "$STAGE_DIR/metadata" "$STAGE_DIR/secrets/values"
 
 # ── 1. 代码：全量 mirror（所有分支、标签、历史；可直接 push --mirror 恢复）──
@@ -79,17 +57,17 @@ CLONE_URL="${SERVER}/${REPO}.git"
 if [ -n "$TOKEN" ]; then
   CLONE_URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 fi
-if ! git clone --mirror "$CLONE_URL" "$STAGE_DIR/repo/repo.git" >/tmp/actions1-archive-git.log 2>&1; then
+if ! git clone --mirror "$CLONE_URL" "$STAGE_DIR/repo/repo.git" >/tmp/actions-archive-git.log 2>&1; then
   # 失败日志可能包含带 token 的 clone URL（调试信息里最典型的泄密点），
   # 任何环节都不回显原文，只报固定错误码；Detail 字段留给调用方自行排查网络/权限。
-  echo "actions1_repo_clone_failed repo=${REPO}" >&2
-  rm -f /tmp/actions1-archive-git.log
+  echo "actions_repo_clone_failed repo=${REPO}" >&2
+  rm -f /tmp/actions-archive-git.log
   exit 1
 fi
 # token 只用于本次 clone；归档里的 origin 必须是无凭据 URL
 git -C "$STAGE_DIR/repo/repo.git" remote set-url origin "${SERVER}/${REPO}.git"
 if [ -n "$TOKEN" ] && grep -RIl -F --binary-files=without-match "$TOKEN" "$STAGE_DIR/repo/repo.git" >/dev/null 2>&1; then
-  echo "actions1_archive_token_leak_detected" >&2
+  echo "actions_archive_token_leak_detected" >&2
   exit 1
 fi
 
@@ -97,9 +75,9 @@ git -C "$STAGE_DIR/repo/repo.git" for-each-ref --format='%(refname) %(objectname
   > "$STAGE_DIR/metadata/refs.txt"
 git -C "$STAGE_DIR/repo/repo.git" rev-parse HEAD > "$STAGE_DIR/metadata/head.txt"
 git -C "$STAGE_DIR/repo/repo.git" count-objects -v > "$STAGE_DIR/metadata/count-objects.txt"
-if ! git -C "$STAGE_DIR/repo/repo.git" fsck --connectivity-only --no-dangling >/tmp/actions1-archive-fsck.log 2>&1; then
-  echo "actions1_repo_fsck_failed" >&2
-  tail -n 8 /tmp/actions1-archive-fsck.log >&2 || true
+if ! git -C "$STAGE_DIR/repo/repo.git" fsck --connectivity-only --no-dangling >/tmp/actions-archive-fsck.log 2>&1; then
+  echo "actions_repo_fsck_failed" >&2
+  tail -n 8 /tmp/actions-archive-fsck.log >&2 || true
   exit 1
 fi
 
@@ -114,7 +92,7 @@ fi
 # ── 2. 元数据（失败只降级，不影响代码/Secrets 主体）──
 gh_api_to_file() { # <endpoint> <file>
   local endpoint="$1" file="$2"
-  if command -v gh >/dev/null 2>&1 && gh api "$endpoint" > "$file" 2>/tmp/actions1-archive-gh.err; then
+  if command -v gh >/dev/null 2>&1 && gh api "$endpoint" > "$file" 2>/tmp/actions-archive-gh.err; then
     return 0
   fi
   echo "metadata_fetch_failed endpoint=${endpoint}" > "${file%.json}.error.txt"
@@ -189,7 +167,7 @@ for name in KNOWN_SECRETS:
 data.pop("GITHUB_TOKEN", None)
 
 if not data:
-    sys.stderr.write("actions1_secrets_empty\n")
+    sys.stderr.write("actions_secrets_empty\n")
     sys.exit(1)
 
 safe_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -235,8 +213,8 @@ with open(os.path.join(stage, "secrets", "UNCAPTURED.txt"), "w", encoding="utf-8
 with open(os.path.join(stage, "secrets", "README.md"), "w", encoding="utf-8") as fh:
     fh.write(
         "# Secrets（高敏）\n\n"
-        "本目录保存 actions1 仓库全部 GitHub Actions Secrets 的**明文**，"
-        "仅在 age 解密后的归档内可见，用于迁移到新账号后原样恢复。\n\n"
+        "本目录保存 actions 仓库全部 GitHub Actions Secrets 的**明文**，"
+        "用于迁移到新账号后原样恢复。\n\n"
         "- `secrets.json`：JSON 对象，名称 → 值；多行值（如 `RCLONE`、"
         "`TS_CERT_GPG_KEY`）以 `\\n` 转义。\n"
         "- `values/<NAME>`：逐项原文，保留原始换行，可直接 "
@@ -244,14 +222,14 @@ with open(os.path.join(stage, "secrets", "README.md"), "w", encoding="utf-8") as
         "- `index.tsv`：名称、字节数、行数、SHA-256；不含值，供核对。\n"
         "- `UNCAPTURED.txt`：仓库里存在但本次未取到值的 Secret 名称；"
         "迁移前需从原账号后台补齐。\n\n"
-        "迁移完成后：立即轮换全部密钥；解密后的明文包应删除或离线加密保存。\n"
+        "迁移完成后：立即轮换全部密钥，并删除本包或离线加密保存。\n"
     )
 PY
 
 # ── 4. 迁移说明与恢复脚本 ──
 cp "$SRC_WS/docs/migration.md" "$STAGE_DIR/MIGRATION.md"
 cp "$SRC_WS/README.md" "$STAGE_DIR/README.md"
-cp "$SRC_WS/.github/scripts/archive/restore-actions1.sh" "$STAGE_DIR/restore.sh"
+cp "$SRC_WS/.github/scripts/archive/restore-actions.sh" "$STAGE_DIR/restore.sh"
 chmod 700 "$STAGE_DIR/restore.sh"
 
 # ── 5. 清单与元信息 ──
@@ -262,8 +240,6 @@ chmod 700 "$STAGE_DIR/restore.sh"
   echo "source_branch=${GITHUB_REF_NAME:-unknown}"
   echo "secrets_count=$(find "$STAGE_DIR/secrets/values" -type f | wc -l | tr -d ' ')"
   echo "refs_count=$(wc -l < "$STAGE_DIR/metadata/refs.txt" | tr -d ' ')"
-  echo "encryption=age-ssh"
-  echo "encryption_recipients=$(printf '%s\n' "$ARCHIVE_AGE_RECIPIENTS" | grep -c '^[[:space:]]*[^[:space:]]' || true)"
 } > "$STAGE_DIR/ARCHIVE-META.txt"
 
 (
@@ -279,11 +255,11 @@ chmod 600 "$OUTPUT_TAR"
 # ── 6. 完整性判据：缺任一核心项都拒绝覆盖云端好包 ──
 actual_size=$(stat -c%s "$OUTPUT_TAR" 2>/dev/null || echo 0)
 if [ ! -s "$OUTPUT_TAR" ] || [ "$actual_size" -lt "$MIN_SIZE" ]; then
-  echo "actions1_archive_too_small size=${actual_size} min=${MIN_SIZE}" >&2
+  echo "actions_archive_too_small size=${actual_size} min=${MIN_SIZE}" >&2
   exit 4
 fi
 
-list_file=$(mktemp /tmp/actions1-archive-list.XXXXXX)
+list_file=$(mktemp /tmp/actions-archive-list.XXXXXX)
 tar -tzf "$OUTPUT_TAR" > "$list_file"
 missing=""
 for required in ./MIGRATION.md ./restore.sh ./repo/repo.git/HEAD ./repo/repo-worktree.tar.gz ./secrets/secrets.json ./MANIFEST.sha256; do
@@ -293,52 +269,15 @@ for required in ./MIGRATION.md ./restore.sh ./repo/repo.git/HEAD ./repo/repo-wor
 done
 rm -f "$list_file"
 if [ -n "$missing" ]; then
-  echo "actions1_archive_incomplete missing=${missing}" >&2
+  echo "actions_archive_incomplete missing=${missing}" >&2
   exit 4
 fi
 
 secret_count=$(find "$STAGE_DIR/secrets/values" -type f | wc -l | tr -d ' ')
 ref_count=$(wc -l < "$STAGE_DIR/metadata/refs.txt" | tr -d ' ')
 if [ "$secret_count" -lt 1 ] || [ "$ref_count" -lt 1 ]; then
-  echo "actions1_archive_incomplete secrets=${secret_count} refs=${ref_count}" >&2
+  echo "actions_archive_incomplete secrets=${secret_count} refs=${ref_count}" >&2
   exit 4
 fi
 
-# ── 7. age 加密（SSH 公钥收件人；私钥只在主人手里）──
-# 收件人每行一个，支持同时加密给多把 SSH key（任意一把私钥可解）。
-# age 的 -R 参数是「收件人文件路径」，不是 key 字符串；这里写临时文件（600）。
-RECIPIENTS_FILE=$(mktemp /tmp/actions1-age-recipients.XXXXXX)
-chmod 600 "$RECIPIENTS_FILE"
-_recipient_count=0
-while IFS= read -r _recipient; do
-  # 去首尾空白；保留 key 内部的单个空格
-  _recipient="$(printf '%s' "$_recipient" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  [ -n "$_recipient" ] || continue
-  printf '%s\n' "$_recipient" >> "$RECIPIENTS_FILE"
-  _recipient_count=$((_recipient_count + 1))
-done <<< "$ARCHIVE_AGE_RECIPIENTS"
-if [ "$_recipient_count" -eq 0 ]; then
-  rm -f "$RECIPIENTS_FILE"
-  echo "actions1_archive_encryption_recipient_invalid" >&2
-  exit 5
-fi
-
-OUTPUT_ENC="${OUTPUT_TAR}.age"
-rm -f "$OUTPUT_ENC"
-if ! age -R "$RECIPIENTS_FILE" -o "$OUTPUT_ENC" "$OUTPUT_TAR"; then
-  rm -f "$RECIPIENTS_FILE"
-  echo "actions1_archive_encrypt_failed" >&2
-  exit 5
-fi
-rm -f "$RECIPIENTS_FILE"
-if [ ! -s "$OUTPUT_ENC" ]; then
-  echo "actions1_archive_encrypt_empty" >&2
-  exit 5
-fi
-chmod 600 "$OUTPUT_ENC"
-enc_size=$(stat -c%s "$OUTPUT_ENC")
-# 加密成功后立刻删除明文 tar；后续调用方只认 .age
-rm -f "$OUTPUT_TAR"
-ENCRYPTED=1
-
-echo "archive_ready size=${enc_size} plaintext_size=${actual_size} secrets=${secret_count} refs=${ref_count} output=${OUTPUT_ENC} encrypted=age-ssh"
+echo "archive_ready size=${actual_size} secrets=${secret_count} refs=${ref_count} output=${OUTPUT_TAR}"

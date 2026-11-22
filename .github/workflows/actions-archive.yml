@@ -1,6 +1,6 @@
-name: actions1-archive
+name: actions-archive
 
-# 手动生成并上传 actions1 仓库全量归档（代码 + Actions Secrets + Variables + 迁移说明）。
+# 手动生成并上传 actions 仓库全量归档（代码 + Actions Secrets + Variables + 迁移说明）。
 # 与 openclaw.yml 的最终归档使用同一个脚本和同一个 Dropbox 对象；
 # 区别只是本 workflow 只做归档，不启动/停止任何服务，适合随时手动刷新。
 on:
@@ -11,7 +11,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: actions1-archive
+  group: actions-archive
   cancel-in-progress: false
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
           RCLONE_CONFIG: ${{ secrets.RCLONE }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/rclone/setup_rclone.sh" config
 
-      - name: Build actions1 archive
+      - name: Build actions archive
         env:
           GH_TOKEN: ${{ github.token }}
           # 主来源：运行时全部 Secrets（JSON 对象）。
@@ -79,21 +79,21 @@ jobs:
           ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
         run: |
           set -euo pipefail
-          rm -f /tmp/actions1-repo-final.tar.gz
-          bash "$GITHUB_WORKSPACE/.github/scripts/archive/create-actions1-archive.sh" /tmp/actions1-repo-final.tar.gz
+          rm -f /tmp/actions-repo-final.tar.gz
+          bash "$GITHUB_WORKSPACE/.github/scripts/archive/create-actions-archive.sh" /tmp/actions-repo-final.tar.gz
 
       - name: Upload to Dropbox
         run: |
           set -euo pipefail
-          size="$(stat -c%s /tmp/actions1-repo-final.tar.gz)"
-          rclone copyto /tmp/actions1-repo-final.tar.gz dropbox:self-hosted/actions1.tar.gz \
+          size="$(stat -c%s /tmp/actions-repo-final.tar.gz)"
+          rclone copyto /tmp/actions-repo-final.tar.gz dropbox:self-hosted/actions.tar.gz \
             --dropbox-chunk-size 128M
-          remote="$(rclone size --json dropbox:self-hosted/actions1.tar.gz | jq -r '.bytes // 0')"
+          remote="$(rclone size --json dropbox:self-hosted/actions.tar.gz | jq -r '.bytes // 0')"
           case "$remote" in ''|*[!0-9]*) remote=0 ;; esac
           echo "local=${size} remote=${remote}"
           if [ "$remote" -lt $((size * 95 / 100)) ]; then
             echo "❌ 云端对象小于本地包 95%，拒绝视为成功" >&2
             exit 1
           fi
-          rm -f /tmp/actions1-repo-final.tar.gz
-          echo "✅ actions1.tar.gz 已上传 dropbox:self-hosted/actions1.tar.gz (${size} bytes)"
+          rm -f /tmp/actions-repo-final.tar.gz
+          echo "✅ actions.tar.gz 已上传 dropbox:self-hosted/actions.tar.gz (${size} bytes)"
