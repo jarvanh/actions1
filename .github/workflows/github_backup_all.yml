@@ -33,18 +33,47 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT }}
         run: |
           set -euo pipefail
-          # 备份包含所有仓库的完整历史（含私有库），产物一律 0600，避免同机其他进程读取
+          # ── 2026-11-22 改造（A1–A5）─────────────────────────────────────
+          # A1 token 不落盘：凭据经 GIT_ASKPASS 注入，clone URL 不含 token；
+          #    clone 后立刻把 origin 换成无凭据 URL；出包前全文扫描 token 残留。
+          # A2 失败即失败：clone/LFS 失败记入清单，非空 → 不上传、整体失败，
+          #    残缺包永不覆盖云端好包。GitHub 官方禁用（tos/dmca）仓库按
+          #    .github/backup/clone-blocklist.txt 基线跳过，名单外的新失败必须报错。
+          # A3 保留 N 份：归档名带日期 + 同名 sha256，云端按文件名保留最近 7 份。
+          # A4 补全数据面：mirror 后拉全量 LFS 对象；wiki 存在则一并 mirror；
+          #    打包前对全部镜像跑 git fsck --connectivity-only。
+          # A5 日志红线：git/rclone 的 stderr 一律进临时文件，只回固定错误码；
+          #    禁止 set -x / env / printenv；token 只存在于 env 与 askpass 文件。
           umask 077
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "❌ PAT 未配置（secrets.PAT），无法枚举/克隆私有仓库" >&2
             exit 1
           fi
+
           REPO_LIST="$(mktemp)"
+          ERR_SINK="$(mktemp)"
+          GREP_OUT="$(mktemp)"
+          ASKPASS="$PWD/.askpass"
           cleanup_backup_workdir() {
-            rm -f github_repos_latest.tar.gz 2>/dev/null || true
-            rm -rf github_backup_temp.tmp 2>/dev/null || true
-            rm -f "$REPO_LIST" 2>/dev/null || true
+            rm -rf github_backup_temp github_backup_meta
+            rm -f "$REPO_LIST" "$ERR_SINK" "$GREP_OUT" "$ASKPASS"
+            # 失败路径也要清掉明文产物；成功路径上传后已各自删除
+            rm -f github_repos_*.tar.gz github_repos_*.sha256 2>/dev/null || true
           }
+          trap cleanup_backup_workdir EXIT
+
+          # A1：凭据只经 askpass 注入（不进 URL、不进 .git/config）
+          cat > "$ASKPASS" <<'ASKPASS_EOF'
+          #!/bin/sh
+          case "$1" in
+            *sername*) echo "x-access-token" ;;
+            *) echo "$GH_TOKEN" ;;
+          esac
+          ASKPASS_EOF
+          chmod 700 "$ASKPASS"
+          export GIT_ASKPASS="$ASKPASS"
+          export GIT_TERMINAL_PROMPT=0
+
           free_kb() { df -Pk "${1:-.}" | awk 'NR==2 {print $4}'; }
           require_free_kb() {
             local path="$1" min_kb="$2" label="$3"
@@ -57,15 +86,19 @@ jobs:
             echo "✅ ${label}: free space ok at ${path}. available=${avail}KB required=${min_kb}KB"
           }
           require_free_kb "." $((5 * 1024 * 1024)) "github repos backup initial preflight"
-          trap cleanup_backup_workdir EXIT
-          # 💡 修改：使用固定压缩包名，不再使用日期后缀
-          ARCHIVE_NAME="github_repos_latest.tar.gz"
+
+          BACKUP_DATE="$(TZ=Asia/Shanghai date +'%Y%m%d')"
+          ARCHIVE_NAME="github_repos_${BACKUP_DATE}.tar.gz"
+          ARCHIVE_SHA256="${ARCHIVE_NAME}.sha256"
           BACKUP_DIR="github_backup_temp"
-          rm -rf "$BACKUP_DIR"
-          mkdir -p "$BACKUP_DIR"
-          
-          # 获取用户所有的仓库 (包括 private 和 public)。必须全量分页：单页
-          # per_page=100 在第 101 个仓库起会静默漏备；按 Link/不足 100 条结束。
+          META_DIR="github_backup_meta"
+          KEEP_COPIES=7
+          BLOCKLIST="$GITHUB_WORKSPACE/.github/backup/clone-blocklist.txt"
+
+          rm -rf "$BACKUP_DIR" "$META_DIR"
+          mkdir -p "$BACKUP_DIR" "$META_DIR"
+
+          # 仓库枚举：必须全量分页（单页 per_page=100 在第 101 个仓库起会静默漏备）
           page=1
           : > "$REPO_LIST"
           while :; do
@@ -76,7 +109,9 @@ jobs:
               "https://api.github.com/user/repos?per_page=100&type=owner&page=${page}")"
             count="$(printf '%s' "$resp" | jq 'if type == "array" then length else error("unexpected response") end')"
             printf '%s' "$resp" | jq -r '.[].full_name' >> "$REPO_LIST"
-            [ "$count" -lt 100 ] && break
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
             page=$((page + 1))
             if [ "$page" -gt 100 ]; then
               echo "❌ 仓库分页超过 100 页，疑似 API 异常，终止以避免半量备份" >&2
@@ -86,25 +121,94 @@ jobs:
           mapfile -t REPOS < <(sed '/^[[:space:]]*$/d' "$REPO_LIST" | sort -u)
 
           if [ "${#REPOS[@]}" -eq 0 ]; then
-            echo "未找到任何仓库，请检查 PAT 权限。"
+            echo "未找到任何仓库，请检查 PAT 权限。" >&2
             exit 1
           fi
 
-          # 设计如此：备份包需要保留 clone URL 中的 PAT（私有仓库全量镜像备份用途）。
-          # 因此这里刻意把 token 拼进 clone URL，.git/config 会随之进入 OneDrive 备份包。
+          declare -a FAILED_REPOS=()
+          declare -a SKIPPED_BLOCKED=()
+          LFS_COUNT=0
+
           for REPO in "${REPOS[@]}"; do
             REPO_NAME="${REPO##*/}"
             echo "----------------------------------------"
             echo "正在处理仓库: $REPO_NAME ..."
 
             DEST="$BACKUP_DIR/$REPO_NAME.git"
-            CLONE_URL="https://${GH_TOKEN}@github.com/${REPO}.git"
-            if ! git clone --mirror "$CLONE_URL" "$DEST"; then
-              echo "❌ $REPO_NAME 备份失败（可能已被 GitHub 禁用或访问受限），跳过此仓库。"
+            # A5：stderr 全量捕获进临时文件，失败只回固定错误码，不透传上游原文
+            if ! git clone --mirror "https://github.com/${REPO}.git" "$DEST" >/dev/null 2>"$ERR_SINK"; then
               rm -rf "$DEST"
+              if grep -qxF "$REPO" "$BLOCKLIST" 2>/dev/null; then
+                SKIPPED_BLOCKED+=("$REPO")
+                echo "⏭️ $REPO_NAME 在官方禁用基线名单内（clone-blocklist.txt），跳过"
+                continue
+              fi
+              FAILED_REPOS+=("$REPO")
+              echo "❌ $REPO_NAME clone_failed" >&2
+              continue
+            fi
+            # A1：origin 必须是无凭据 URL
+            git -C "$DEST" remote set-url origin "https://github.com/${REPO}.git"
+
+            # A4：LFS 对象（--mirror 只拿指针；无 LFS 的仓库自然跳过）
+            if git -C "$DEST" lfs ls-files --all 2>/dev/null | grep -q .; then
+              LFS_COUNT=$((LFS_COUNT + 1))
+              if ! git -C "$DEST" lfs fetch --all >/dev/null 2>"$ERR_SINK"; then
+                FAILED_REPOS+=("$REPO")
+                echo "❌ $REPO_NAME lfs_fetch_failed" >&2
+                rm -rf "$DEST"
+                continue
+              fi
+            fi
+
+            # A4：wiki 是独立仓库（owner/repo.wiki.git），存在才镜像；404 属预期
+            WIKI_DEST="$BACKUP_DIR/$REPO_NAME.wiki.git"
+            if git clone --mirror "https://github.com/${REPO}.wiki.git" "$WIKI_DEST" >/dev/null 2>"$ERR_SINK"; then
+              git -C "$WIKI_DEST" remote set-url origin "https://github.com/${REPO}.wiki.git"
+            else
+              rm -rf "$WIKI_DEST"
             fi
           done
-          
+          : > "$ERR_SINK"
+
+          # A2：名单外失败 → 拒绝出包
+          if [ "${#FAILED_REPOS[@]}" -gt 0 ]; then
+            echo "GITHUB_REPOS_FAILED=$(printf '%s ' "${FAILED_REPOS[@]}")" >> "$GITHUB_ENV"
+            echo "----------------------------------------" >&2
+            echo "❌ 共 ${#FAILED_REPOS[@]} 个仓库备份失败（不在官方禁用名单），拒绝生成备份：" >&2
+            printf '  - %s\n' "${FAILED_REPOS[@]}" >&2
+            exit 1
+          fi
+
+          # A4：全部镜像做连通性校验
+          echo "正在做 git fsck 完整性校验..."
+          fsck_failed=0
+          while IFS= read -r -d '' d; do
+            if ! git -C "$d" fsck --connectivity-only --no-dangling >/dev/null 2>"$ERR_SINK"; then
+              echo "❌ fsck_failed: ${d##*/}" >&2
+              fsck_failed=1
+            fi
+          done < <(find "$BACKUP_DIR" -maxdepth 1 -name '*.git' -print0)
+          if [ "$fsck_failed" -ne 0 ]; then
+            echo "❌ 存在损坏镜像，拒绝出包" >&2
+            exit 1
+          fi
+
+          # 归档元信息（不含任何敏感值）
+          : > "$META_DIR/skipped-blocked.txt"
+          if [ "${#SKIPPED_BLOCKED[@]}" -gt 0 ]; then
+            printf '%s\n' "${SKIPPED_BLOCKED[@]}" > "$META_DIR/skipped-blocked.txt"
+          fi
+          {
+            echo "backup_date=${BACKUP_DATE}"
+            echo "repo_total=${#REPOS[@]}"
+            echo "repo_cloned=$(( ${#REPOS[@]} - ${#SKIPPED_BLOCKED[@]} ))"
+            echo "blocked_skipped=${#SKIPPED_BLOCKED[@]}"
+            echo "lfs_repos=${LFS_COUNT}"
+            echo "keep_copies=${KEEP_COPIES}"
+            echo "generated_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } > "$META_DIR/backup-summary.txt"
+
           echo "----------------------------------------"
           echo "正在打包所有备份成功的仓库..."
           src_kb=$(du -sk "$BACKUP_DIR" | awk '{print $1}')
@@ -114,8 +218,9 @@ jobs:
           fi
           echo "待压缩目录大小: ${src_kb}KB"
           require_free_kb "." $((src_kb + 1024 * 1024)) "github repos archive preflight"
-          rm -f "$ARCHIVE_NAME"
-          tar -czf "$ARCHIVE_NAME" "$BACKUP_DIR"
+
+          rm -f "$ARCHIVE_NAME" "$ARCHIVE_SHA256"
+          tar -czf "$ARCHIVE_NAME" "$BACKUP_DIR" "$META_DIR"
           chmod 600 "$ARCHIVE_NAME"
           archive_bytes=$(stat -c%s "$ARCHIVE_NAME")
           if [ -z "${archive_bytes:-}" ] || [ "$archive_bytes" -le 0 ]; then
@@ -123,19 +228,67 @@ jobs:
             exit 1
           fi
           tar -tzf "$ARCHIVE_NAME" >/dev/null
+          sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_SHA256"
+          chmod 600 "$ARCHIVE_SHA256"
           archive_human=$(numfmt --to=iec-i --suffix=B "$archive_bytes" 2>/dev/null || echo "${archive_bytes}B")
+          ARCHIVE_SHA256_HEX="$(awk '{print $1}' "$ARCHIVE_SHA256")"
+
+          # A1：出包最后一道闸 —— 备份目录里任何位置搜到 token 都拒绝上传
+          echo "正在扫描 token 残留..."
+          if grep -RF "$GH_TOKEN" "$BACKUP_DIR" >"$GREP_OUT" 2>/dev/null; then
+            grep_rc=0
+          else
+            grep_rc=$?
+          fi
+          if [ "$grep_rc" -eq 0 ]; then
+            echo "❌ token_leak_detected：备份目录中发现 token 残留，拒绝上传" >&2
+            exit 1
+          fi
+          if [ "$grep_rc" -ne 1 ]; then
+            echo "❌ token 扫描失败 rc=${grep_rc}，fail-closed 拒绝上传" >&2
+            exit 1
+          fi
+          echo "✅ token 残留扫描通过"
+
           {
             echo "GITHUB_REPOS_ARCHIVE_NAME=$ARCHIVE_NAME"
             echo "GITHUB_REPOS_ARCHIVE_BYTES=$archive_bytes"
             echo "GITHUB_REPOS_ARCHIVE_HUMAN=$archive_human"
+            echo "GITHUB_REPOS_ARCHIVE_SHA256=$ARCHIVE_SHA256_HEX"
+            echo "GITHUB_REPOS_BLOCKED_SKIP=${#SKIPPED_BLOCKED[@]}"
           } >> "$GITHUB_ENV"
           echo "✅ 压缩包校验通过: ${ARCHIVE_NAME} (${archive_human})"
-          
-          echo "正在上传到 OneDrive backup/ (覆盖旧备份)..."
-          # 💡 修改：直接覆盖 OneDrive backup/ 下的最新备份包
-          rclone copy "$ARCHIVE_NAME" "onedrive:backup/" -P --retries 3
-          rm -f "$ARCHIVE_NAME"
-          
+
+          echo "正在上传到 OneDrive backup/ ..."
+          rc=0
+          rclone copy "$ARCHIVE_NAME" "onedrive:backup/" --retries 3 >/dev/null 2>"$ERR_SINK" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "❌ upload_failed archive rc=${rc}" >&2
+            exit 1
+          fi
+          rc=0
+          rclone copy "$ARCHIVE_SHA256" "onedrive:backup/" --retries 3 >/dev/null 2>"$ERR_SINK" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "❌ upload_failed sha256 rc=${rc}" >&2
+            exit 1
+          fi
+
+          # A3：按文件名清理，云端只保留最近 KEEP_COPIES 份
+          echo "正在清理历史备份（保留最近 ${KEEP_COPIES} 份）..."
+          rclone lsf "onedrive:backup/" --files-only --include "github_repos_*.tar.gz" 2>"$ERR_SINK" | sort -u > "$GREP_OUT" || true
+          total="$(wc -l < "$GREP_OUT")"
+          if [ "${total:-0}" -gt "$KEEP_COPIES" ]; then
+            head -n $((total - KEEP_COPIES)) "$GREP_OUT" | while IFS= read -r old; do
+              [ -n "$old" ] || continue
+              rclone deletefile "onedrive:backup/${old}" >/dev/null 2>"$ERR_SINK" \
+                || echo "⚠️ 历史备份清理失败: ${old}" >&2
+              rclone deletefile "onedrive:backup/${old}.sha256" >/dev/null 2>&1 || true
+            done
+          fi
+
+          rm -f "$ARCHIVE_NAME" "$ARCHIVE_SHA256"
+          echo "✅ 备份完成: ${ARCHIVE_NAME} (${archive_human})，云端保留最近 ${KEEP_COPIES} 份"
+
       - name: Send Telegram Notification
         if: always()
         env:
@@ -147,7 +300,7 @@ jobs:
           STATUS: ${{ job.status }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if { [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; } && { [ -z "$TELEGRAM_BOT_TOKEN_ALERT" ] || [ -z "$TELEGRAM_CHAT_ID_ALERT" ]; } then
+          if { [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; } && { [ -z "$TELEGRAM_BOT_TOKEN_ALERT" ] || [ -z "$TELEGRAM_CHAT_ID_ALERT" ]; }; then
             echo "Telegram 凭证未配置，跳过发送通知。"
             exit 0
           fi
@@ -166,8 +319,7 @@ jobs:
             ARCHIVE_NAME="${GITHUB_REPOS_ARCHIVE_NAME:-github_repos_latest.tar.gz}"
             FILE_SIZE_BYTES="${GITHUB_REPOS_ARCHIVE_BYTES:-0}"
             # 大小走真源 format_bytes（规范 · 大小：bash 侧只有一份实现，source 了
-            # 真源的通知点直接用它）——numfmt --to=iec-i 输出 "3.4GiB"（无空格、
-            # 非三位小数），与全库 "3.400 GiB" 形态漂移
+            # 真源的通知点直接用它）
             FILE_SIZE_HUMAN=$(format_bytes "$FILE_SIZE_BYTES")
             if [ "$FILE_SIZE_BYTES" -le 0 ]; then
               _tier="alert"   # ⚠️ 状态异常 = 需人工检查日志
@@ -181,12 +333,17 @@ jobs:
               tg_add_kv msg "日期" "$(TZ=Asia/Shanghai date +'%Y-%m-%d')"
               tg_add_path msg "文件" "$ARCHIVE_NAME"
               tg_add_kv msg "文件大小" "$FILE_SIZE_HUMAN"
-              tg_add_note msg "已覆盖旧包"
+              tg_add_kv msg "SHA256" "${GITHUB_REPOS_ARCHIVE_SHA256:-n/a}"
+              tg_add_note msg "云端保留最近 7 份 · 官方禁用库跳过 ${GITHUB_REPOS_BLOCKED_SKIP:-0} 个"
             fi
           else
             _tier="alert"     # ❌ 备份失败 = 告警档
             tg_add_title msg "❌ GitHub 全仓库备份失败"
-            tg_add_note msg "请前往 GitHub Actions 检查日志详情。"
+            if [ -n "${GITHUB_REPOS_FAILED:-}" ]; then
+              tg_add_note msg "失败仓库：${GITHUB_REPOS_FAILED}"
+            else
+              tg_add_note msg "请前往 GitHub Actions 检查日志详情。"
+            fi
           fi
           tg_add_footer msg
           send_tg "$msg" "${_tier:-}" || echo "::warning::TG 通知发送失败（不影响任务结果）"

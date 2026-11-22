@@ -1,0 +1,19 @@
+# clone 基线名单：GitHub 官方禁用（tos / dmca）导致 clone 必定失败的仓库。
+# 2026-11-22 实测：`git ls-remote` 返回
+#   "Access to this repository has been disabled by GitHub staff"
+# 每行一个 full_name（owner/repo）。名单内的 clone 失败按「跳过」处理并计数；
+# 名单外的任何 clone 失败都会让整个备份任务失败（拒绝上传残缺包）。
+# 新增被官方禁用的仓库时，在这里追加一行，否则备份会每天报警。
+jarvanh/actions
+jarvanh/copilot-gpt4-service
+jarvanh/Enterprise-Registration-Data-of-Chinese-Mainland
+jarvanh/freenom
+jarvanh/HerokuXray
+jarvanh/hostloc-auto-get-points
+jarvanh/jd
+jarvanh/openbilibili
+jarvanh/reverse-rdp-windows-github-actions
+jarvanh/Rules
+jarvanh/v2-ui
+jarvanh/v2ray-heroku
+jarvanh/v2ray4356857gfhe4t
