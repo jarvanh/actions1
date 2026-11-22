@@ -4821,80 +4821,6 @@ jobs:
           tg_add_footer REPORT
           send_tg "$REPORT" || echo "::warning::AI 网关用量报告发送失败（不影响任务）"
 
-      - name: Snapshot actions repository (code + secrets + migration)
-        id: repo_snapshot
-        # 2026-11-21：仓库自身纳入最终归档（主人要求）。
-        # 产物 /tmp/actions-repo-final.tar.gz 由最终归档步骤作为 actions.tar.gz
-        # 上传到 dropbox:self-hosted/actions.tar.gz；内容是「可迁移的全量材料」：
-        # 代码全历史 mirror + Actions Secrets 明文 + Variables + 元数据 + 迁移说明。
-        #
-        # 为什么不把逻辑塞进最终归档步骤：Secrets 需要以 env 注入，单独一步能把
-        # 「采集密钥」与「停服/打包/上传」解耦；失败也不影响其他归档对象（各对象隔离）。
-        #
-        # 安全：SECRETS_JSON 只存在于本 step 进程环境，归档脚本 umask 077 写盘，
-        # 全程不 echo；GitHub 日志里 Secret 值由平台掩码，但仍禁止打印。
-        if: ${{ !cancelled() && steps.dropbox_preflight.conclusion != 'failure' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # 主来源：运行时全部 Secrets（JSON 对象）。
-          SECRETS_JSON: ${{ toJSON(secrets) }}
-          # 兜底：同名环境变量，防止 toJSON 在个别上下文缺项。
-          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
-          ANTIGRAVITY_API_KEY: ${{ secrets.ANTIGRAVITY_API_KEY }}
-          AUTOCLAW_GATEWAY_KEY: ${{ secrets.AUTOCLAW_GATEWAY_KEY }}
-          CLIPROXYAPI_API_KEY: ${{ secrets.CLIPROXYAPI_API_KEY }}
-          EMBY_API_TOKEN: ${{ secrets.EMBY_API_TOKEN }}
-          EMBY_USER: ${{ secrets.EMBY_USER }}
-          GH_TOKEN_SECRET: ${{ secrets.GH_TOKEN }}
-          GITEE_PRIVATE_TOKEN: ${{ secrets.GITEE_PRIVATE_TOKEN }}
-          GLM2API_GATEWAY_KEY: ${{ secrets.GLM2API_GATEWAY_KEY }}
-          GLM_REFRESH_TOKEN: ${{ secrets.GLM_REFRESH_TOKEN }}
-          JELLYFIN_API_TOKEN: ${{ secrets.JELLYFIN_API_TOKEN }}
-          MANAGEMENT_KEY: ${{ secrets.MANAGEMENT_KEY }}
-          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}
-          OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
-          PAT: ${{ secrets.PAT }}
-          PROXY_SPEEDTEST_CDN_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_CDN_GIST_ID }}
-          PROXY_SPEEDTEST_GISTNODES_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GISTNODES_GIST_ID }}
-          PROXY_SPEEDTEST_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GIST_ID }}
-          PROXY_SPEEDTEST_GITEE_OWNER: ${{ secrets.PROXY_SPEEDTEST_GITEE_OWNER }}
-          PROXY_SPEEDTEST_SUB_URLS: ${{ secrets.PROXY_SPEEDTEST_SUB_URLS }}
-          PROXY_SPEEDTEST_TAIER_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_TAIER_GIST_ID }}
-          RCLONE: ${{ secrets.RCLONE }}
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-          RUNNER_PASSWORD: ${{ secrets.RUNNER_PASSWORD }}
-          RUSTDESK_PASSWORD: ${{ secrets.RUSTDESK_PASSWORD }}
-          SOCKS_EXIT_GIST_ID: ${{ secrets.SOCKS_EXIT_GIST_ID }}
-          SUBS_CHECK_GIST_ID: ${{ secrets.SUBS_CHECK_GIST_ID }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
-          TELEGRAM_BOT_TOKEN_RSS_SB_BOT: ${{ secrets.TELEGRAM_BOT_TOKEN_RSS_SB_BOT }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
-          TS_API_KEY: ${{ secrets.TS_API_KEY }}
-          TS_CERT_GPG_KEY: ${{ secrets.TS_CERT_GPG_KEY }}
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
-          VD: ${{ secrets.VD }}
-          YSHOP_WX_MINIAPP_APPID: ${{ secrets.YSHOP_WX_MINIAPP_APPID }}
-          YSHOP_WX_MINIAPP_SECRET: ${{ secrets.YSHOP_WX_MINIAPP_SECRET }}
-          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
-        run: |
-          set -uo pipefail
-          rm -f /tmp/actions-repo-final.tar.gz
-          if [ -f /tmp/openclaw-guard-declined ]; then
-            echo "ℹ️ 本轮由 handoff guard 让位取消（从未部署服务），跳过 actions 仓库快照"
-            exit 0
-          fi
-          if [ ! -f "$GITHUB_WORKSPACE/docs/migration.md" ]; then
-            echo "⚠️ docs/migration.md 不存在（checkout 不完整？），仓库快照跳过"
-            exit 0
-          fi
-          bash "$GITHUB_WORKSPACE/.github/scripts/archive/create-actions-archive.sh" /tmp/actions-repo-final.tar.gz
-
       - name: Stop OpenClaw and Final Archive
         id: final_archive
         # 2026-10-29 下线提速（A2/A1b）+ 2026-11-02 A1 反转（主人拍板）：阶段顺序为
@@ -5656,14 +5582,12 @@ jobs:
             # 由「Snapshot actions repository」步骤提前打包到 /tmp；这里只负责
             # 按最终归档的统一口径上传与记结果。快照步骤失败/未跑时如实记失败，
             # 不阻塞其他归档对象（各对象隔离）。
-            if [ -s /tmp/actions-repo-final.tar.gz ]; then
-              echo "7. Uploading actions repository snapshot (code + secrets + migration)..."
-              upload_final_archive "actions.tar.gz" "/tmp/actions-repo-final.tar.gz" "dropbox:self-hosted/actions.tar.gz" "$MIN_SIZE" || true
-            else
-              echo "⚠️ actions 仓库快照未生成，跳过本次上传"
-              record_archive_result "actions.tar.gz" fail 0 "快照未生成"
-              send_archive_alert "actions.tar.gz" "归档失败" "仓库快照未生成 · 通常表示快照步骤未执行或失败" "missing /tmp/actions-repo-final.tar.gz"
-            fi
+            # 2026-11-22：Snapshot 步骤已移除（整份 Secrets 经 env 注入的写法会让
+            # API/gh 派发的 run 卡 action_required，交接链全断）。Dropbox 上
+            # 2026-11-22 19:39 的 actions.tar.gz（50 项 Secrets）为最后一份快照，
+            # 迁移直接用它；需要刷新时手动跑 actions-archive.yml（不受此影响）。
+            echo "⏭️ actions 仓库快照步骤已移除（2026-11-22），跳过上传"
+            record_archive_result "actions.tar.gz" skip 0 "快照步骤已移除（防 action_required）"
           }
 
           run_rsstt_archive() {
