@@ -54,11 +54,11 @@ tg_set() {
   local token="$1" body="$2" name="$3"
   local resp
   resp=$(curl -fsS -m 20 -X POST "${API}${token}/setChatMenuButton" \
-    -H 'Content-Type: application/json' -d "$body" 2>&1) || { echo "❌ ${name} setChatMenuButton 请求失败: ${resp}"; return 1; }
+    -H 'Content-Type: application/json' -d "$body" 2>&1) || { echo "❌ ${name} setChatMenuButton 请求失败"; return 1; }
   if printf '%s' "$resp" | grep -q '"ok":true'; then
     echo "✅ ${name} 菜单按钮已重建"
   else
-    echo "❌ ${name} setChatMenuButton 返回异常: ${resp}"
+    echo "❌ ${name} setChatMenuButton 返回异常"
     return 1
   fi
 }
@@ -77,7 +77,7 @@ verify=$(curl -fsS -m 20 "${API}${SB_TOKEN}/getChatMenuButton" -H 'Content-Type:
 if printf '%s' "$verify" | grep -q "$QB_URL"; then
   echo "🔎 回读校验通过：web_app 指向 ${QB_URL_BASE}/p/<token>"
 else
-  echo "❌ 回读校验失败：getChatMenuButton=${verify}"
+  echo "❌ 回读校验失败：菜单按钮未设置为额度看板"
   rc=1
 fi
 
