@@ -2,8 +2,9 @@
 
 > 适用场景：把 `jarvanh/actions1` 整体迁移到新的 GitHub 账号/组织（或从本归档冷启动一套等价环境）。
 >
-> 归档对象：`dropbox:self-hosted/actions1.tar.gz`，由 `openclaw.yml` 的
+> 归档对象：`dropbox:self-hosted/actions1.tar.gz.age`，由 `openclaw.yml` 的
 > 「Stop OpenClaw and Final Archive」步骤在每次最终归档时生成/覆盖。
+> 云端只保存 age 加密包；明文 `actions1.tar.gz` 不会离开 runner。
 >
 > 本说明是迁移流程的**唯一入口**；各子系统的实现细节仍以 `docs/openclaw.md`、
 > `docs/emby.md` 等专项文档为准。
@@ -12,10 +13,10 @@
 
 ## 一、归档包里有什么
 
-`actions1.tar.gz` 解包后的布局：
+解密后的 `actions1.tar.gz` 解包布局：
 
 ```
-actions1.tar.gz
+actions1.tar.gz（由 actions1.tar.gz.age 解密得到）
 ├── MIGRATION.md                 # 本文件
 ├── README.md                    # 仓库说明（快照时点）
 ├── restore.sh                   # 一键恢复仓库 + Secrets + Variables
@@ -38,10 +39,11 @@ actions1.tar.gz
 └── MANIFEST.sha256              # 全包文件校验和
 ```
 
-> ⚠️ `secrets/` 与 `secrets.json` 是**明文密钥**。这个包等同于账号的钥匙串。
-> 按主人 2026-11-21 的决定：**Dropbox 视为可信存储**，该包可长期保存在
-> `dropbox:self-hosted/actions1.tar.gz`；迁移完成后仍建议轮换 Secrets（降低历史泄露面），
-> 但不必为此删除或额外加密云端归档。
+> ⚠️ 解密后的 `secrets/` 与 `secrets.json` 是**明文密钥**，等同于账号的钥匙串。
+> 云端归档用 **age + 主人 SSH 公钥**加密（收件人来自仓库变量
+> `ARCHIVE_AGE_RECIPIENTS`），私钥只在主人手里，不在仓库/Secrets/Dropbox 中。
+> 因此即使 Dropbox 或归档被他人拿到，没有对应 SSH 私钥也无法解密。
+> 迁移完成后仍建议轮换 Secrets（降低历史泄露面），并删除解密后的明文包。
 
 ---
 
@@ -52,7 +54,8 @@ actions1.tar.gz
    - `repo`：读写目标仓库；
    - `workflow`：写入 `.github/workflows`；
    - 组织仓库还需要 `admin:org`（写组织级 Secrets）或仓库 `admin` 权限。
-3. **工具**：`git`、`gh`（已 `gh auth login`）、`jq`、`rclone`、`tar`。
+3. **工具**：`git`、`gh`（已 `gh auth login`）、`jq`、`rclone`、`tar`、`age`。
+   解密需要与 `ARCHIVE_AGE_RECIPIENTS` 对应的 SSH 私钥（默认 GitHub 账号里那把）。
 4. **外部依赖账号**（按需）：
    - Dropbox：保存 `self-hosted/` 下的全部归档；
    - Tailscale：`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET` / `TS_API_KEY`；
@@ -79,8 +82,12 @@ actions1.tar.gz
 ### 方式 A：一键脚本（推荐）
 
 ```bash
+# 1) 先解密（age 收件人是你的 SSH 公钥；用对应私钥解）
+age -d -i ~/.ssh/id_ed25519 -o actions1.tar.gz /path/to/actions1.tar.gz.age
+
+# 2) 解包并恢复
 mkdir actions1-restore && cd actions1-restore
-tar -xzf /path/to/actions1.tar.gz
+tar -xzf ../actions1.tar.gz
 ./restore.sh <new-owner>/<new-repo> --private   # 或 --public
 ```
 
@@ -179,7 +186,7 @@ ZCODE_GATEWAY_API_KEY
 | `zcode.tar.gz` | ZCode 个人数据（`~/.zcode`） | Restore ZCode 步骤 |
 | `zcode2api-data.tar.gz` | zcode2api 的 `.env` + `data/`（账号池） | zcode2api 启动步骤 |
 | `rsstt.tar.gz` | rss-to-telegram 的 `config/`（bot.session + db.sqlite3） | 容器启动步骤 |
-| `actions1.tar.gz` | **本仓库全量快照（代码 + Secrets + 本说明）** | 人工迁移时使用 |
+| `actions1.tar.gz.age` | **本仓库全量快照（age 加密；代码 + Secrets + 本说明）** | 人工迁移时使用 |
 
 此外还需要：
 
@@ -202,7 +209,8 @@ ZCODE_GATEWAY_API_KEY
      来触发下一轮 run）；
    - 如使用组织仓库，确认组织级 Actions 策略未禁用。
 2. **Variables**：确认 `OPENCLAW_HANDOFF=1`（启用 warm-standby 交接）、
-   `CFIP_GIST_ID` 已恢复。
+   `CFIP_GIST_ID` 已恢复；新增 `ARCHIVE_AGE_RECIPIENTS`（每行一个 age/SSH 公钥，
+   用于加密 `actions1.tar.gz.age`；不是 secret）。
 3. **首次手动触发**：
 
    ```bash
@@ -214,7 +222,7 @@ ZCODE_GATEWAY_API_KEY
    - [ ] `Run OpenClaw` 后 `http://127.0.0.1:18789/health` 返回 200；
    - [ ] Tailscale 入口 `ssh runner@openclaw` 可连；
    - [ ] Telegram 收到「OpenClaw 已就绪」通知；
-   - [ ] `Keep alive` 到期后能进入最终归档并上传 `actions1.tar.gz`；
+   - [ ] `Keep alive` 到期后能进入最终归档并上传 `actions1.tar.gz.age`；
    - [ ] `Trigger next OpenClaw run` 能触发下一轮（说明 `actions: write` 生效）。
 
 ---
@@ -257,8 +265,9 @@ ZCODE_GATEWAY_API_KEY
 
 ## 八、安全与收尾
 
-1. **Dropbox 是可信存储（主人拍板）**：`actions1.tar.gz` 长期保存在
-   `dropbox:self-hosted/actions1.tar.gz` 即可，不需要额外加密或迁移后立即删除。
+1. **云端只存加密包**：`actions1.tar.gz.age` 长期保存在
+   `dropbox:self-hosted/actions1.tar.gz.age`；解密私钥（SSH key）只在主人手里，
+   不要上传到 Dropbox/Git/artifact/聊天通道。
 2. **轮换 Secrets**：迁移完成后建议在旧账号/新账号均重新生成 token、bot token、
    OAuth 凭据、rclone 配置等，再更新新仓库（降低历史泄露面，非本次归档的前置条件）。
 3. **撤销旧授权**：旧账号的 PAT、Tailscale OAuth client、Cloudflare 证书、
@@ -296,4 +305,5 @@ ZCODE_GATEWAY_API_KEY
 - [ ] `openclaw.yml` 首轮运行成功、`/health` 200
 - [ ] Telegram 通知与 Tailscale SSH 入口验证通过
 - [ ] 全部 Secrets 已轮换（建议，非阻塞项）
-- [ ] 确认 `actions1.tar.gz` 仅存在于 Dropbox，未进入 Git / artifact / 聊天通道
+- [ ] 确认 `actions1.tar.gz.age` 仅存在于 Dropbox，未进入 Git / artifact / 聊天通道
+- [ ] 确认解密私钥（SSH key）不在 Dropbox/Git/artifact/聊天通道中

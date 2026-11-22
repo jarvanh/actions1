@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # ── 从 actions1.tar.gz 恢复仓库、Secrets 与 Variables 到新的 GitHub 仓库 ──
 #
+# 前置：云端归档是 actions1.tar.gz.age（age 加密）。先解密再解包：
+#   age -d -i ~/.ssh/id_ed25519 -o actions1.tar.gz actions1.tar.gz.age
+#   mkdir actions1-restore && tar -xzf actions1.tar.gz -C actions1-restore
+#   cd actions1-restore && ./restore.sh <owner/repo> [--private|--public]
+#
 # 用法（在解包后的归档根目录执行）：
 #   ./restore.sh <owner/repo> [--private|--public]
 #
@@ -13,7 +18,7 @@
 #   - 代码用 `git push --mirror` 恢复，包含所有分支、标签与历史。
 #   - Secrets 从 secrets/secrets.json 逐项经 stdin 写入，不在命令行暴露值。
 #   - Variables 从 metadata/variables.json 恢复。
-#   - 迁移完成后请轮换全部 Secrets，并删除本归档或离线加密保存。
+#   - 迁移完成后请轮换全部 Secrets；解密后的明文包应删除或离线加密保存。
 set -euo pipefail
 
 TARGET="${1:-}"

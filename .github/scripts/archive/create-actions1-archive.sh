@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ── actions1 仓库全量快照归档（最终归档对象 actions1.tar.gz）──
+# ── actions1 仓库全量快照归档（最终归档对象 actions1.tar.gz.age）──
 #
 # 目的：把「仓库本身」也纳入最终归档，迁移到新 GitHub 账号/仓库时无需再从
 # 旧账号逐项抄 —— 代码全历史、Actions Secrets 明文、仓库变量、元数据与全量
@@ -9,8 +9,9 @@
 # 关键输入：
 #   SECRETS_JSON   = ${{ toJSON(secrets) }}，GitHub 在运行时注入的全部 Secrets
 #   GH_TOKEN       = ${{ github.token }}，用于 mirror clone 与元数据 API
+#   ARCHIVE_AGE_RECIPIENTS = age 收件人（每行一个 SSH/age 公钥）；私钥只在主人手里
 #   各 Secret 同名环境变量 = 兜底（toJSON 偶发缺项时按名补）
-# 产物布局（解包即得）：
+# 产物布局（age 解密后解包即得）：
 #   MIGRATION.md  README.md  restore.sh  MANIFEST.sha256
 #   repo/repo.git/           git mirror（全部分支/标签/历史）
 #   repo/repo-worktree.tar.gz 当前 HEAD 工作树快照
@@ -21,15 +22,31 @@
 #   metadata/*.json          仓库、分支、标签、Release、Workflow、Variables 元数据
 #
 # 安全口径：
+#   - 明文 tar 只在 runner 本地短暂存在；打包完成后立即用 age 加密并删除明文。
+#   - age 收件人是主人的 SSH 公钥；私钥不在仓库/Secrets/Dropbox 中。
+#   - 未配置收件人或 age 不可用时 fail-closed，绝不回退上传明文。
 #   - umask 077，包与暂存全部仅属主可读；任何值都不写日志、不进 stdout。
 #   - mirror clone 后立刻把带 token 的 URL 换成无凭据 URL，并扫描 token 残留。
-#   - 本包是「迁移用高敏材料」，迁移完成后应离线保存或删除，并轮换全部 Secrets。
+#   - 本包是「迁移用高敏材料」，解密后仍应离线保存并尽快轮换 Secrets。
 set -euo pipefail
 
 OUTPUT_TAR="${1:-}"
 if [ -z "$OUTPUT_TAR" ]; then
   echo "Usage: $0 /path/to/output.tar.gz" >&2
   exit 2
+fi
+
+# ── 加密前置检查（fail-closed）──
+# 收件人来自仓库变量 ARCHIVE_AGE_RECIPIENTS（每行一个 SSH/age 公钥）。
+# 没有收件人就拒绝生成/上传任何明文包；这是防止 GitHub 误判和云端泄露的关键。
+ARCHIVE_AGE_RECIPIENTS="${ARCHIVE_AGE_RECIPIENTS:-${ARCHIVE_AGE_RECIPIENT:-}}"
+if [ -z "${ARCHIVE_AGE_RECIPIENTS//[[:space:]]/}" ]; then
+  echo "actions1_archive_encryption_recipient_missing" >&2
+  exit 5
+fi
+if ! command -v age >/dev/null 2>&1; then
+  echo "actions1_archive_age_missing" >&2
+  exit 5
 fi
 
 umask 077
@@ -41,9 +58,14 @@ SRC_WS="${GITHUB_WORKSPACE:-$(pwd)}"
 MIN_SIZE=$((100 * 1024))
 STAGE_DIR=""
 
+ENCRYPTED=0
 cleanup() {
   if [ -n "${STAGE_DIR:-}" ] && [ -d "$STAGE_DIR" ]; then
     rm -rf "$STAGE_DIR"
+  fi
+  # 加密失败/中途退出时不留明文 tar
+  if [ "${ENCRYPTED:-0}" -ne 1 ]; then
+    rm -f "$OUTPUT_TAR" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -214,7 +236,7 @@ with open(os.path.join(stage, "secrets", "README.md"), "w", encoding="utf-8") as
     fh.write(
         "# Secrets（高敏）\n\n"
         "本目录保存 actions1 仓库全部 GitHub Actions Secrets 的**明文**，"
-        "用于迁移到新账号后原样恢复。\n\n"
+        "仅在 age 解密后的归档内可见，用于迁移到新账号后原样恢复。\n\n"
         "- `secrets.json`：JSON 对象，名称 → 值；多行值（如 `RCLONE`、"
         "`TS_CERT_GPG_KEY`）以 `\\n` 转义。\n"
         "- `values/<NAME>`：逐项原文，保留原始换行，可直接 "
@@ -222,7 +244,7 @@ with open(os.path.join(stage, "secrets", "README.md"), "w", encoding="utf-8") as
         "- `index.tsv`：名称、字节数、行数、SHA-256；不含值，供核对。\n"
         "- `UNCAPTURED.txt`：仓库里存在但本次未取到值的 Secret 名称；"
         "迁移前需从原账号后台补齐。\n\n"
-        "迁移完成后：立即轮换全部密钥，并删除本包或离线加密保存。\n"
+        "迁移完成后：立即轮换全部密钥；解密后的明文包应删除或离线加密保存。\n"
     )
 PY
 
@@ -240,6 +262,8 @@ chmod 700 "$STAGE_DIR/restore.sh"
   echo "source_branch=${GITHUB_REF_NAME:-unknown}"
   echo "secrets_count=$(find "$STAGE_DIR/secrets/values" -type f | wc -l | tr -d ' ')"
   echo "refs_count=$(wc -l < "$STAGE_DIR/metadata/refs.txt" | tr -d ' ')"
+  echo "encryption=age-ssh"
+  echo "encryption_recipients=$(printf '%s\n' "$ARCHIVE_AGE_RECIPIENTS" | grep -c '^[[:space:]]*[^[:space:]]' || true)"
 } > "$STAGE_DIR/ARCHIVE-META.txt"
 
 (
@@ -280,4 +304,41 @@ if [ "$secret_count" -lt 1 ] || [ "$ref_count" -lt 1 ]; then
   exit 4
 fi
 
-echo "archive_ready size=${actual_size} secrets=${secret_count} refs=${ref_count} output=${OUTPUT_TAR}"
+# ── 7. age 加密（SSH 公钥收件人；私钥只在主人手里）──
+# 收件人每行一个，支持同时加密给多把 SSH key（任意一把私钥可解）。
+# age 的 -R 参数是「收件人文件路径」，不是 key 字符串；这里写临时文件（600）。
+RECIPIENTS_FILE=$(mktemp /tmp/actions1-age-recipients.XXXXXX)
+chmod 600 "$RECIPIENTS_FILE"
+_recipient_count=0
+while IFS= read -r _recipient; do
+  # 去首尾空白；保留 key 内部的单个空格
+  _recipient="$(printf '%s' "$_recipient" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [ -n "$_recipient" ] || continue
+  printf '%s\n' "$_recipient" >> "$RECIPIENTS_FILE"
+  _recipient_count=$((_recipient_count + 1))
+done <<< "$ARCHIVE_AGE_RECIPIENTS"
+if [ "$_recipient_count" -eq 0 ]; then
+  rm -f "$RECIPIENTS_FILE"
+  echo "actions1_archive_encryption_recipient_invalid" >&2
+  exit 5
+fi
+
+OUTPUT_ENC="${OUTPUT_TAR}.age"
+rm -f "$OUTPUT_ENC"
+if ! age -R "$RECIPIENTS_FILE" -o "$OUTPUT_ENC" "$OUTPUT_TAR"; then
+  rm -f "$RECIPIENTS_FILE"
+  echo "actions1_archive_encrypt_failed" >&2
+  exit 5
+fi
+rm -f "$RECIPIENTS_FILE"
+if [ ! -s "$OUTPUT_ENC" ]; then
+  echo "actions1_archive_encrypt_empty" >&2
+  exit 5
+fi
+chmod 600 "$OUTPUT_ENC"
+enc_size=$(stat -c%s "$OUTPUT_ENC")
+# 加密成功后立刻删除明文 tar；后续调用方只认 .age
+rm -f "$OUTPUT_TAR"
+ENCRYPTED=1
+
+echo "archive_ready size=${enc_size} plaintext_size=${actual_size} secrets=${secret_count} refs=${ref_count} output=${OUTPUT_ENC} encrypted=age-ssh"
