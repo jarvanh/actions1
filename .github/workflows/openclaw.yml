@@ -2737,12 +2737,15 @@ jobs:
               # ⚠️ 2026-10-22 修复：脚本本体此前从未入库（commit 1e30239 只有这 9 行调用，
               # workspace 副本丢失后安全网空转 3 天）。真源改为本仓库 .github/scripts/telegram/，
               # 与 tg_notify.sh 同级；workspace 路径仅作过渡期兜底。
+              # 不能用 `|| true` 吞掉退出码：2026-11-22 回读校验失败却被汇总成 rc=0，
+              # 告警只剩日志里一行字。让失败传到 /tmp/post-health-quota.rc，收口步骤
+              # 会发 ::warning::（不级联后续步骤）。
               if [ -f "$GITHUB_WORKSPACE/.github/scripts/telegram/ensure-miniapp-menu.sh" ]; then
                 QB_URL_BASE="https://qb.${{ secrets.VD }}.eu.org" \
-                  bash "$GITHUB_WORKSPACE/.github/scripts/telegram/ensure-miniapp-menu.sh" || true
+                  bash "$GITHUB_WORKSPACE/.github/scripts/telegram/ensure-miniapp-menu.sh"
               elif [ -f "$HOME/.openclaw/workspace/scripts/ensure-miniapp-menu.sh" ]; then
                 QB_URL_BASE="https://qb.${{ secrets.VD }}.eu.org" \
-                  bash "$HOME/.openclaw/workspace/scripts/ensure-miniapp-menu.sh" || true
+                  bash "$HOME/.openclaw/workspace/scripts/ensure-miniapp-menu.sh"
               else
                 echo "⚠️ ensure-miniapp-menu.sh 缺失（仓库与 workspace 均无），跳过 Mini App 入口重建"
               fi
