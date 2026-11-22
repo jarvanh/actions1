@@ -10,7 +10,7 @@
 #   不再依赖 workspace 副本，runner 重置也冲不掉。
 #
 # 动作（幂等，重复执行无害）：
-#   1) @openclaw_sb_bot    → web_app 按钮「📊 额度看板」→ https://qb.<VD>.eu.org/p/<QUOTA_BOARD_TOKEN>
+#   1) @openclaw_sb_bot    → web_app 按钮「📊 看板」→ https://qb.<VD>.eu.org/p/<QUOTA_BOARD_TOKEN>
 #   2) @sbsbsbsbsb_openclaw_bot（旧入口 bot）→ 清成 type=commands，避免双入口
 #
 # 凭据来源：~/.openclaw/.env（随 openclaw.tar.gz 归档每轮恢复）
@@ -46,7 +46,7 @@ QB_URL="${QB_URL_BASE}/p/${QB_TOKEN}/"
 
 # ⚠️ setChatMenuButton 不得传 "chat_id": null（实测 400 invalid chat_id）；
 # 不传 chat_id 才是「默认全局菜单」语义（实测 ok:true）。
-payload_web_app=$(printf '{"menu_button":{"type":"web_app","text":"📊 额度看板","web_app":{"url":"%s"}}}' "$QB_URL")
+payload_web_app=$(printf '{"menu_button":{"type":"web_app","text":"📊 看板","web_app":{"url":"%s"}}}' "$QB_URL")
 payload_commands='{"menu_button":{"type":"commands"}}'
 
 # setChatMenuButton（不带 chat_id = 默认全局菜单）
@@ -77,7 +77,7 @@ verify=$(curl -fsS -m 20 "${API}${SB_TOKEN}/getChatMenuButton" -H 'Content-Type:
 if printf '%s' "$verify" | grep -q "$QB_URL"; then
   echo "🔎 回读校验通过：web_app 指向 ${QB_URL_BASE}/p/<token>"
 else
-  echo "❌ 回读校验失败：菜单按钮未设置为额度看板"
+  echo "❌ 回读校验失败：菜单按钮未设置为看板"
   rc=1
 fi
 
