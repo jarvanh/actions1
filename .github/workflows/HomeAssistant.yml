@@ -130,32 +130,60 @@ jobs:
           echo "清理完成：删除 $n 份，剩余 $(rclone lsf "$DIR" --files-only | grep -c . || true) 份"
 
       # -----------------------------------------------------------
-      # 插入修正步骤：解决 400 Bad Request 问题
+      # 清理 configuration.yaml 里遗留的 http 块
       # -----------------------------------------------------------
-      - name: Configure HA for Reverse Proxy
+      # HA 2027.2 起 HTTP 配置只认 UI（设置 > 系统 > 网络），configuration.yaml 里的
+      # http: 块已迁移到 .storage/http 并被忽略，继续保留会在 UI 报
+      # "HTTP YAML configuration is ignored after migration" 警告。
+      # 原步骤是给反代注入 trusted_proxies（解决 400 Bad Request），该配置现已由
+      # UI 侧承载（.storage/http: use_x_forwarded_for + trusted_proxies 含 127.0.0.1/::1），
+      # 因此改为删除 YAML 残留，并只对 UI 侧配置做校验告警、绝不写回 yaml。
+      - name: 清理 configuration.yaml 中遗留的 http 块
         run: |
-          # 配置已本地化到 /opt/ha-config（SQLite 不能跑在 FUSE 上），这里操作本地副本
+          set -euo pipefail
           CONFIG_FILE="/opt/ha-config/configuration.yaml"
-          
-          # 检查 configuration.yaml 是否存在，如果不存在则创建
           if [ ! -f "$CONFIG_FILE" ]; then
-            touch "$CONFIG_FILE"
-            echo "default_config:" >> "$CONFIG_FILE"
+            echo "未找到 configuration.yaml，跳过"
+            exit 0
           fi
-          
-          # 检查是否已经配置了 http 组件，如果没有则追加配置
-          if ! grep -q "trusted_proxies" "$CONFIG_FILE"; then
-            echo "" >> "$CONFIG_FILE"
-            echo "http:" >> "$CONFIG_FILE"
-            echo "  use_x_forwarded_for: true" >> "$CONFIG_FILE"
-            echo "  trusted_proxies:" >> "$CONFIG_FILE"
-            echo "    - 127.0.0.1" >> "$CONFIG_FILE"
-            echo "    - ::1" >> "$CONFIG_FILE"
-            echo "Config injected: Trusted proxies added."
-          else
-            echo "Config already contains trusted_proxies. Skipping."
-          fi
-          
+          CONFIG_FILE="$CONFIG_FILE" python3 - <<'PY'
+          import os, pathlib, re
+
+          p = pathlib.Path(os.environ["CONFIG_FILE"])
+          lines = p.read_text(encoding="utf-8").splitlines()
+          out, skip, removed = [], False, 0
+          for line in lines:
+              if re.match(r"^http:(\s|$)", line):
+                  skip = True
+                  removed += 1
+                  continue
+              if skip:
+                  # 连同 http 块的缩进子项与块内空行一起丢弃
+                  if not line.strip() or line[:1] in (" ", "\t"):
+                      continue
+                  skip = False
+              out.append(line)
+          if removed:
+              p.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+              print(f"已移除 {removed} 个顶层 http 块")
+          else:
+              print("configuration.yaml 无 http 块，无需清理")
+          PY
+          # 反代依赖的 HTTP 配置必须已迁移到 UI 侧；缺失只告警，不写回 yaml（写回会再次触发忽略警告）
+          python3 - <<'PY' || echo "::warning::UI 侧 HTTP 配置校验失败，请在 设置 > 系统 > 网络 确认已启用 X-Forwarded-For 与 trusted_proxies"
+          import json, pathlib
+
+          p = pathlib.Path("/opt/ha-config/.storage/http")
+          if not p.exists():
+              raise SystemExit("::warning::.storage/http 不存在，HTTP 配置需在 UI 重新配置")
+          stable = json.loads(p.read_text(encoding="utf-8"))["data"].get("stable") or {}
+          proxies = [str(x) for x in stable.get("trusted_proxies") or []]
+          ok = stable.get("use_x_forwarded_for") is True and any(x.startswith("127.0.0.1") for x in proxies)
+          print("UI 侧 HTTP 配置:", "OK" if ok else "缺少 use_x_forwarded_for 或 127.0.0.1 trusted_proxies")
+          if not ok:
+              raise SystemExit("::warning::UI 侧 HTTP 配置不完整")
+          PY
+
       # -----------------------------------------------------------
       # 2. 安装 Cloudflared 并检查隧道状态
       # -----------------------------------------------------------
