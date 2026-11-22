@@ -60,5 +60,12 @@ require_vd() {
     [ "$mode" = "--warn" ] && return 0
     return 1
   fi
+
+  # 归一化：DNS 本身大小写不敏感，但 Cloudflare 侧 zone/记录是小写，
+  # 带大写时 `cloudflared tunnel route dns` 会报 "is not a valid hostname"
+  # （本地校验能过、zone 匹配失败，报错信息极具误导性）。
+  # 这里统一转小写后再交给调用方使用（只改变量，不打印值）。
+  VD=$(printf '%s' "$v" | LC_ALL=C tr 'A-Z' 'a-z')
+  export VD
   return 0
 }

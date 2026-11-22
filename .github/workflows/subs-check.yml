@@ -121,8 +121,12 @@ jobs:
           docker logs --tail 50 subs-check || true
           exit 1
       - name: run cloudflared
+        env:
+          VD: ${{ secrets.VD }}
         run: |
-          cloudflared tunnel route dns subs-check subs-check.${{ secrets.VD }}.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd subs-check
+          cloudflared tunnel route dns subs-check subs-check.${VD}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure subs-check || true
           else
