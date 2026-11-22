@@ -190,13 +190,17 @@ jobs:
         run: |
           sudo nohup /usr/bin/jellyfin -w /usr/share/jellyfin/web --datadir /opt/jellyfin &
       - name: run cloudflared
+        env:
+          VD: ${{ secrets.VD }}
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/cloudflared/install_cloudflared.sh"
           sudo mkdir -p ~/.cloudflared/
           sudo chown -R runner:runner ~/.cloudflared
           # rclone 以 runner 身份运行（与挂载步骤同）：root 运行会在 token 刷新时回写 rclone.conf 属主
-          rclone copy i:SyncBack/'${{ secrets.VD }}'/.cloudflared ~/.cloudflared -vv
-          cloudflared tunnel route dns j j.'${{ secrets.VD }}'.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd jellyfin
+          rclone copy i:SyncBack/${VD}/.cloudflared ~/.cloudflared -vv
+          cloudflared tunnel route dns j j.${VD}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure j || true
           else

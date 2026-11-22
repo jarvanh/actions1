@@ -497,10 +497,14 @@ jobs:
           fi
 
       - name: 启动 Cloudflare 隧道
+        env:
+          VD: ${{ secrets.VD }}
         run: |
           # DNS 路由只需创建一次；检查是否已解析到该隧道，避免重复 API 调用
-          if ! dig +short openlist.'${{ secrets.VD }}'.eu.org | grep -q .; then
-            cloudflared tunnel route dns openlist openlist.'${{ secrets.VD }}'.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd openlist
+          if ! dig +short openlist.${VD}.eu.org | grep -q .; then
+            cloudflared tunnel route dns openlist openlist.${VD}.eu.org
           else
             echo "DNS 路由已存在，跳过 cloudflared tunnel route dns"
           fi

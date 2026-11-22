@@ -144,6 +144,8 @@ jobs:
       - name: Verify Qinglong container is running
         run: docker ps    
       - name: run cloudflared
+        env:
+          VD: ${{ secrets.VD }}
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/cloudflared/install_cloudflared.sh"
           sudo mkdir -p ~/.cloudflared/
@@ -151,7 +153,9 @@ jobs:
           # rclone 以 runner 身份运行：root 运行会在 token 刷新时把 rclone.conf 回写成
           # root:600，之后非 root 的 rclone（末尾 ql.tar.gz 回传）读取即 EACCES
           rclone copy dropbox:self-hosted/.cloudflared ~/.cloudflared -vv
-          cloudflared tunnel route dns ql ql.'${{ secrets.VD }}'.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd ql
+          cloudflared tunnel route dns ql ql.${VD}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure ql || true
           else

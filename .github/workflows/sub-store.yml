@@ -127,8 +127,12 @@ jobs:
       - name: Verify container is running
         run: docker ps    
       - name: run cloudflared
+        env:
+          VD: ${{ secrets.VD }}
         run: |
-          cloudflared tunnel route dns sub-store sub-store.'${{ secrets.VD }}'.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd sub-store
+          cloudflared tunnel route dns sub-store sub-store.${VD}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure sub-store || true
           else

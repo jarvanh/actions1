@@ -262,6 +262,7 @@ jobs:
           # secret 必须经环境变量注入——直接文本注入 run: 脚本时，密码里含
           # $xxx 片段会被 bash 当未定义变量展开成空（如 @$TM3@ 变 @$TM3@ 骨架）。
           OPENLIST_ADMIN_PASSWORD: ${{ secrets.OPENLIST_ADMIN_PASSWORD }}
+          VD: ${{ secrets.VD }}
           # 收尾区接线（规范 · 收尾区）：本 step 有 OpenList 凭据通知，需要运行日志链接
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -325,7 +326,11 @@ jobs:
             fi
             # OpenList 专有隧道（维护入口，密码 = OPENLIST_ADMIN_PASSWORD）
             cloudflared tunnel create oe >/dev/null 2>&1 || true
-            cloudflared tunnel route dns oe oe.'${{ secrets.VD }}'.eu.org >/dev/null 2>&1 || true
+            # VD 不合法时只告警不中断（oe 是可选维护入口，不能拖垮主流程）
+            source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+            if require_vd emby --warn; then
+              cloudflared tunnel route dns oe oe.${VD}.eu.org >/dev/null 2>&1 || true
+            fi
             OE_TOKEN=$(cloudflared tunnel token oe 2>/dev/null) || true
             if [ -n "$OE_TOKEN" ]; then
               nohup cloudflared tunnel run --url http://127.0.0.1:5244 --token "$OE_TOKEN" > /opt/logs/cloudflared-oe.log 2>&1 &

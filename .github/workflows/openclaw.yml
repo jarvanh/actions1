@@ -2315,13 +2315,19 @@ jobs:
         # 网关（18789）已先就绪 —— 公网可达性恢复略晚于网关健康，换取下线关键路径缩短。
         if: ${{ !cancelled() }}
         continue-on-error: true
+        env:
+          VD: ${{ secrets.VD }}
         run: |
           # 2026-11-10 Phase 1：继任轮等旧轮交出（其隧道已随网关同步停止）才起本侧
           # connector —— 双 connector 会分流流量到已停服的旧 VM。serve 轮直通。
           bash "$GITHUB_WORKSPACE/.github/scripts/handoff/gate.sh" cutover || true
           mkdir -p ~/.openclaw/logs
 
-          cloudflared tunnel route dns oc oc.'${{ secrets.VD }}'.eu.org || true
+          # VD 不合法时只告警不中断（隧道管理器仍会尝试起 oc）
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          if require_vd openclaw --warn; then
+            cloudflared tunnel route dns oc oc.${VD}.eu.org || true
+          fi
           # Managed by the unified systemd tunnel manager: tunnels get
           # Restart=always, so a killed connector comes back on its own.
           # Falls back to nohup only if the manager is unavailable.

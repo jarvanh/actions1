@@ -248,10 +248,14 @@ jobs:
       - name: Run Cloudflared Tunnel
         env:
           TUNNEL_NAME: "home"
-          DOMAIN_PREFIX: ${{ secrets.VD }}
+          VD: ${{ secrets.VD }}
         run: |
+          # VD 不合法时给出明确的元信息（值本身不打印），而不是 cloudflared 的一句
+          # "not a valid hostname" 加打码后的 ***
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd HomeAssistant
           # 设置 DNS 路由
-          cloudflared tunnel route dns $TUNNEL_NAME home.${DOMAIN_PREFIX}.eu.org
+          cloudflared tunnel route dns $TUNNEL_NAME home.${VD}.eu.org
           
           echo "Starting tunnel to expose http://127.0.0.1:8123"
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then

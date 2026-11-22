@@ -168,8 +168,12 @@ jobs:
           exit 1
       
       - name: run cloudflared
+        env:
+          VD: ${{ secrets.VD }}
         run: |
-          cloudflared tunnel route dns t t.'${{ secrets.VD }}'.eu.org
+          source "$GITHUB_WORKSPACE/.github/scripts/lib/require_vd.sh"
+          require_vd teslamate
+          cloudflared tunnel route dns t t.${VD}.eu.org
           if [ -f "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/tunnels/tunnels.sh" ensure t || true
           else
