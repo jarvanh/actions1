@@ -1,0 +1,99 @@
+name: actions1-archive
+
+# 手动生成并上传 actions1 仓库全量归档（代码 + Actions Secrets + Variables + 迁移说明）。
+# 与 openclaw.yml 的最终归档使用同一个脚本和同一个 Dropbox 对象；
+# 区别只是本 workflow 只做归档，不启动/停止任何服务，适合随时手动刷新。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: actions1-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: rclone install
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/rclone/setup_rclone.sh" install
+
+      - name: rclone config
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/rclone/setup_rclone.sh" config
+
+      - name: Build actions1 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 主来源：运行时全部 Secrets（JSON 对象）。
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          # 兜底：同名环境变量，防止 toJSON 在个别上下文缺项。
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          ANTIGRAVITY_API_KEY: ${{ secrets.ANTIGRAVITY_API_KEY }}
+          AUTOCLAW_GATEWAY_KEY: ${{ secrets.AUTOCLAW_GATEWAY_KEY }}
+          CLIPROXYAPI_API_KEY: ${{ secrets.CLIPROXYAPI_API_KEY }}
+          EMBY_API_TOKEN: ${{ secrets.EMBY_API_TOKEN }}
+          EMBY_USER: ${{ secrets.EMBY_USER }}
+          GH_TOKEN_SECRET: ${{ secrets.GH_TOKEN }}
+          GITEE_PRIVATE_TOKEN: ${{ secrets.GITEE_PRIVATE_TOKEN }}
+          GLM2API_GATEWAY_KEY: ${{ secrets.GLM2API_GATEWAY_KEY }}
+          GLM_REFRESH_TOKEN: ${{ secrets.GLM_REFRESH_TOKEN }}
+          JELLYFIN_API_TOKEN: ${{ secrets.JELLYFIN_API_TOKEN }}
+          MANAGEMENT_KEY: ${{ secrets.MANAGEMENT_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}
+          OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
+          PAT: ${{ secrets.PAT }}
+          PROXY_SPEEDTEST_CDN_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_CDN_GIST_ID }}
+          PROXY_SPEEDTEST_GISTNODES_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GISTNODES_GIST_ID }}
+          PROXY_SPEEDTEST_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_GIST_ID }}
+          PROXY_SPEEDTEST_GITEE_OWNER: ${{ secrets.PROXY_SPEEDTEST_GITEE_OWNER }}
+          PROXY_SPEEDTEST_SUB_URLS: ${{ secrets.PROXY_SPEEDTEST_SUB_URLS }}
+          PROXY_SPEEDTEST_TAIER_GIST_ID: ${{ secrets.PROXY_SPEEDTEST_TAIER_GIST_ID }}
+          RCLONE: ${{ secrets.RCLONE }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          RUNNER_PASSWORD: ${{ secrets.RUNNER_PASSWORD }}
+          RUSTDESK_PASSWORD: ${{ secrets.RUSTDESK_PASSWORD }}
+          SOCKS_EXIT_GIST_ID: ${{ secrets.SOCKS_EXIT_GIST_ID }}
+          SUBS_CHECK_GIST_ID: ${{ secrets.SUBS_CHECK_GIST_ID }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_BOT_TOKEN_RSS_SB_BOT: ${{ secrets.TELEGRAM_BOT_TOKEN_RSS_SB_BOT }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
+          TS_API_KEY: ${{ secrets.TS_API_KEY }}
+          TS_CERT_GPG_KEY: ${{ secrets.TS_CERT_GPG_KEY }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          VD: ${{ secrets.VD }}
+          YSHOP_WX_MINIAPP_APPID: ${{ secrets.YSHOP_WX_MINIAPP_APPID }}
+          YSHOP_WX_MINIAPP_SECRET: ${{ secrets.YSHOP_WX_MINIAPP_SECRET }}
+          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
+        run: |
+          set -euo pipefail
+          rm -f /tmp/actions1-repo-final.tar.gz
+          bash "$GITHUB_WORKSPACE/.github/scripts/archive/create-actions1-archive.sh" /tmp/actions1-repo-final.tar.gz
+
+      - name: Upload to Dropbox
+        run: |
+          set -euo pipefail
+          size="$(stat -c%s /tmp/actions1-repo-final.tar.gz)"
+          rclone copyto /tmp/actions1-repo-final.tar.gz dropbox:self-hosted/actions1.tar.gz \
+            --dropbox-chunk-size 128M
+          remote="$(rclone size --json dropbox:self-hosted/actions1.tar.gz | jq -r '.bytes // 0')"
+          case "$remote" in ''|*[!0-9]*) remote=0 ;; esac
+          echo "local=${size} remote=${remote}"
+          if [ "$remote" -lt $((size * 95 / 100)) ]; then
+            echo "❌ 云端对象小于本地包 95%，拒绝视为成功" >&2
+            exit 1
+          fi
+          rm -f /tmp/actions1-repo-final.tar.gz
+          echo "✅ actions1.tar.gz 已上传 dropbox:self-hosted/actions1.tar.gz (${size} bytes)"
