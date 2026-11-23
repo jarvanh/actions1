@@ -941,14 +941,22 @@ jobs:
             _tgz=/tmp/tailscale-latest.tgz
             curl -fsSL --retry 3 --max-time 180 -o "$_tgz" \
               https://pkgs.tailscale.com/stable/tailscale_latest_amd64.tgz
-            _dir=$(tar tzf "$_tgz" | head -1 | cut -d/ -f1)
+            # 2026-11-23 修（run 45069189132 实证）：`tar tzf | head -1 | cut -d/ -f1`
+            # 在 set -o pipefail 下会被 head 提前关管道 → tar 收 SIGPIPE(141) →
+            # 整条管道判失败 → set -e 当场中止本步骤。后果不止是二进制没装上：
+            # 本步失败后 Install OpenClaw 被默认 success() 连坐跳过，Run OpenClaw
+            # 又硬要 install_openclaw.outcome == 'success'，网关整轮未启动。
+            # 改用 awk 读尽清单取首行，不产生 SIGPIPE。
+            _dir=$(tar tzf "$_tgz" | awk -F/ 'NR==1{print $1}')
             rm -rf /tmp/ts-install && mkdir -p /tmp/ts-install
             tar xzf "$_tgz" -C /tmp/ts-install
             sudo install -m 755 "/tmp/ts-install/${_dir}/tailscaled" /usr/local/bin/tailscaled
             sudo install -m 755 "/tmp/ts-install/${_dir}/tailscale" /usr/local/bin/tailscale
             rm -rf /tmp/ts-install "$_tgz"
           fi
-          /usr/local/bin/tailscale version | head -1
+          # 仅打印版本用于日志；head 提前关管道同样会触发 SIGPIPE，不能让一行
+          # 诊断输出有能力判定整个步骤失败（同一根因，见上方 _dir 注释）。
+          /usr/local/bin/tailscale version | head -n1 || true
 
       - name: Tailscale daemon 纳管 (systemd)
         id: ts_daemon
