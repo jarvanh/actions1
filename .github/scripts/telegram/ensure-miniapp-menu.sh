@@ -72,6 +72,23 @@ else
   echo "⚠️ .env 无旧 bot token，跳过双入口清理"
 fi
 
+# 清掉 chat 级覆盖（2026-11-23 事故）：chat 级菜单按钮优先级高于默认菜单。
+# 历史上给本私聊手工设过旧 token 的 web_app 覆盖，token 轮换后一直 403，
+# 而本脚本只重建默认菜单、碰不到它。只传 chat_id 不传 menu_button = 删除覆盖，
+# 客户端回落使用上面重建的默认菜单（单一真源，避免下次轮换再残留）。
+CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+case "$CHAT_ID" in
+  ''|*[!0-9]*) : ;;
+  *)
+    if curl -fsS -m 20 -X POST "${API}${SB_TOKEN}/setChatMenuButton" \
+         -H 'Content-Type: application/json' -d "{\"chat_id\":${CHAT_ID}}" >/dev/null 2>&1; then
+      echo "🧹 已清除 chat ${CHAT_ID} 的按钮覆盖（回落默认菜单）"
+    else
+      echo "⚠️ 清除 chat ${CHAT_ID} 按钮覆盖失败（不影响默认菜单）"
+    fi
+    ;;
+esac
+
 # 回读校验：主入口当前值必须 == 期望
 verify=$(curl -fsS -m 20 "${API}${SB_TOKEN}/getChatMenuButton" -H 'Content-Type: application/json' -d '{}' 2>/dev/null || true)
 if printf '%s' "$verify" | grep -q "$QB_URL"; then
