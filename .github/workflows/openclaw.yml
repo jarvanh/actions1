@@ -988,6 +988,28 @@ jobs:
           #
           # 过渡期：若本机已有 action 起的 mem: 裸跑实例，ensure 会检测并跳过
           #   （不抢占 TUN、不打断当前 SSH），单元在新 VM 上自动接管。
+      # 2026-11-23 修（run 报 cp: cannot create regular file
+      # '/usr/local/bin/tailscaled': Text file busy）：
+      # 上一轮起 tailscaled 由 systemd 单元常驻，进程正以 /usr/local/bin/tailscaled
+      # 这个 inode 在跑；tailscale/github-action 内部无条件 `cp` 覆盖同一路径 →
+      # 内核返回 ETXTBSY，action 直接 fail（CLI 的 tailscale 能覆盖成功，只有
+      # 正在执行的 tailscaled 会撞）。
+      # 解法：在 action 之前把该文件**删除**（不是截断）。运行中的进程仍持有旧
+      # inode，服务不中断；action 随后 cp 时是新建文件，绕开 ETXTBSY。
+      # 条件与下一步完全一致：只有 action 真要跑时才动二进制，避免白删。
+      - name: Pre-free tailscaled binary (avoid ETXTBSY in tailscale action)
+        if: ${{ always() && steps.ts_daemon.outcome == 'success' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_CLIENT_SECRET != '' }}
+        run: |
+          set -uo pipefail
+          sudo mkdir -p /tmp/ts-bin-backup
+          if [ -x /usr/local/bin/tailscaled ]; then
+            sudo cp -a /usr/local/bin/tailscaled /tmp/ts-bin-backup/tailscaled || true
+            sudo rm -f /usr/local/bin/tailscaled || true
+            echo "已释放 /usr/local/bin/tailscaled（运行中的进程仍持旧 inode，不中断服务）"
+          else
+            echo "无需释放：/usr/local/bin/tailscaled 不存在"
+          fi
+
       - name: Setup Tailscale (SSH 调试入口)
         id: ts
         # daemon 纳管没成功就不要硬跑 action：否则失败会看起来像 Tailscale 本身坏了，
@@ -1011,6 +1033,18 @@ jobs:
           # 抢 openclaw 会顶掉服务中节点的 DNS 名；接管成功后由 serving.sh 拉起
           # 回收守护把名字收回来（ts-reclaim-hostname.sh 自带周期重试）。
           hostname: ${{ inputs.handoff_of != '' && 'openclaw-next' || 'openclaw' }}
+
+      # 兜底：action 因任何原因没把二进制落回来时，用备份恢复，避免 systemd 单元
+      # 后续 Restart 时 203/EXEC（ExecStart 指向 /usr/local/bin/tailscaled）。
+      - name: Restore tailscaled binary if action left it missing
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          if [ ! -x /usr/local/bin/tailscaled ] && [ -f /tmp/ts-bin-backup/tailscaled ]; then
+            sudo install -m 755 /tmp/ts-bin-backup/tailscaled /usr/local/bin/tailscaled
+            echo "已从备份恢复 /usr/local/bin/tailscaled"
+          fi
+          /usr/local/bin/tailscale version | head -n1 || true
 
       - name: Enable Tailscale SSH
         id: ts_ssh
