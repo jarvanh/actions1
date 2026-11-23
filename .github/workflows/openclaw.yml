@@ -1385,6 +1385,13 @@ jobs:
 
       - name: Install OpenClaw
         id: install_openclaw
+        # 2026-11-23 修（run 45069189132 实证）：本步此前没有显式 if，默认继承
+        # success() —— 于是「Install Tailscale CLI」那种与本步无关的前置步骤一失败，
+        # 本步就被连坐 skip，Run OpenClaw 又硬要本步 outcome == 'success'，网关
+        # 整轮不启动。安装的真实工作早在「Start OpenClaw install (background)」里
+        # 跑完了，本步只是收口（等 rc），没有任何理由被前置失败连坐。
+        # 用 !cancelled()：前置失败仍收口（让真实 rc 决定成败），主动取消则不再拖沓。
+        if: ${{ !cancelled() }}
         # 2026-10-23：本步骤失败也要能触发失败通知。此前通知只认
         # run_openclaw.outcome == 'failure'，而 run 39888680026 / 39886777685
         # 都是 Install 失败、Run OpenClaw 却成功（doctor 现造配置），通知被静默跳过。
@@ -2134,20 +2141,41 @@ jobs:
         # 无声消失。本步骤的自愈机制（fallback 重装、失败通知）本就为「自己
         # 失败」设计，理应在任何前置服务失败后仍获得执行机会；cancelled 除外 —— 主动取消
         # 时不该再拉起网关。
-        # 2026-10-23 补充：Install OpenClaw 是硬前置，它失败/跳过时不再 Run ——
+        # 2026-10-23 补充：Install OpenClaw 是硬前置，它失败时不许 Run ——
         # 否则 preflight doctor 会现造空壳配置把网关拉起并判成功，掩盖恢复失败
         # （run 39858698391 / 39888680026 / 39886777685 即此形态）。
+        # 2026-11-23 修（run 45069189132 实证）：硬前置此前写在 if 里判
+        # outcome == 'success'，而 Install 被无关前置连坐 skip 时 outcome=skipped
+        # 同样拦住本步 —— 安装其实早已 rc=0，网关却整轮不起。Install 现已改
+        # !cancelled()（不再被连坐），本步改为脚本内校验安装产物：非 success 时
+        # 要求后台安装真实 rc=0 且 CLI/主配置齐备才放行，否则按安装失败收口
+        # （非零退出 → 既有失败通知照发）。硬前置语义不变，只是判据落到证据上。
         # 2026-10-30 减重外置：脚本本体在 .github/scripts/openclaw/run-openclaw.sh
         #（原样搬移，零逻辑改动），背景同 Install OpenClaw 的 500KB 注；
         # /tmp/run-openclaw-step.log、meta.env 等消费方不变。
         # 脚本非零退出即本步骤失败（outcome 消费方不受影响，id 保留）。
-        if: ${{ !cancelled() && steps.install_openclaw.outcome == 'success' }}
+        if: ${{ !cancelled() }}
         env:
           # 交接进度通知（serving 阶段）需要
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # 硬前置兜底：Install OpenClaw 非 success 时不盲目拉起网关（doctor 空壳
+          # 配置的老坑，见上方 2026-10-23 注）。仅当后台安装真实 rc=0 且 CLI/主配置
+          # 齐备，才视同安装成功继续；否则按安装失败收口，不进入 run-openclaw.sh。
+          if [ "${{ steps.install_openclaw.outcome }}" != "success" ]; then
+            _inst_rc="$(tr -dc '0-9' < /tmp/install-openclaw.rc 2>/dev/null || true)"
+            if [ "${_inst_rc:-x}" = "0" ] \
+               && command -v openclaw >/dev/null 2>&1 \
+               && [ -s "$HOME/.openclaw/openclaw.json" ]; then
+              echo "⚠️ Install OpenClaw outcome=${{ steps.install_openclaw.outcome }}，但后台安装 rc=0 且 CLI/主配置齐备 —— 兜底放行"
+            else
+              echo "❌ Install OpenClaw outcome=${{ steps.install_openclaw.outcome }}，后台安装 rc=${_inst_rc:-none}，CLI/主配置不可用 —— 按安装失败收口，拒绝启动网关"
+              echo "FAIL_STAGE=run_blocked_by_install" >> /tmp/run-openclaw-meta.env
+              exit 1
+            fi
+          fi
           bash -eo pipefail "$GITHUB_WORKSPACE/.github/scripts/openclaw/run-openclaw.sh"
           # 2026-11-10 Phase 1：继任轮网关健康后回报 serving —— 旧轮 cutover 等的就是
           # 它，收到即 handoff_done 并转纯备份收尾（下线窗口就此关闭）。
