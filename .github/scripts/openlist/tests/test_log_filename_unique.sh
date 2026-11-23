@@ -92,7 +92,9 @@ grep -q 'LOG_FILENAME="${task_name}_sync_${TIMESTAMP}_${BASHPID' "$WORK/swl.sh" 
 
 # ---------- L4: 记账合理性护栏（2026-11-13 加）----------
 # 传输量不可能超过源端总量；超了就是解析失真，必须截断而不是静默累加。
-_src='/home/runner/work/actions/actions/.github/scripts/openlist/task_engine.sh'
+# 用顶部已解析的 _REPO_ROOT，别写死 /home/runner/work/actions/actions ——
+# 换仓库名/换 runner 布局（actions → actions1）就会整条判红，属环境耦合假红。
+_src="$_REPO_ROOT/.github/scripts/openlist/task_engine.sh"
 grep -q '记账异常: 本对传输量' "$_src" \
   && ok "L4 护栏代码存在于 task_engine.sh（传输量 > 源端总量时告警+截断）" \
   || bad "L4 护栏代码缺失"

@@ -245,10 +245,12 @@ echo "$OUT" | grep -q "顽固缺失 0 个" && ok "4g 重试补全 → 顽固缺�
   && ok "4i 重试期间跑 token 保鲜循环（启停各 1 次）" || bad "4i: start=$(calls /tmp/bc_refresher_starts) stop=$(calls /tmp/bc_refresher_stops)"
 [ "$(cat /tmp/bc_backend_dead 2>/dev/null)" = "0" ] && ok "4j 重试有产出 → 不触发后端全拒" || bad "4j: dead=$(cat /tmp/bc_backend_dead 2>/dev/null)"
 
-# --- 场景4x: Failed to copy 且**名字已在目标端**（409 同名半截件）→ 必须进重试/修复 ---
-#   旧实现把 Copied 与 Failed 合并成 touched，再 `comm -23 touched dest_truth` ⇒
-#   名字在目标端存在就等于"已落盘"被剔除 ⇒ 永不重试、永不进修复管线。这正是
-#   115 后端 409 死锁永不收敛的根因（8e6c7ff 实证 409 唯一件 430→502 不降）。
+# --- 场景4x: 409 同名半截件 → **跳过同法重跑，直接换方法**（2026-11-22 语义）---
+#   演进: ① 旧实现 comm -23 把名字在目标端的失败件当"已落盘"剔除（永不修复）；
+#   ② 2026-11-20 修为"无条件保留进串行重试"（44990753474 实证仍零收敛: 同一文件
+#      一轮重试 4 次、每次传 2~3GiB 才撞 409，白烧预算）；
+#   ③ 本版: unchunked simple update failed: Conflict: 409 = "同名已存在"，同法
+#      重跑**必然**再被拒 ⇒ 不进串行重试，直接进顽固 → 修复管线换方法。
 setup
 BC_DEST="openlist:wopan176Crypt/0"
 cat > "$LOG" <<'EOF'
@@ -256,22 +258,34 @@ INFO  : ok/file1.mp4: Copied (new)
 INFO  : ghost/file2.mp4: Copied (new)
 ERROR : sub/conflict.mp4: Failed to copy: unchunked simple update failed: Conflict: 409 Conflict
 EOF
-# 目标端**三个名字都在**（含 409 半截件的名字——旧代码看不见它的原因）
 printf 'ok/file1.mp4\nsub/conflict.mp4\nghost/file2.mp4\n' > "$LSF_OUT"
-# 复核真值（LSF_OUT2 空 → 回落到 LSF_OUT）同样三个名字都在
-# 串行重试: ghost/file2 成功，sub/conflict 仍 409 失败
-printf 'sub/conflict.mp4\n' > /tmp/bc_retry_fail_list
-RETRY_FAIL_LIST="/tmp/bc_retry_fail_list"
 OUT=$(run_consolidate 0 "$LOG")
-[ "$(calls /tmp/bc_copy_calls)" = "1" ] && ok "4x-a 同名存在的失败件仍触发串行重试" || bad "4x-a: copy=$(calls /tmp/bc_copy_calls)"
-diff <(sort /tmp/bc_files_from 2>/dev/null) <(printf 'sub/conflict.mp4\n') >/dev/null 2>&1 \
-  && ok "4x-b 重试清单含同名存在的失败件（ghost 已在真值中故不再重试）" || bad "4x-b: $(cat /tmp/bc_files_from 2>/dev/null | tr '\n' ' ')"
-echo "$OUT" | grep -q "同名存在" && ok "4x-c 打出 409 半截件形态提示（可观测）" || bad "4x-c: $OUT"
-echo "$OUT" | grep -q "1 个顽固缺失" && ok "4x-d 重试仍 409 → 顽固缺失 1（旧代码此处为 0）" || bad "4x-d: $OUT"
+[ "$(calls /tmp/bc_copy_calls)" = "0" ] && ok "4x-a 确定性 409 不再同法重跑（省下整段上传带宽）" || bad "4x-a: copy=$(calls /tmp/bc_copy_calls)"
+echo "$OUT" | grep -q "确定性拒收" && ok "4x-b 打出确定性拒收提示" || bad "4x-b: $OUT"
+echo "$OUT" | grep -q "1 个顽固缺失" && ok "4x-d 顽固缺失 1（直接进换方法通道）" || bad "4x-d: $OUT"
 [ "$(calls /tmp/bc_fixpipe_calls)" = "1" ] && ok "4x-e 转修复管线（换方法兜底可达）" || bad "4x-e: fixpipe=$(calls /tmp/bc_fixpipe_calls)"
 _ovf="$(cat /tmp/bc_fixpipe_override 2>/dev/null)"
 [ -n "$_ovf" ] && grep -qF "sub/conflict.mp4" "$_ovf" 2>/dev/null \
   && ok "4x-f 修复清单含该 409 件" || bad "4x-f: override=$_ovf ($(cat "$_ovf" 2>/dev/null | tr '\n' ' '))"
+
+# --- 场景4y: 405 Method Not Allowed（后端全拒）**不能**被误当确定性拒收 ---
+#   405 = 后端整体拒收的证据，必须保留串行重试 + 全拒判死。
+setup
+BC_DEST="openlist:wopan175/0/j-pornhub-favorites"
+cat > "$LOG" <<'EOF'
+INFO  : ok/file1.mp4: Copied (new)
+ERROR : bad/f1.mp4: Failed to copy: unchunked simple update failed: Method Not Allowed: 405 Method Not Allowed
+ERROR : bad/f2.mp4: Failed to copy: unchunked simple update failed: Method Not Allowed: 405 Method Not Allowed
+ERROR : bad/f3.mp4: Failed to copy: unchunked simple update failed: Method Not Allowed: 405 Method Not Allowed
+ERROR : bad/f4.mp4: Failed to copy: unchunked simple update failed: Method Not Allowed: 405 Method Not Allowed
+EOF
+printf 'other/old.mp4\n' > "$LSF_OUT"
+RETRY_COPY_OK=0
+PROBE_RC=1
+OUT=$(run_consolidate 0 "$LOG")
+[ "$(calls /tmp/bc_copy_calls)" = "1" ] && ok "4y-a 405 仍进串行重试（不被当确定性拒收跳过）" || bad "4y-a: copy=$(calls /tmp/bc_copy_calls)"
+cat /tmp/bc_backend_dead 2>/dev/null | grep -q "^1$" && ok "4y-b 405 仍触发后端全拒判死" || bad "4y-b: dead=$(cat /tmp/bc_backend_dead 2>/dev/null)"
+[ ! -s "$BC_DIR/failed_norety_0.txt" ] && ok "4y-c 405 不进确定性拒收清单（清单为空）" || bad "4y-c 405 被误收进确定性拒收: $(cat "$BC_DIR/failed_norety_0.txt" 2>/dev/null | tr '\n' ' ')"
 RETRY_FAIL_LIST=""
 
 # --- 场景5: 容器重启失败 → 跳过校验 ---

@@ -2361,17 +2361,32 @@ _batch_consolidate() {
     sed -E 's/^.*ERROR : //; s/: Failed to copy.*$//' | sort -u > "$failed_set"
   cat "$copied_set" "$failed_set" | sort -u > "$touched"
 
+  # ===== 确定性拒收：不进"同法重跑"（2026-11-22 加，生产实证 run 44990753474）=====
+  # `unchunked simple update failed: Conflict: 409` = 115 后端拒绝**更新已存在的
+  #   同名对象**。对同一目标路径重跑**同一种** copyto 必然再被拒 —— 实测同一文件
+  #   一轮被重试 4 次（06:30/06:36/06:43/06:52），每次先把 2~3 GiB 传上去才撞回
+  #   409，纯属白烧预算（这是"传输量看着很大、净落盘却是 0"的成因）。故这类文件
+  #   **不进串行重试**，直接进顽固清单 → 修复管线换方法
+  #   （短哈希/base64/分卷 才是能绕开"同名已存在"前提的那几条路）。
+  # ⚠️ 只认 `Conflict: 409` 这一种。**不能**把 `unchunked simple update failed:
+  #   Method Not Allowed`（HTTP 405，wopan 写入全拒的包装形态）算进来 —— 那是
+  #   "后端整体拒收"的证据，必须保留串行重试与全拒判死。
+  local failed_norety="${batch_dir}/failed_norety_${batch_idx}.txt"
+  grep -E 'ERROR : .+: Failed to copy: (unchunked|unchanged) simple update failed: (Conflict: )?409' "$batch_log" 2>/dev/null | \
+    grep -Ev 'object not found' | \
+    sed -E 's/^.*ERROR : //; s/: Failed to copy.*$//' | sort -u > "$failed_norety"
+
   # 重试清单 = ① Copied 但真值清单里没有（假成功）∪ ② Failed to copy（真失败）
-  # ⚠️ ② 必须**无条件**保留（2026-11-20 修；8e6c7ff 实证 409 唯一件 430→502 不降）:
-  #   旧实现把两类合并成一个 touched 再 `comm -23 touched dest_truth` —— 而 115
-  #   后端 409 死锁件的**名字在目标端是存在的**（历史上传坏的半截件，尺寸不符）
-  #   ⇒ 被 comm 当成"已落盘"剔除 ⇒ 永不重试、也永不进修复管线 ⇒ 4 种换方法兜底
-  #   （含 57365f0 的删坏件重传）全不可达。rclone 在 --size-only 下只在"尺寸不符"
-  #   时才尝试传输，故 "Failed to copy" 本身就证明目标端那份不是最新 ⇒ 必须重试。
+  # ⚠️ ② 无条件保留（2026-11-20 修）: 115 后端 409 死锁件的**名字在目标端存在**
+  #   （历史上传坏的半截件、尺寸不符），旧 `comm -23 touched dest_truth` 会把它当
+  #   "已落盘"剔除 ⇒ 永不进修复管线。rclone --size-only 下 "Failed to copy"
+  #   本身就证明目标端那份不是最新 ⇒ 必须处理。
+  # 例外: failed_norety 里的确定性拒收件不进重试（同法重跑必败），
+  #   它们的去处是下面的顽固清单 → 修复管线换方法。
   local retry_list="${batch_dir}/retry_${batch_idx}.txt"
   {
     comm -23 "$copied_set" "$dest_truth"
-    cat "$failed_set"
+    comm -23 "$failed_set" "$failed_norety"
   } | sort -u > "$retry_list"
 
   # 可观测: 有多少失败件的名字其实在目标端存在（= 409 半截件形态，旧代码会漏掉）
@@ -2382,16 +2397,26 @@ _batch_consolidate() {
     echo "${label} 巩固: ${_shadow_n} 个失败件在目标端**同名存在**（409 半截件形态）→ 保留进重试/修复清单"
   fi
 
-  local missing_n=0
+  local missing_n=0 norety_n=0
   missing_n=$(wc -l < "$retry_list" | tr -d ' ')
-  if [ "$missing_n" -eq 0 ]; then
+  norety_n=$(wc -l < "$failed_norety" | tr -d ' ')
+  [[ "$missing_n" =~ ^[0-9]+$ ]] || missing_n=0
+  [[ "$norety_n" =~ ^[0-9]+$ ]] || norety_n=0
+  # 两者都空才算"本批全部真实落盘"。只看 retry_list 会把"全是确定性 409、
+  # 同法重跑无意义"的批次误报成成功并直接 return ⇒ 那些文件连修复管线都进不去。
+  if [ "$missing_n" -eq 0 ] && [ "$norety_n" -eq 0 ]; then
     echo "✅ ${label} 巩固: 本批 ${uploaded} 个传输全部真实落盘（重启后仍在）"
     return 0
   fi
 
-  CONSOLIDATE_MISSING=$missing_n
-  echo "⚠️ ${label} 巩固: ${missing_n} 个文件未落盘（假成功/失败），串行重试..."
-  progress_update "${label} 巩固: ${missing_n} 个未落盘，串行重试"
+  CONSOLIDATE_MISSING=$(( missing_n + norety_n ))
+  if [ "$norety_n" -gt 0 ]; then
+    echo "⚠️ ${label} 巩固: ${norety_n} 个确定性拒收（unchunked simple update failed = 同名已存在）跳过同法重跑，直接换方法"
+  fi
+  if [ "$missing_n" -gt 0 ]; then
+    echo "⚠️ ${label} 巩固: ${missing_n} 个文件未落盘（假成功/失败），串行重试..."
+    progress_update "${label} 巩固: ${missing_n} 个未落盘，串行重试"
+  fi
 
   # 重启+列表校验耗时可能已使 wopan token 过期，重试前刷新驱动；
   # 重试本身可能长达数小时（29 GiB 重传 ~2.5h >> 5 分钟 token 窗口），
@@ -2411,23 +2436,29 @@ _batch_consolidate() {
   set +e
   # 容器共享锁（与并行 worker 的传输窗口互斥容器重启，见 openlist_driver.sh）
   _ol_lock_shared
-  ${_r_to} rclone copy "$source_path" "$dest_path" \
-    --files-from "$retry_list" \
-    --size-only \
-    --no-traverse \
-    --transfers "$( [[ "$dest_path" == openlist:* ]] && echo "${OPENLIST_TRANSFERS:-6}" || echo "${RCLONE_TRANSFERS:-6}" )" \
-    --checkers "${OPENLIST_CHECKERS:-8}" \
-    --timeout 30m \
-    --retries "${OPENLIST_RETRIES:-3}" \
-    --low-level-retries "${OPENLIST_LOW_LEVEL_RETRIES:-5}" \
-    --contimeout 30s \
-    --ignore-errors \
-    --progress \
-    --stats 15s \
-    --stats-one-line \
-    --verbose \
-    "${extra_args[@]}" \
-    2>&1 | tee "$retry_log"
+  if [ "$missing_n" -gt 0 ]; then
+    ${_r_to} rclone copy "$source_path" "$dest_path" \
+      --files-from "$retry_list" \
+      --size-only \
+      --no-traverse \
+      --transfers "$( [[ "$dest_path" == openlist:* ]] && echo "${OPENLIST_TRANSFERS:-6}" || echo "${RCLONE_TRANSFERS:-6}" )" \
+      --checkers "${OPENLIST_CHECKERS:-8}" \
+      --timeout 30m \
+      --retries "${OPENLIST_RETRIES:-3}" \
+      --low-level-retries "${OPENLIST_LOW_LEVEL_RETRIES:-5}" \
+      --contimeout 30s \
+      --ignore-errors \
+      --progress \
+      --stats 15s \
+      --stats-one-line \
+      --verbose \
+      "${extra_args[@]}" \
+      2>&1 | tee "$retry_log"
+  else
+    # 本批失败件全是确定性拒收（同名已存在），同法重跑只会再传一遍再撞 409
+    echo "${label} 巩固: 跳过串行重试（${norety_n} 个均为确定性拒收，直接交修复管线换方法）"
+    : > "$retry_log"
+  fi
   _ol_lock_shared_release
   set -e
   _stop_token_refresher
@@ -2468,20 +2499,21 @@ _batch_consolidate() {
         {
           comm -23 "$retry_list" "$truth2"
           cat "$retry_failed"
+          cat "$failed_norety"
         } | sort -u > "$stubborn"
       else
         echo "⚠️ ${label} 巩固: 复核列表获取失败，重试清单全部转交修复管线（宁重复勿遗漏）"
-        cp "$retry_list" "$stubborn"
+        { cat "$retry_list"; cat "$failed_norety"; } | sort -u > "$stubborn"
         _truth_confirmed=0
       fi
     else
       echo "⚠️ ${label} 巩固: 复核重启失败，重试清单全部转交修复管线（宁重复勿遗漏）"
-      cp "$retry_list" "$stubborn"
+      { cat "$retry_list"; cat "$failed_norety"; } | sort -u > "$stubborn"
       _truth_confirmed=0
     fi
   else
-    # 一个都没重传成功 → 全部是顽固缺失
-    cp "$retry_list" "$stubborn"
+    # 一个都没重传成功 → 全部是顽固缺失（未重试的确定性拒收件同样要交修复管线）
+    { cat "$retry_list"; cat "$failed_norety"; } | sort -u > "$stubborn"
   fi
 
   local stubborn_n=0
@@ -2490,6 +2522,19 @@ _batch_consolidate() {
   if [ "$stubborn_n" -eq 0 ]; then
     echo "✅ ${label} 巩固: 重试后顽固缺失 0 个，本批全部真实落盘"
     return 0
+  fi
+
+  # 「后端写入全拒」判据专用计数（2026-11-22 加）:
+  #   确定性拒收（同名已存在）是**内容级**拒绝，不是"后端写不进"的证据 ——
+  #   后端对**新**文件明明能写。若把它们留在分子/分母里，一批"全撞同名冲突"
+  #   的文件会让 stubborn_n >= touched_n 成立，把可写后端误判为死（并经 F6
+  #   写进 backend_dead.json 整轮跳过）。故剔除。
+  local _stub_transport_n=$stubborn_n _touched_transport_n=$touched_n
+  if [ -s "$failed_norety" ]; then
+    _stub_transport_n=$(comm -23 <(sort -u "$stubborn") <(sort -u "$failed_norety") 2>/dev/null | wc -l | tr -d ' ')
+    _touched_transport_n=$(comm -23 <(sort -u "$touched") <(sort -u "$failed_norety") 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$_stub_transport_n" =~ ^[0-9]+$ ]] || _stub_transport_n=$stubborn_n
+    [[ "$_touched_transport_n" =~ ^[0-9]+$ ]] || _touched_transport_n=$touched_n
   fi
 
   # ===== 后端写入全拒检测（中止剩余批次，止损）=====
@@ -2524,7 +2569,7 @@ _batch_consolidate() {
     fi
   fi
 
-  if [ "$_judge_dead" -eq 1 ] && [ "$_truth_confirmed" -eq 1 ] && [ "$stubborn_n" -ge 3 ] && [ "$touched_n" -gt 0 ] && [ "$stubborn_n" -ge "$touched_n" ]; then
+  if [ "$_judge_dead" -eq 1 ] && [ "$_truth_confirmed" -eq 1 ] && [ "$_stub_transport_n" -ge 3 ] && [ "$_touched_transport_n" -gt 0 ] && [ "$_stub_transport_n" -ge "$_touched_transport_n" ]; then
     # ===== 判死前最后一道反证: 真写一次探针（2026-11-05 加）=====
     # run 41892829794 实证: `重传 9/9` 后 141s 复核仍报 9/9 全缺（判死、中止 14 批），
     # 而修复管线在判死后 **26s** 就把同样 9 个文件全部落盘成功 —— 后端完全可写。
@@ -2554,7 +2599,7 @@ _batch_consolidate() {
     fi
   fi
 
-  if [ "$_judge_dead" -eq 1 ] && [ "$_truth_confirmed" -eq 1 ] && [ "$stubborn_n" -ge 3 ] && [ "$touched_n" -gt 0 ] && [ "$stubborn_n" -ge "$touched_n" ]; then
+  if [ "$_judge_dead" -eq 1 ] && [ "$_truth_confirmed" -eq 1 ] && [ "$_stub_transport_n" -ge 3 ] && [ "$_touched_transport_n" -gt 0 ] && [ "$_stub_transport_n" -ge "$_touched_transport_n" ]; then
     BATCH_BACKEND_DEAD=1
     # 同时置 SYNC_BACKEND_DEAD: 这是全库可信度最高的"后端本轮不可写"证据
     # （容器重启后复核，本批触碰文件 100% 未落盘），比入口写探针更硬——run
@@ -2566,7 +2611,7 @@ _batch_consolidate() {
     SYNC_BACKEND_DEAD=1
     # 强证据（容器重启后复核、触碰文件 100% 未落盘）⇒ 允许跨轮持久化（F6）
     SYNC_BACKEND_DEAD_STRONG=1
-    echo "🛑 ${label} 巩固: 后端写入全拒（${stubborn_n}/${touched_n} 个触碰文件经复核全部未落盘）→ 已请求中止剩余批次"
+    echo "🛑 ${label} 巩固: 后端写入全拒（${_stub_transport_n}/${_touched_transport_n} 个触碰文件经复核全部未落盘；已剔除 ${norety_n} 个确定性拒收）→ 已请求中止剩余批次"
   fi
 
   echo "⚠️ ${label} 巩固: ${stubborn_n} 个顽固缺失（后端内容性拒收，如密文名超长），转修复管线换方法落盘..."
