@@ -119,11 +119,15 @@ _v=$(_budget_slice_seconds)
   || bad "C3 期望60 实得 [${_v:-空}]"
 # 份额比全局预算更**远**时，由全局预算决定（份额只是上界，不是放大系数）
 OPENLIST_PAIR_DEADLINE_EPOCH=$(( OPENLIST_SYNC_DEADLINE_EPOCH + 5000 ))
-_v=$(_budget_slice_seconds)
+# ⚠️ 先算基准再算被测值，并留 2s 容差（2026-11-25 修）: 两个 $(date +%s) 之间
+#   跨过秒边界时，先取值的那个会大 1 ⇒ 严格 `_v <= _u` 会以 1 秒之差偶发假红
+#   （实测 "期望≈16299 实得 [16300]"，重跑即绿）。这是测试的时序竞态，
+#   不是被测逻辑错误 —— 契约是"不放大份额"，1s 抖动不属违约。
 _u=$(( OPENLIST_SYNC_DEADLINE_EPOCH - $(date +%s) - OPENLIST_BATCH_TAIL_RESERVE ))
-[ "$_v" -gt 15500 ] && [ "$_v" -le "$_u" ] \
+_v=$(_budget_slice_seconds)
+[ "$_v" -gt 15500 ] && [ "$_v" -le $(( _u + 2 )) ] \
   && ok "C4 份额比全局更远 → 仍按全局预算给（${_v}s），份额不放大" \
-  || bad "C4 期望≈${_u} 实得 [${_v:-空}]"
+  || bad "C4 期望≈${_u}(+2) 实得 [${_v:-空}]"
 unset OPENLIST_PAIR_DEADLINE_EPOCH OPENLIST_SYNC_DEADLINE_EPOCH
 
 # ================= D. 到点交棒的状态判定 =================
