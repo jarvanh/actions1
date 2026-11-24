@@ -5237,7 +5237,6 @@ jobs:
               OmniRoute|OmniRoute.tar.gz)       echo "OmniRoute" ;;
               rsstt|rsstt.tar.gz)               echo "rss-to-telegram" ;;
               zcode2api-data.tar.gz)            echo "zcode2api 数据" ;;
-              actions.tar.gz)                  echo "actions 仓库" ;;
               *)                                echo "$1" ;;
             esac
           }
@@ -5647,18 +5646,13 @@ jobs:
             esac
           }
 
-          run_repo_archive() {
-            # 7. actions 仓库全量快照（代码 + Secrets + 迁移说明）
-            # 由「Snapshot actions repository」步骤提前打包到 /tmp；这里只负责
-            # 按最终归档的统一口径上传与记结果。快照步骤失败/未跑时如实记失败，
-            # 不阻塞其他归档对象（各对象隔离）。
-            # 2026-11-22：Snapshot 步骤已移除（整份 Secrets 经 env 注入的写法会让
-            # API/gh 派发的 run 卡 action_required，交接链全断）。Dropbox 上
-            # 2026-11-22 19:39 的 actions.tar.gz（50 项 Secrets）为最后一份快照，
-            # 迁移直接用它；需要刷新时手动跑 actions-archive.yml（不受此影响）。
-            echo "⏭️ actions 仓库快照步骤已移除（2026-11-22），跳过上传"
-            record_archive_result "actions.tar.gz" skip 0 "快照步骤已移除（防 action_required）"
-          }
+          # 2026-11-22：actions 仓库快照（actions.tar.gz）已退出最终归档对象清单 ——
+          # 「Snapshot actions repository」步骤已移除（整份 Secrets 经 env 注入的写法会让
+          # API/gh 派发的 run 卡 action_required，交接链全断）。Dropbox 上 2026-11-22 19:39
+          # 的 actions.tar.gz（50 项 Secrets）为最后一份快照，迁移直接用它；需要刷新时
+          # 手动跑 actions-archive.yml（不受此影响）。
+          # 2026-11-24：不再 record_archive_result 记「跳过」——它会进归档明细、把
+          # 「成功 N · 跳过 1」写进通知，还让交接轮的成功备份绕开降噪（skip_n>0 必发）。
 
           run_rsstt_archive() {
             # 6. rss-to-telegram 数据
@@ -5713,8 +5707,7 @@ jobs:
           run_zcode_archive & _arc_pid_zcode=$!
           run_aigateway_archive & _arc_pid_aigw=$!
           run_rsstt_archive & _arc_pid_rsstt=$!
-          run_repo_archive & _arc_pid_repo=$!
-          echo "🚀 归档并行开跑（zcode pid ${_arc_pid_zcode} / AI 网关 pid ${_arc_pid_aigw} / rsstt pid ${_arc_pid_rsstt} / actions 仓库 pid ${_arc_pid_repo}）"
+          echo "🚀 归档并行开跑（zcode pid ${_arc_pid_zcode} / AI 网关 pid ${_arc_pid_aigw} / rsstt pid ${_arc_pid_rsstt}）"
 
           # 汇合两路后台归档（子 shell 内失败已各自记结果 + 告警，这里只等齐）。
           # wait 的非零退出在 set -e 下以 || 兜住：单路失败不影响本 step 继续收尾。
@@ -5752,8 +5745,7 @@ jobs:
           wait "$_arc_pid_zcode" || echo "⚠️ zcode 归档后台任务退出码非零（明细见上方分支日志）"
           wait "$_arc_pid_aigw"  || echo "⚠️ AI 网关归档后台任务退出码非零（明细见上方分支日志）"
           wait "$_arc_pid_rsstt" || echo "⚠️ rsstt 归档后台任务退出码非零（明细见上方分支日志）"
-          wait "$_arc_pid_repo"  || echo "⚠️ actions 仓库归档后台任务退出码非零（明细见上方分支日志）"
-          echo "✅ 阶段A归档汇合完成（主包+zcode+OmniRoute+rsstt+actions；网关已于 2.5 停止）"
+          echo "✅ 阶段A归档汇合完成（主包+zcode+OmniRoute+rsstt；网关已于 2.5 停止）"
           # ── 2026-10-29 A1b（主人拍板）：渠道停止收口 —— OmniRoute 先停，上游网关随后 ──
           # 2026-11-02 A1 反转后口径：聊天网关已在 2.5 停止，阶段A期间在线的只剩上游
           # 渠道（对归档无影响）。此处 OmniRoute 先停 → 上游并行停，收干净渠道后结束

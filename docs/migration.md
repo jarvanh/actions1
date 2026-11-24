@@ -2,8 +2,10 @@
 
 > 适用场景：把 `jarvanh/actions` 整体迁移到新的 GitHub 账号/组织（或从本归档冷启动一套等价环境）。
 >
-> 归档对象：`dropbox:self-hosted/actions.tar.gz`，由 `openclaw.yml` 的
-> 「Stop OpenClaw and Final Archive」步骤在每次最终归档时生成/覆盖。
+> 归档对象：`dropbox:self-hosted/actions.tar.gz`。2026-11-22 起 `openclaw.yml`
+> 不再每轮生成/覆盖该包（「Snapshot actions repository」步骤已移除，防 action_required）；
+> Dropbox 上 **2026-11-22 19:39 的版本为最后一版**，迁移直接用它；需要刷新时手动跑
+> `actions-archive.yml`。
 >
 > 本说明是迁移流程的**唯一入口**；各子系统的实现细节仍以 `docs/openclaw.md`、
 > `docs/emby.md` 等专项文档为准。
@@ -215,7 +217,7 @@ ZCODE_GATEWAY_API_KEY
    - [ ] `Run OpenClaw` 后 `http://127.0.0.1:18789/health` 返回 200；
    - [ ] Tailscale 入口 `ssh runner@openclaw` 可连；
    - [ ] Telegram 收到「OpenClaw 已就绪」通知；
-   - [ ] `Keep alive` 到期后能进入最终归档并上传 `actions.tar.gz`；
+   - [ ] `actions-archive.yml` 手动跑一次，能生成并上传 `actions.tar.gz`（含最新 Secrets）；
    - [ ] `Trigger next OpenClaw run` 能触发下一轮（说明 `actions: write` 生效）。
 
 ---
