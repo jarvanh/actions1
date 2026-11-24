@@ -63,11 +63,14 @@ jobs:
       # 2026-11-11：workflow_dispatch 的 startup_mode 可覆盖本变量（auto 时仍读变量）：
       #   traditional → 强制 0（本轮只走传统收尾）；handoff → 强制 1（定点验证交接）。
       OPENCLAW_HANDOFF: ${{ inputs.startup_mode == 'traditional' && '0' || (inputs.startup_mode == 'handoff' && '1' || vars.OPENCLAW_HANDOFF) }}
-      # 2026-11-10：AI 提前快照子开关（默认关）。实测：交出瞬间停 AI 栈再打包要
-      # ~8min，模型通道反而比「AI 栈保持在线到归档后」（~213s）更慢 —— 这是回归。
-      # 默认关 = AI 栈照旧在线，继任者等 archives_done 起模型（基线时序）；
-      # 设 1 = 启用交出瞬间快照（仅在确认快照足够快时才开）。
-      OPENCLAW_AI_EARLY: ${{ vars.OPENCLAW_AI_EARLY }}
+      # AI 提前快照子开关（2026-11-10 引入时默认关：当时 VACUUM 打包 ~8min，
+      # 反而比「AI 栈在线到归档后」慢；Phase 2b 裸卷 dump 只要 10-20s 后该前提
+      # 已反转，实测启用 196s / 未启用 258s（2026-11-24）。
+      # 2026-11-24 事故：仓库迁移到 actions1 时该 variable 丢失 → 未设即关 →
+      # cutover 跳过 ai-archives → 无 dump.rc → 快路径每轮必失败回落 Dropbox，
+      # 且 ai.json marker 不写、旧轮白等 180s。
+      # 故默认改为开（显式设 0 仍可作 kill switch）。
+      OPENCLAW_AI_EARLY: ${{ vars.OPENCLAW_AI_EARLY || '1' }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
       # Tailscale API access token（tskey-api-*）：具备 devices 读写权限，用于
