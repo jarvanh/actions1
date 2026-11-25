@@ -121,5 +121,28 @@ else
   ok "E2 PERSIST_BEFORE 变量已清除"
 fi
 
+# ===== F. 探针不得泄漏临时文件 / 不得用 echo 解析（2026-11-25）=====
+PIPE2="$_REPO_ROOT/.github/scripts/openlist/file_fix_pipeline.sh"
+# 取 _persist_probe_file 函数体
+BODY=$(awk '/^_persist_probe_file\(\)/,/^}/' "$PIPE2")
+[ -n "$BODY" ] && ok "F1 取到探针函数体" || bad "F1 探针函数体为空"
+# rm 必须无条件出现在函数末尾（不在某个 if 分支里）
+last_rm=$(printf '%s' "$BODY" | grep -n 'rm -f "\$_errf"' | tail -1 | cut -d: -f1)
+total=$(printf '%s' "$BODY" | wc -l)
+if [ -n "$last_rm" ] && [ "$last_rm" -gt $(( total - 5 )) ]; then
+  ok "F2 rm 在函数尾部（提前 break 也会执行）"
+else
+  bad "F2 rm 不在尾部（提前 return/break 会漏删）"
+fi
+# 不得在函数体里出现提前 return（只能有末尾一个 return 0）
+rnum=$(printf '%s' "$BODY" | grep -vE '^[[:space:]]*#' | grep -cE '^[[:space:]]*return 0[[:space:]]*$')
+[ "$rnum" = "1" ] && ok "F3 只有末尾一处 return（无提前返回）" || bad "F3 return 数=$rnum（期望 1，提前返回会漏删）"
+# 解析必须用 printf，不得用 echo 拼管道
+if printf '%s' "$BODY" | grep -q 'echo "\$out" | awk'; then
+  bad "F4 仍用 echo 解析（反斜杠文件名可能被解释）"
+else
+  ok "F4 解析走 printf（不会被转义解释）"
+fi
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

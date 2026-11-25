@@ -203,23 +203,29 @@ _persist_probe_file() {
   local _sleep="${OPENLIST_PERSIST_PROBE_RETRY_SLEEP:-5}"
   [[ "$_sleep" =~ ^[0-9]+$ ]] || _sleep=5
   local i out rc sz _errf="/tmp/ol_probe_err_${BASHPID:-$$}.txt"
+  # 一次性探测: 结果经全局回传，避免在循环内提前 return 时漏删临时文件
+  #   （2026-11-25 修: 原实现在两处 `return 0` 前没有 rm，逐条复核 400+ 文件会留下
+  #    同样数量的 /tmp 残留；虽然 /tmp 通常会清，但 runner 上一轮可能跑数小时，
+  #    400+ 个小文件不致命却也没有理由留下）
+  local _p_result="U"
   for ((i = 1; i <= tries; i++)); do
     out=$(rclone lsf "$parent" --files-only --format "ps" --separator ";" 2>"$_errf")
     rc=$?
     if [ "$rc" -eq 0 ]; then
-      sz=$(echo "$out" | awk -v FS=';' -v bn="$base" '$1==bn{print $2; exit}')
+      # printf 而非 echo: 文件名可能含反斜杠，echo 在部分实现下会解释转义
+      sz=$(printf '%s\n' "$out" | awk -v FS=';' -v bn="$base" '$1==bn{print $2; exit}')
       # 名字命中但大小为空的极少数格式异常也按未知处理，绝不当 0
-      if [ -n "$sz" ]; then echo "S:$sz"; else echo "M"; fi
-      return 0
+      if [ -n "$sz" ]; then _p_result="S:$sz"; else _p_result="M"; fi
+      break
     fi
     # "directory not found" 是 rclone 的**确定性**答复 ⇒ 落点目录根本不存在（=M）
     if grep -qiE 'directory not found|not found|couldn.t find|does not exist' "$_errf" 2>/dev/null; then
-      echo "M"; return 0
+      _p_result="M"; break
     fi
     [ "$i" -lt "$tries" ] && sleep "$_sleep"
   done
   rm -f "$_errf" 2>/dev/null || true
-  echo "U"
+  printf '%s' "$_p_result"
   return 0
 }
 
