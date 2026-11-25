@@ -89,7 +89,15 @@ fi
 # = 公网入口缺失，先调 tunnels.sh ensure 自愈一次，仍缺失才告警。
 if [ "$boot_age_min" -ge 40 ]; then
   tun_sh=""
-  for cand in "${GITHUB_WORKSPACE:-}" "$HOME/ar6" "$HOME"/*; do
+  # 候选路径（2026-11-25 修）：仓库 actions→actions1 改名后，原 "$HOME/ar6" 已失效，
+  # "$HOME"/* 只展开一级目录（匹配不到 work/actions1/actions1）→ 定时器上下文
+  # （无 GITHUB_WORKSPACE）整段反向核对静默跳过。实测 2026-11-25 轮换后
+  # cftun-syncthing 缺失 2h+ 而本脚本连续 fails=0（盲区实锤）。
+  # 现补 work/*/* 通配与 ~/.openclaw/dsh/repo 持久 clone（VM 轮换不清）。
+  for cand in "${GITHUB_WORKSPACE:-}" \
+              "$HOME"/work/*/* \
+              "$HOME/.openclaw/dsh/repo" \
+              "$HOME/ar6" "$HOME"/*; do
     [ -n "$cand" ] && [ -f "$cand/.github/scripts/tunnels/tunnels.sh" ] \
       && { tun_sh="$cand/.github/scripts/tunnels/tunnels.sh"; break; }
   done
@@ -179,7 +187,7 @@ if [ "$boot_age_min" -ge 40 ]; then
   # ~/.openclaw/bin）—— 定时器环境没有 GITHUB_WORKSPACE，只靠仓库路径会静默跳过。
   for cand in "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/full-ready.sh" \
               "${GITHUB_WORKSPACE:+$GITHUB_WORKSPACE/.github/scripts/handoff/full-ready.sh}" \
-              "$HOME/work/actions/actions/.github/scripts/handoff/full-ready.sh" \
+              "$HOME"/*/*/.github/scripts/handoff/full-ready.sh \
               "$HOME"/*/.github/scripts/handoff/full-ready.sh; do
     [ -n "$cand" ] && [ -f "$cand" ] && { fr="$cand"; break; }
   done
