@@ -1567,12 +1567,18 @@ _sync_fix_missing_files() {
       done < "$missing_list"
 
       # 名长诊断汇总（证实/证伪"密文文件名超长"假设的关键数据）
+      # ⚠️ 措辞修正（2026-11-25）: RAW_MAX 是「历史成功写入过的最长密文名」，不是
+      #   "后端能接受的上限" —— 样本偏差会让它偏小（实测 wopan176Crypt 后端只有 100B，
+      #   而该子树仍有 370 文件传不上）。因此两个计数都为 0 时，只能说"本轮缺失文件里
+      #   没测到密文名超限"，**不能**下"长度假设不成立、根因另有其因"这种结论；
+      #   否则会把排查引向错误方向。拉黑逻辑（>RAW_MAX 时跳过原名方法）是经验性提速，
+      #   不受本措辞影响，保持原样。
       if [ -n "${_CRYPT_ONTHEFLY:-}" ]; then
-        echo "名长诊断汇总: 密文名>255B 共 ${_NAMELEN_OVER_255} 个 / 超后端已接受最长(${_NAMELEN_RAW_MAX}B) 共 ${_NAMELEN_OVER_RAWMAX} 个" | tee -a "$LOG_FILENAME"
+        echo "名长诊断汇总: 密文名>255B 共 ${_NAMELEN_OVER_255} 个 / 超历史成功最长(${_NAMELEN_RAW_MAX}B，非后端上限) 共 ${_NAMELEN_OVER_RAWMAX} 个" | tee -a "$LOG_FILENAME"
         if [ "${_NAMELEN_OVER_RAWMAX:-0}" -gt 0 ]; then
-          echo "  → 长度假设成立: 缺失文件密文名超过后端实际接受上限，将由 $(_fix_method_desc zip_split_original) 兜底落盘" | tee -a "$LOG_FILENAME"
+          echo "  → 本轮有缺失文件密文名超过**历史成功最长** ⇒ 原名方法大概率被后端拒收，已跳过并直接试短哈希名（经验性提速；后端真实上限未知）" | tee -a "$LOG_FILENAME"
         elif [ "${_NAMELEN_OVER_255:-0}" -eq 0 ]; then
-          echo "  → 长度假设不成立: 缺失文件密文名均未超限，根因另有其因（看 $(_fix_method_desc copyto_original) 的真实报错）" | tee -a "$LOG_FILENAME"
+          echo "  → 本轮缺失文件密文名均未超 255B，也均≤历史成功最长 ${_NAMELEN_RAW_MAX}B —— 但这**不能排除**长度因素（历史样本可能偏小/后端上限可能更低），需结合 copyto_original 的真实报错与裸存储 409 签名综合判断" | tee -a "$LOG_FILENAME"
         fi
       fi
     fi
