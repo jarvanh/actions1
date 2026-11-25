@@ -339,7 +339,13 @@ jobs:
             _tier="alert"     # ❌ 备份失败 = 告警档
             tg_add_title msg "❌ GitHub 全仓库备份失败"
             if [ -n "${GITHUB_REPOS_FAILED:-}" ]; then
-              tg_add_note msg "失败仓库：${GITHUB_REPOS_FAILED}"
+              # 失败仓库清单走分节 + 树形条目（规范 · 分节/条目与树形/折叠行）：
+              # GITHUB_REPOS_FAILED 是空格分隔串，先拆行（tr）再交 tree_code_fold
+              # （裸文本输入 → 逐行转义 + <code> + 超 8 条折叠），规模与逐条仓库名都可见。
+              _failed_list=$(printf '%s' "${GITHUB_REPOS_FAILED}" | tr ' ' '\n')
+              _failed_n=$(printf '%s\n' "$_failed_list" | { grep -c . || true; })
+              tg_add_section msg "❌ 失败仓库 · ${_failed_n}"
+              tg_add_block msg "$(tree_code_fold "$_failed_list")"
             else
               tg_add_note msg "请前往 GitHub Actions 检查日志详情。"
             fi

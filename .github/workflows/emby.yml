@@ -344,11 +344,16 @@ jobs:
             PW_RAW_LEN=${#OPENLIST_PW}
             OPENLIST_PW=$(printf '%s' "$OPENLIST_PW" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
             rm -f /tmp/openlist-pw-note
+            # 密码来源（0=random 兜底 / 1=来自 secret）：reset 标记只对 secret 场景有意义。
+            # random 场景重置成功后必须保留 random 标记，否则凭据通知会谎称「已纠正回
+            # secret 值」而 secret 根本不存在（2026-11 审计）。
+            _pw_from_secret=1
             if [ -z "$OPENLIST_PW" ]; then
               # secret 为空 → 本轮随机密码：不通知用户就永远登不上 oe 后台。
               # 密码写入 /tmp 标记文件，由收尾步骤经 TG 私信告知（不落公开日志）。
               OPENLIST_PW=$(openssl rand -hex 16)
               printf '%s' "random:$OPENLIST_PW" > /tmp/openlist-pw-note
+              _pw_from_secret=0
               echo "OPENLIST_ADMIN_PASSWORD 未配置，本轮已随机生成管理员密码（TG 私信告知，不落公开日志）"
             fi
             [ "$PW_RAW_LEN" -ne "${#OPENLIST_PW}" ] && echo "OPENLIST_ADMIN_PASSWORD 含首尾空白（原长=$PW_RAW_LEN），已剔除——oe 人工登录失败多半是这个原因"
@@ -367,14 +372,23 @@ jobs:
               openlist admin set --data /opt/openlist "$OPENLIST_PW" >/dev/null 2>&1 \
                 || openlist admin set "$OPENLIST_PW" --data /opt/openlist >/dev/null 2>&1 \
                 || true
-              # 重置了就该让用户知道：否则 oe 后台手输旧密码必然 Invalid
-              printf '%s' "reset:$OPENLIST_PW" > /tmp/openlist-pw-note
-              echo "OpenList 库内密码与 secret 不一致，已重置为 secret 值（TG 私信告知，不落公开日志）"
+              # 重置了就该让用户知道：否则 oe 后台手输旧密码必然 Invalid。
+              # 只有密码本来自 secret 才写 reset 标记；random 兜底场景重置成功后保留原
+              # random 标记，凭据通知口径不变（不是「纠正回 secret」）。
+              if [ "$_pw_from_secret" -eq 1 ]; then
+                printf '%s' "reset:$OPENLIST_PW" > /tmp/openlist-pw-note
+                echo "OpenList 库内密码与 secret 不一致，已重置为 secret 值（TG 私信告知，不落公开日志）"
+              else
+                echo "已重置为随机密码（secret 未配置），凭据标记保持 random"
+              fi
               TOKEN=$(curl -s -X POST http://127.0.0.1:5244/api/auth/login \
                 -H 'Content-Type: application/json' \
                 -d "$LOGIN_BODY" | jq -r '.data.token // .data // empty' || true)
             fi
             if [ -z "$TOKEN" ]; then
+              # 重置后二次登录仍失败 = 登录态异常（admin set 可能未生效）：写 invalid 标记，
+              # 凭据通知如实报「重置未生效」，不再宣称已纠正；密码仍随私信告知本轮密码值。
+              printf '%s' "invalid:$OPENLIST_PW" > /tmp/openlist-pw-note
               echo "::warning::OpenList login failed, 302 链路将回退 direct"
               return 0
             fi
@@ -464,9 +478,10 @@ jobs:
           PW_KIND=$(cut -d: -f1 /tmp/openlist-pw-note)
           PW_VAL=$(cut -d: -f2- /tmp/openlist-pw-note)
           case "$PW_KIND" in
-            random) PW_DESC="OPENLIST_ADMIN_PASSWORD 未配置 · 异常兜底 · 本轮已随机生成";;
-            reset)  PW_DESC="库内密码与 secret 不一致 · 已纠正回 secret 值";;
-            *)      PW_DESC="已变更";;
+            random)  PW_DESC="OPENLIST_ADMIN_PASSWORD 未配置 · 异常兜底 · 本轮已随机生成";;
+            reset)   PW_DESC="库内密码与 secret 不一致 · 已纠正回 secret 值";;
+            invalid) PW_DESC="OpenList 登录态异常 · 本轮已尝试重置但仍未生效，请查看运行日志";;
+            *)       PW_DESC="已变更";;
           esac
           # secret 是唯一长期真相源：本条密码仅本轮有效（oe 后台人工改密在 token
           # 吊销后无法回传持久化，随 run 结束消失）
@@ -1509,7 +1524,7 @@ jobs:
             # 第 4 行：客户端。IP 来自 ge2o 访问日志（谁在播）
             IFS=$'\037' read -r cname dev <<<"$(client_meta "$iid")"
             # 字段序与 docs/emby.md「播放通知」示例一致：IP（谁）在前，客户端与设备在后
-            client=$(join_parts "$(escape_html "$cip")" "$(escape_html "$cname")" "$(escape_html "$dev")")
+            client=$(join_parts "<code>$(escape_html "$cip")</code>" "$(escape_html "$cname")" "$(escape_html "$dev")")
 
             # 第 5 行起：起播等待（KV 树，与测速四套「📍 测速点网络」同款，tree_lines 渲染）。
             # 按"点下播放之后谁先谁后"排：① 客户端到服务器（隧道）② Emby 读文件头 ③ 服务器取直链
@@ -2955,8 +2970,7 @@ jobs:
           msg=""
           tg_add_title msg "${STATUS_EMOJI} Emby 服务停止"
           tg_add_kv msg "状态" "${STATUS_CN}"
-          if [ -n "$FAIL_LOC" ]; then tg_add_kv msg "失败位置" "$FAIL_LOC"; fi
-          if [ -n "$FAIL_REASON" ]; then tg_add_kv msg "失败原因" "$FAIL_REASON"; fi
+          if [ -n "$FAIL_LOC" ]; then tg_add_path msg "失败位置" "$FAIL_LOC"; fi
           tg_add_kv msg "模式" "${MODE_DESC}"
           tg_add_kv msg "本轮直链" "$OD_SUMMARY"
           tg_add_kv msg "海报预热" "$WW_SUMMARY"
@@ -2966,6 +2980,10 @@ jobs:
           tg_add_kv msg "时间" "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M（东八区）')"
           # 说明行（tg_add_note，段前空行）：统计里的两个内部口径补一句人话
           if [ -n "$OD_NOTE" ]; then tg_add_note msg "$OD_NOTE"; fi
+          # 失败原因 = 原始异常串（机器值）→ <pre>（规范 · 取值行口径/多行块）：<pre> 是
+          # 正文最后一块、其后只跟 footer，故放全部 kv/说明行之后、收尾区之前。
+          # tg_add_pre/tg_add_block 不带段前空行，紧随 kv 行时手补一个（规范 · 空行的来源 3）。
+          if [ -n "$FAIL_REASON" ]; then tg_append msg $'\n'; tg_add_pre msg "$FAIL_REASON"; fi
           # 统一收尾区（⏱ 已运行 X · 🔗 运行日志；读 step env 的 TG_RUN_URL，时长走开机时刻兜底）
           tg_add_footer msg
           echo "TG(收尾): 已构建统一版式消息"

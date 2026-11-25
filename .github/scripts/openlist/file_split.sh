@@ -30,15 +30,19 @@ send_video_split_notification() {
   # 只保留给 log_fix 日志行 —— 两种口径各有用途，通知里不得出现日志口径
   file_size_human=$(format_bytes "$file_size")
 
-  local message=""
+  local message="" _tier=""
   if [ "$result" = "success" ]; then
     tg_add_title message "✅ 视频分割成功"
+    # ✅ 成功 → 普通档（规范 · 档位判定）
+    _tier=""
     tg_add_kv message "状态" "分割成功"
     tg_add_path message "文件" "$file_path"
     tg_add_kv message "原始大小" "$file_size_human"
     tg_add_kv message "分割数量" "${parts_count} 个部分"
   else
     tg_add_title message "❌ 视频分割失败"
+    # ❌ 失败 → alert（规范 · 档位判定）
+    _tier="alert"
     tg_add_kv message "状态" "分割失败"
     tg_add_path message "文件" "$file_path"
     tg_add_kv message "文件大小" "$file_size_human"
@@ -84,7 +88,8 @@ send_video_split_notification() {
   fi
 
   tg_add_footer message
-  send_telegram_message "$message"
+  # 档位按标题分支：❌ 失败 = alert、✅ 成功 = 普通
+  send_telegram_message "$message" HTML "$_tier"
 }
 
 # 发送非视频 7z 分卷通知到 Telegram
@@ -98,9 +103,11 @@ send_binary_split_notification() {
   local file_size_human
   # 通知走真源 format_bytes（同上，规范 · 大小）
   file_size_human=$(format_bytes "$file_size")
-  local message=""
+  local message="" _tier=""
   if [ "$result" = "success" ]; then
     tg_add_title message "✅ 7z 分卷成功"
+    # ✅ 成功 → 普通档（规范 · 档位判定）
+    _tier=""
     tg_add_kv message "状态" "分卷成功"
     tg_add_path message "文件" "$file_path"
     tg_add_kv message "原始大小" "$file_size_human"
@@ -112,6 +119,8 @@ send_binary_split_notification() {
     tg_add_pre message "7z x 文件名.7z.001"
   else
     tg_add_title message "❌ 7z 分卷失败"
+    # ❌ 失败 → alert（规范 · 档位判定）
+    _tier="alert"
     tg_add_kv message "状态" "分卷失败"
     tg_add_path message "文件" "$file_path"
     tg_add_kv message "文件大小" "$file_size_human"
@@ -126,7 +135,8 @@ send_binary_split_notification() {
     tg_add_pre message "$log_summary"
   fi
   tg_add_footer message
-  send_telegram_message "$message"
+  # 档位按标题分支：❌ 失败 = alert、✅ 成功 = 普通
+  send_telegram_message "$message" HTML "$_tier"
 }
 
 # 上传分割日志到 OneDrive（保留最近 10 份，自动清理旧日志）
@@ -646,8 +656,18 @@ preprocess_large_files() {
 
   # 发送处理总结通知
   if [ "$processed_count" -gt 0 ]; then
-    local summary_message=""
-    tg_add_title summary_message "📊 前置大文件处理总结"
+    local summary_message="" _summary_tier=""
+    # 标题与档位随结论降级（规范 · 结果通知 + 档位判定）：全失败 ❌ / 部分失败 ⚠️ 都需
+    # 人工补切 → alert；只有全部成功才保持 📊 与普通档
+    if [ "$failed_count" -gt 0 ] && [ "$success_count" -eq 0 ]; then
+      tg_add_title summary_message "❌ 前置大文件处理失败"
+      _summary_tier="alert"
+    elif [ "$failed_count" -gt 0 ]; then
+      tg_add_title summary_message "⚠️ 前置大文件处理部分失败"
+      _summary_tier="alert"
+    else
+      tg_add_title summary_message "📊 前置大文件处理总结"
+    fi
     tg_add_kv summary_message "任务" "$task_name"
     tg_add_kv summary_message "尝试处理" "$processed_count"
     tg_add_kv summary_message "处理成功" "$success_count"
@@ -666,7 +686,8 @@ preprocess_large_files() {
       tg_add_block summary_message "$(tree_fold "${failed_files%$'\n'}")"
     fi
     tg_add_footer summary_message
-    send_telegram_message "$summary_message"
+    # 档位按上面的标题分支（❌/⚠️ = alert，📊 = 普通）
+    send_telegram_message "$summary_message" HTML "$_summary_tier"
   fi
 
   rm -f "$video_split_log" 2>/dev/null || true

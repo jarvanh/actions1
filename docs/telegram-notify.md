@@ -9,6 +9,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 ```
 
 - 域级出口与默认档位：[`telegram-notify-registry.md`](telegram-notify-registry.md)（下称「台账」）。
+- 域 × 形态 × 档位一页总览：[`telegram-notify-catalog.md`](telegram-notify-catalog.md)（种类与结构速查）。
 - 函数签名与三套实现对照：`skills/telegram-notify-send/references/api-reference.md`。
 - 各域非显然的字段约定：跟域文档走（`openclaw.md` 九、`emby.md` 起播等待、`proxy-speedtest-*.md`、`self-retrigger.md`）。
 
@@ -112,7 +113,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 ```
 
 - 助手：`tg_add_kv`（值自动转义）。
-- 全角冒号；标签前不加 emoji（emoji 属于标题与分节）。
+- 全角冒号；标签前不加 emoji（emoji 属于标题与分节），**值内同样不前缀 emoji**——状态语义由标题承担，正文用文字（「结论：已跳过」而非「⚠️ 已跳过」）；唯一例外是说明段里的勾选型前缀（如审批卡的 ⏭️/⏳ 选项行）。
 - 一行多字段用 ` · ` 连接，并以全角冒号标签打头作锚点（`规格：` / `链路：`），
   避免无锚点的裸 ` · ` 串。
 
@@ -136,7 +137,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 - 助手：`tg_add_section`（段前自动空行；紧跟分隔线时自动不空行）。
 - **分节后跟条目列表时带计数 ` · N`**；后面是 kv 行、`<pre>` 或单段说明时可以不带。
-- 计数位置只放数字（或计数变量），不要写成「· 按大小前 5」这类夹杂说明的形式。
+- 计数位置只放数字（或计数变量），不要写成「· 按大小前 5」这类夹杂说明的形式；限定语（按大小前 N、含免费 K、略 K 无额度）下沉到说明段或条目元数据。
 - 反例：`❌ 失败清单`（后面 3 条条目却没有计数）。
 
 ### 2.5 条目与树形
@@ -233,7 +234,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 
 1. `tg_add_section` 段前
 2. `tg_add_note` 段前
-3. `tg_add_footer` 前
+3. `tg_add_footer` 前（`tg_add_block` / `tg_add_pre` 之后、紧随 `tg_add_section` / `tg_add_note` 时不要手补空行——助手自带段前空行，手补会叠成双空行；紧随 kv / path 行时才需要手补）
 4. 正文与动作行之间（调用方补，先判断是否已有尾换行）
 5. 多组列表的组与组之间（唯一允许手写的空行，**必须带条件**：只在前面已有组时补）
 
@@ -274,12 +275,12 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 case "$STATUS" in
   cancelled) tg_add_title msg "⛔ 任务已中断"
              tg_add_note  msg "任务被取消，数据未受影响；如需继续请重新运行。"
-             tg_add_footer msg; send_tg "$msg"; exit 0 ;;   # 提前返回，避免二次追加
-  success)   tg_add_title msg "✅ 备份成功"; tg_add_kv msg "状态" "完成" ;;
-  *)         tg_add_title msg "❌ 备份失败"; tg_add_kv msg "状态" "失败" ;;
+             tg_add_footer msg; send_tg "$msg" alert; exit 0 ;;   # ⛔ 中断属 alert；提前返回避免二次追加
+  success)   tg_add_title msg "✅ 备份成功"; _tier="" ;;
+  *)         tg_add_title msg "❌ 备份失败"; _tier="alert" ;;
 esac
 tg_add_footer msg
-send_tg "$msg" || echo "::warning::TG 通知发送失败（不影响任务）"
+send_tg "$msg" "$_tier" || echo "::warning::TG 通知发送失败（不影响任务）"
 ```
 
 ```
@@ -749,6 +750,8 @@ wb_notify() {                    # 函数体只用助手，不再 source
   推送」都不是 alert 的理由——那是运行日志或常态信息，不是警报；判据恒为「读者能不能
   据此行动」。
 
+  **本表是唯一口径，不设域级例外**：任何域要偏离，必须先改这里；台账只登记「该域哪些分支已显式声明」的现状，不创造例外（历史上的 iCloud 全普通例外已取消）。
+
 ### 6.1 全库 bot 分工（唯一口径）
 
 | 档位 | bot | 用途 |
@@ -823,3 +826,4 @@ bash skills/telegram-notify-audit/scripts/smoke_assets_bridge.sh
 - **面板**：需要 message_id 的原地刷新消息（openlist 进度面板）。
 - **结构性清单**：读者要逐条核对、折叠掉会造成误判的清单。
 - **硬约束**：不遵守会造成通知丢失或误判失败的规则（收尾区、接线、发送层、验证与交付）。
+- **档位分支声明**：同一发送点服务多结论时，在各分支赋 tier 变量再统一发送（`_tier="alert"` / `_tier=""`），不按标题字符串分诊。

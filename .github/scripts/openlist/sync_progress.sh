@@ -475,10 +475,9 @@ _progress_render() {
   # 条目却不列出的话，被打断的任务（如 wopan176Crypt/0）在消息里完全失踪;
   # 阶段/统计不展示（progress_finalize 已清空各槽位，属过期信息）
   if [ "$running" -gt 0 ]; then
-    local _running_title="📍 进行中 · ${running}"
-    # 规范：分节 emoji 用 🔄（finalize 后仍在跑 = 🔄；⏸️ 专用于收摊终态标题，分节不用）
-    [ "$finalized" -eq 1 ] && _running_title="🔄 进行中 · ${running}"
-    tg_add_section msg "$_running_title"
+    # 规范 · 进度面板（示例「🔄 进行中 · 2」）：进行中分节恒用 🔄（非终态也用）；
+    # ⏸️ 专用于收摊终态标题，分节不用
+    tg_add_section msg "🔄 进行中 · ${running}"
     tg_add_block msg "$(_progress_render_task_list "$running_lines")"
     # 「未执行完」是说明而不是计数的一部分（规范 · 分节：分节标题 = emoji 分节 · N），
     # 故下沉为说明段——与 规范 · 折叠行「缺失的目录 · 可能被删除 · N」的收敛方式同款

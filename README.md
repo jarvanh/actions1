@@ -25,6 +25,7 @@ proxy-speedtest/            测速结果数据
 | [`docs/telegram-notify.md`](docs/telegram-notify.md) | **Telegram 通知规范**（版式与发送规则的唯一真源：版式模板、收尾区、发送层硬约束、验证基线） |
 | [`docs/telegram-notify-registry.md`](docs/telegram-notify-registry.md) | **Telegram 通知台账**（域级出口与档位路由；不登记逐条通知，清单用 `list_notify.sh` 现场枚举） |
 | [`docs/telegram-notify-catalog.md`](docs/telegram-notify-catalog.md) | **Telegram 通知总览**（域 × 形态 × 档位一页看全；种类与结构，不含逐条清单） |
+| [`docs/telegram-notify-catalog.md`](docs/telegram-notify-catalog.md) | **Telegram 通知总览**（域 × 形态 × 档位一页看全；种类与结构，不含逐条清单） |
 | [`docs/emby.md`](docs/emby.md) | Emby 媒体服务器 + 302 直链子系统（架构、凭据体系、通知、排查手册） |
 | [`docs/openclaw.md`](docs/openclaw.md) | OpenClaw Runner：自愈五层机制 + 常驻服务（rss-to-telegram / AI 网关）+ Tailscale 远程入口 |
 | [`docs/migration.md`](docs/migration.md) | **全量迁移说明**：仓库代码 + Actions Secrets + Variables + Dropbox 归档的恢复顺序与验证清单 |
@@ -776,5 +777,5 @@ token 登录、marker、marker 打包备份（拒上传空包 / 只增不删 / �
 | 改通知排版 | 全库统一规范见 `docs/telegram-notify.md`；实现真源：bash `telegram/tg_notify.sh`、pwsh `telegram/tg_notify.ps1`（rdp / tailscale dot-source）、python 复用 `speedtest_common.py`；openlist 侧经 `load_all.sh` L0 层 source 真源，`openlist/telegram.sh` 只留进度面板函数 |
 | 改跳过提示（预览"预计跳过"/ 跳过通知"本次未传"） | `task_preview.sh` 的 `add_preview_pair`（pskip 列）· `flush_task_preview`（合计附注）· `_lookup_skipped_pending`（估算入口）+ `sync_marker.sh` 的 `send_sync_skipped` |
 | 改进度消息的阶段区（子目录树 / 文件批次的层级、缩进、统计字段） | `sync_progress.sh` 的 `_progress_render` + `task_engine.sh` 的 `_render_subdir_phase_tree` / `_render_batch_stats_line` |
-| 改收尾标题四态 | `sync_progress.sh` 的 `_progress_render` 终态分支（中断 / 有文件无法同步 / 带修复完成 / 完全完成，按严重度判定） |
+| 改收尾标题五态 | `sync_progress.sh` 的 `_progress_render` 终态分支（中断 / 收摊 / 有文件无法同步 / 带修复完成 / 完全完成，按严重度判定） |
 | 加新模块 | 新建 `<领域>_<职责>.sh` + 在 `load_all.sh` 对应层加一行 |

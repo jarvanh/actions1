@@ -191,6 +191,7 @@
     }
     Z2A_POOL_TITLE=""
     Z2A_POOL_TEXT=""
+    Z2A_POOL_NOTE=""
     # 池内「最近错误 = 连接失败」的条数（出口链路故障的判据，供失败分诊用）
     Z2A_POOL_ERR_NET=0
     z2a_collect_pool() {
@@ -211,10 +212,11 @@
       shown_active="$(printf '%s' "$pool_rows" | awk -F'\t' '$4=="active"' | grep -c . || true)"
       hidden_total="$(printf '%s' "$json" | jq -r '[.accounts[] | select((.quota // {} | length) == 0)] | length' 2>/dev/null || true)"
       # 标题计数用**已展示**的条目，避免「账号池 10」却只列 1 条的口径打架；
-      # 被略去的条数单独标出，主人仍知道池子里还有多少无额度账号。
+      # 分节计数位只放数字（规范 · 分节）；被略去的条数下沉为列表后的说明段。
       Z2A_POOL_TITLE="$(gw_pool_title "${shown_total}" "${shown_active}")"
+      Z2A_POOL_NOTE=""
       if [ "${hidden_total:-0}" -gt 0 ] 2>/dev/null; then
-        Z2A_POOL_TITLE="${Z2A_POOL_TITLE} · 略 ${hidden_total} 无额度"
+        Z2A_POOL_NOTE="另有 ${hidden_total} 个账号无额度，未展开"
       fi
       local rows="" prefix subpre
       while IFS=$'\t' read -r name prov mode st plan_name err quota_json; do
@@ -550,6 +552,7 @@
       if [ -n "$Z2A_POOL_TEXT" ]; then
         tg_add_section _m "$Z2A_POOL_TITLE"
         tg_add_block _m "$Z2A_POOL_TEXT"
+        if [ -n "$Z2A_POOL_NOTE" ]; then tg_add_note _m "$Z2A_POOL_NOTE"; fi
       fi
       if [ -n "$Z2A_TAIL" ]; then
         tg_add_section _m "🧾 服务日志尾部"
@@ -557,12 +560,13 @@
       fi
       # 资产段（套餐到期 + 今日消耗）：路线 B —— 口径真源在看板（2026-11-01）。
       gw_add_board_assets _m zcode
-      # 2026-11-18 档位收紧（规范 · 档位判定）：🔴 风控 / 🟠 鉴权 / ❌ 启动失败是
-      # 「需人工动手」的信号 → alert；🟡 中间态（额度耗尽 / 账号池冷却 / 通道关闭）
-      # 服务本体健康、等即可 → 普通档。
+      # 档位判定（规范 · 档位判定）：🔴 风控 / 🟠 鉴权 = 需人工动手 → alert；
+      # ❌ 真启动失败（unknown 及其余未归类）→ alert；🟡 quota/unavailable/channel
+      # = 服务本体健康、等即可 → 普通档。
       case "$Z2A_FAIL_CLASS" in
-        risk_ban|auth) Z2A_NOTIFY_TIER="alert" ;;
-        *)             Z2A_NOTIFY_TIER="" ;;
+        risk_ban|auth)             Z2A_NOTIFY_TIER="alert" ;;
+        quota|unavailable|channel) Z2A_NOTIFY_TIER="" ;;
+        *)                         Z2A_NOTIFY_TIER="alert" ;;
       esac
       if gw_send _m "$Z2A_NOTIFY_TIER"; then
         # 风控停用留痕：发送成功才写（失败下轮重试，对齐就绪标记口径）
@@ -586,6 +590,7 @@
         if [ -n "$Z2A_POOL_TEXT" ]; then
           tg_add_section _r "$Z2A_POOL_TITLE"
           tg_add_block _r "$Z2A_POOL_TEXT"
+          if [ -n "$Z2A_POOL_NOTE" ]; then tg_add_note _r "$Z2A_POOL_NOTE"; fi
         fi
         # 2026-11-18 档位收紧：风控解除是可喜的状态翻转、无需动手 → 普通档
         if gw_send _r ""; then
@@ -616,6 +621,7 @@
         if [ -n "$Z2A_POOL_TEXT" ]; then
           tg_add_section _m "$Z2A_POOL_TITLE"
           tg_add_block _m "$Z2A_POOL_TEXT"
+          if [ -n "$Z2A_POOL_NOTE" ]; then tg_add_note _m "$Z2A_POOL_NOTE"; fi
           _m+=$'\n'
         fi
         # 池内仍有风控停用账号时，就绪卡也必须点名（不能只靠账号池明细一行小字）

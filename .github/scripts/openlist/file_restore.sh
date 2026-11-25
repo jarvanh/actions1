@@ -364,11 +364,18 @@ restore_fixed_files() {
   rm -rf "$tmp_base"
 
   # 汇总通知
-  local msg=""
+  local msg="" _tier=""
   if [ "$total_ok" -eq 0 ] && [ "$total_fail" -gt 0 ]; then
     tg_add_title msg "❌ 修复文件一键还原失败"
+    # ❌ 失败 → alert（规范 · 档位判定）
+    _tier="alert"
+  elif [ -n "$stale_risk_list" ]; then
+    # 🚨 两端均无：源端与目标端副本都缺失，需人工确认 —— 该段存在且非空即 alert
+    tg_add_title msg "🔧 修复文件一键还原完成"
+    _tier="alert"
   else
     tg_add_title msg "🔧 修复文件一键还原完成"
+    # 🔧 完成且无「两端均无」风险 → 普通档
   fi
   tg_add_kv msg "已还原" "${total_ok} 个"
   tg_add_kv msg "已失效出账" "${total_stale} 个"
@@ -396,7 +403,8 @@ restore_fixed_files() {
   fi
   tg_add_note msg "已还原与已失效（源端仍在）条目已从 marker 修复清单移除；其余保留，可重试。"
   tg_add_footer msg
-  send_telegram_message "$msg"
+  # 档位由标题分支显式给出：❌ 失败 / 🚨 两端均无 = alert，🔧 完成 = 普通
+  send_telegram_message "$msg" HTML "$_tier"
   echo "=== 还原完成: OK=${total_ok} 失效出账=${total_stale} SKIP=${total_skip} 两端均无=${total_stale_risk} FAIL=${total_fail} ==="
 }
 

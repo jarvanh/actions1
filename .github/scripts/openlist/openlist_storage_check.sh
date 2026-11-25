@@ -227,7 +227,8 @@ check_openlist_storage_health() {
 
   # ===== 构建告警（规范 · 告警通知: 对象机器值 + 结论裸文本 + 原始输出 <pre>）=====
   local msg=""
-  tg_add_title msg "🚨 存储账号失效 · ${n_broken}"
+  # 标题不带数（规范 · 标题与分隔线）：失效个数已在下方「结论」kv，细节下沉
+  tg_add_title msg "🚨 存储账号失效"
   tg_add_kv msg "结论" "${n_broken} 个存储的登录态已失效（共 ${_SS_TOTAL} 个），涉及它们的同步对会被跳过"
 
   # 时间上下文: 首轮只给发现时刻; 跨轮在账的给"已持续多久"（取最早 first_seen）
@@ -255,7 +256,8 @@ check_openlist_storage_health() {
   local _e=""
   while IFS=$'\t' read -r mp drv st dis; do
     [ -n "$mp" ] || continue
-    tg_add_entry _e "$mp" "$drv"
+    # 挂载名与驱动都是机器值 → 双机器值并列用 tg_add_entry_codes（都等宽）
+    tg_add_entry_codes _e "$mp" "$drv"
   done <<< "$_SS_BROKEN_TSV"
   tg_append msg "$(tree_fold "${_e%$'\n'}")"$'\n'
 
@@ -281,7 +283,8 @@ check_openlist_storage_health() {
     [ -n "$mp" ] || continue
     raw+="${mp} (${drv}): ${st}"$'\n'
   done <<< "$_SS_BROKEN_TSV"
-  tg_add_section msg "🧾 原始错误"
+  # 同一条通知里 🧾 只给「失效存储」分节，原始输出改用 📄（同一 emoji 不承担两种角色）
+  tg_add_section msg "📄 原始错误"
   tg_add_pre msg "${raw%$'\n'}"
 
   tg_add_footer msg

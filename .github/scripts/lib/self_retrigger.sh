@@ -51,8 +51,8 @@ self_retrigger_breaker_alert() {
   source "$notify" 2>/dev/null || return 0
   local msg=""
   tg_add_title msg "🧯 保活接力已熔断"
-  tg_add_kv msg "任务" "${label}"
-  tg_add_kv msg "现象" "连续 ${streak} 轮 failure（阈值 ${threshold}），停止自动接力"
+  tg_add_path msg "任务" "${label}"
+  tg_add_kv msg "现象" "连续 ${streak} 轮失败（阈值 ${threshold}），已停止自动接力"
   tg_add_note msg "链路由 cron 兜底；根因修复后手动 dispatch 即恢复"
   tg_add_footer msg
   send_tg "$msg" alert || true

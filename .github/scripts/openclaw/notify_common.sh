@@ -55,13 +55,11 @@ gw_add_original_output() {
 }
 
 # 收尾 + 发送（含失败留痕）：六套网关通知的统一尾部。
-# 用法: gw_send <消息变量名> [tier]；tier 按分支传（2026-11-18 档位收紧，规范 · 档位判定）：
-#   就绪 / 播报类分支传 ""（普通档）；失败 / 风控 / 鉴权 / 降级分支传 alert。
-#   缺省仍 alert（保守默认），但正常路径的调用点必须显式传 ""，别靠缺省撞对。
+# 用法: gw_send <消息变量名> [tier]；tier 由调用点在分支里显式声明：就绪/播报传 ""，
+#   失败/风控/鉴权/降级传 alert。缺省普通（与全库一致）——alert 必须显式传，别靠缺省。
 # 返回 send_tg 的退出码，调用方据此写状态标记（如 *_NOTIFY_OK）或补 ::warning::。
 gw_send() {
-  # ${2-alert}（不是 :-）：显式传空串 = 普通档，省略才默认 alert
-  local _var="$1" _tier="${2-alert}"
+  local _var="$1" _tier="${2-}"
   tg_add_footer "$_var"
   send_tg "${!_var}" "$_tier"
 }

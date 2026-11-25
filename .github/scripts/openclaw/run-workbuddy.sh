@@ -53,7 +53,8 @@
     # 三个调用点（step 内就绪/失败、收尾停止）在同一作业但不同 shell，函数无法跨 step
     # 共享，故版式在两处各存一份；改版式必须同时改两处，否则停止通知会掉队。
     #
-    # 用法: wb_notify <标题> <结论> <版本> <更新说明> <原因> <原始输出> [<接口/鉴权 kv>]
+    # 用法: wb_notify <标题> <结论> <版本> <更新说明> <原因> <原始输出> [<接口/鉴权 kv>] [tier]
+    # 第 8 参 = 档位（gw_send 的 tier）：就绪/播报传 ""；失败/需人工传 alert（规范 · 档位判定）。
     # 第 7 参 = 网关就绪态，取 "1" 才补「接口 / 鉴权」两行：失败或收尾停止时服务已不在，
     # 展示一个指向已停进程的地址会误导读者。
     #
@@ -69,186 +70,179 @@
     #   免费模型列**具体模型名**（取自上游模型目录接口，见采集处注释），
     #   全量展示不折叠 —— 只给「免费模型 N」读者不知道是哪个，等于没说。
     wb_notify() {
-      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-        local _msg=""
-        tg_add_title _msg "$1"
-        tg_add_kv _msg "结论" "$2"
-        # 数据目录（机器值 → <code>）移到头部（主人 2026-10-06 要求）：
-        # 它是「这条通知说的是哪台机/哪份数据」的定位信息，与 版本/接口/API Key
-        # 同类；压在正文末尾时夹在「用量/流水」与「原始输出」之间，既不像结论
-        # 也不像明细，读者要找它得翻到底。
-        tg_add_path _msg "数据目录" "$WB_DIR"
-        [ -n "$3" ] && tg_add_path _msg "版本" "$3"
-        [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
-        if [ "${7:-0}" = "1" ]; then
-          tg_add_path _msg "接口" "http://127.0.0.1:${WB_PORT}/v1"
-          # 明文 API Key（主人 23:33 要求）：本机网关访问口令，取值即启动 serve
-          # 时传入的 job 级 AI_GATEWAY_API_KEY，与客户端实际使用的一致
-          # 标签「API Key」+ tg_add_path：值按规范走 <code> 等宽，
-          # 客户端点一下即可整块复制（tg_add_kv 是纯文本，只能手选）
-          tg_add_path _msg "API Key" "${AI_GATEWAY_API_KEY:-未取到}"
-          # 健康自检（2026-11-01 主人要求）：配置 JSON 可解析 / 凭据数 / 端口
-          # 监听 —— 11-01 wb 崩溃循环（config unknown field）若有这行，通知
-          # 当场暴露根因，不用等看板标陈旧才发现。
-          _hc_cfg="✗"; _hc_cred="—"; _hc_port="✗"
-          if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$WB_DIR/config.json" 2>/dev/null; then _hc_cfg="✓"; fi
-          _hc_n="$(find "$WB_DIR" -maxdepth 1 -name 'workbuddy-*.json' 2>/dev/null | grep -c . || true)"
-          if [ "${_hc_n:-0}" -gt 0 ]; then _hc_cred="✓ ${_hc_n} 个"; fi
-          _hc_code="$(curl -s --connect-timeout 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WB_PORT}/health" 2>/dev/null || true)"
-          if [ -n "$_hc_code" ] && [ "$_hc_code" != "000" ]; then _hc_port="✓"; fi
-          tg_add_kv _msg "自检" "配置 $_hc_cfg · 凭据 $_hc_cred · 端口 $_hc_port"
-        fi
-        [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
-        # 凭据段（🔑 凭据 · N）已按主人要求移除（2026-10-05）：凭据文件名去掉
-        # 前后缀后与下方账号池条目名逐字相同，同一份名单渲染两遍纯占版面。
-        # ⚠️ WB_CREDS 变量本身**保留** —— 上方签到汇总仍用它算「跳过」数
-        # （_n_creds - _n_rows），删掉会让跳过数恒为 0。
-        # 账号池：逐账号「一条目 + 多子行」。数据源是函数外的 WB_POOL —— 采集处
-        # （启动步骤）已用 jq 解析 workbuddy-status.json 成 9 列 TSV：
-        #     名录可信标记 \t 凭据文件名 \t 站点 \t 状态 \t 账号冷却 \t 额度 \t 免费模型名 \t 模型冷却 \t Token 过期
-        # 采集处保证**每列都不为空**（空值填哨兵「-」），否则 read 的空白折叠会让
-        # 中段空列后面的值整体左移（实测会把冷却数当模型名渲染）。故这里先把「-」
-        # 还原成空串，再按原来的「非空才并入」逻辑处理，读者看不到哨兵。
-        # 凭据名/站点/状态进条目行，第 5/6/8/9 列（账号冷却 / 额度 / 模型冷却 / Token 过期）
-        # 并成第一个子行，第 7 列（免费模型名，可能很长）另起一个独立子行
-        # 「免费模型 N · <code>名</code> · <code>名</code>」—— 与额度等短字段混在一行会被撑爆。
-        # 子行必须用 tree_sub 前缀手拼 —— tree_lines 把每行都当兄弟条目，
-        # 子行经它会渲染成 ├─/└─，与条目平级（规范 · 清单明细的二层列表：子行与条目正文同列）。
-        if [ -n "${WB_POOL:-}" ]; then
-          local _readyflag _cf _st _state _acdl _quota _fm _cdl _tok _n_acc _rows _i _sub _x _last
-          local _names _n_names _m _mline
-          _n_acc="$(printf '%s\n' "$WB_POOL" | grep -c . || true)"
-          gw_add_pool_section _msg "${_n_acc}"
-          _rows=""
-          _i=0
-          while IFS="$(printf '\t')" read -r _readyflag _cf _st _state _acdl _quota _fm _cdl _tok; do
-            [ -z "$_cf" ] && continue
-            # 哨兵「-」还原成空串（采集处保证列非空，故此处不可能因还原再产生空列错位）
-            # 不要用 `eval "[ ... ] && x="`：本 step 跑在 Actions 默认的 `bash -e` 下
-            # （`set -uo pipefail` 不会关掉 -e），A && B 里 A 为假时整条返回 1，
-            # 循环体末条命令返回 1 会直接终止整个 step —— 只要有任何一列是哨兵「-」
-            # 就会 exit 1。改成 if 语句：无论分支走哪边，返回值恒为 0。
-            # ⚠️ _state 也必须在列：active 已映射为空串（常态不显示「· 可用」），
-            # 采集处的 or_dash 会把空串补成哨兵「-」，不还原就渲染成「· -」。
-            for _x in _state _acdl _quota _fm _cdl _tok; do
-              if [ "${!_x}" = "-" ]; then printf -v "$_x" '%s' ""; fi
-            done
-            _i=$((_i + 1))
-            _last=0
-            [ "$_i" -eq "$_n_acc" ] && _last=1
-            _rows+="$(tree_conn "$_last")$(tg_entry "$_cf" "$_st" "$_state")"$'\n'
-            # 第一个子行：账号冷却 / 额度 / 模型冷却 / Token 过期，逐项非空才并入。
-            # 账号冷却只在 state=cooldown 时有值（采集处已按状态过滤）；
-            # 过期时间在 jq 侧已带「过期 」前缀（裸时间戳读者不知道是什么）。
-            _sub=""
-            for _x in "$_acdl" "$_quota" "$_cdl" "$_tok"; do
-              [ -z "$_x" ] && continue
-              _sub="${_sub:+${_sub} · }${_x}"
-            done
-            [ -n "$_sub" ] && _rows+="$(tree_sub "$_last")$(escape_html "$_sub")"$'\n'
-            # 第二个子行：免费模型清单。全量展示、不折叠（规范 · 折叠行：读者要逐条
-            # 核对哪些模型免费，折叠等于把最需要看的部分藏起来）。模型名是机器值 → <code>，
-            # 逐个转义。名单来自上游模型目录接口 → 格式是「名 · 名 · …」。
-            # 「免费模型 0」只在名录确实取到（_readyflag=1）时才显示 ——
-            # 接口失败时什么都不说，不把「没取到」谎报成「没有免费模型」。
-            _n_names=0
-            _mline=""
-            if [ -n "$_fm" ]; then
-              _names="$(printf '%s' "$_fm" | tr -s ' ' | sed 's/ *· */\n/g')"
-              _n_names="$(printf '%s\n' "$_names" | grep -c . || true)"
-              while IFS= read -r _m; do
-                [ -z "$_m" ] && continue
-                _mline+="${_mline:+ · }<code>$(escape_html "$_m")</code>"
-              done <<< "$_names"
-            fi
-            if [ "$_n_names" -gt 0 ]; then
-              _rows+="$(tree_sub "$_last")$(escape_html "免费模型 ${_n_names}") · ${_mline}"$'\n'
-            elif [ "${_readyflag:-0}" = "1" ]; then
-              _rows+="$(tree_sub "$_last")$(escape_html "免费模型 0")"$'\n'
-            fi
-          done <<< "$WB_POOL"
-          tg_add_block _msg "${_rows%$'\n'}"
-          # 块尾补一个空行：tg_add_block 不补尾空行，下一个 kv（数据目录）会紧贴
-          # 末条子行渲染，版式与规范示例（块与 kv 区之间空一行）不一致。
-          tg_append _msg $'\n'
-        fi
-        # 签到段（2026-09-26 补）：workbuddy-gateway 的每日签到是 serve 内置后台协程
-        # （backgroundDailyCheckin），**没有 CLI 子命令**（--help 里确实没列出），
-        # 也不写进 workbuddy-status.json —— 唯一可观测出口就是 serve.log 的 [Checkin] 行。
-        # 此前本通知完全没有这一段：主人看到的是「5 个账号全绿」的账号池，却无从知道
-        # 今天签到跑没跑、哪个号失败了。本段即补这个缺口。
-        # 数据源 WB_CHECKIN 是上一步合并好的 TSV（5 列）：凭据文件名 \t 站点 \t
-        # 签到结果 \t 签到积分 \t 旅行奖励（后两列可为空，空则不展示）。
-        # 逐账号一条目：签到信息一行装得下；积分跟在结果后（本次/累计/连签），
-        # 旅行奖励有领取动作时独占一条子行（无领取不占行）。
-        # 全量不折叠：账号量级只有个位数，读者要逐号核对，折叠等于把要看的藏起来。
-        if [ -n "${WB_CHECKIN:-}" ]; then
-          local _ckn _ckrows _cki _ckf _cks _ckr _cklast _ckcredit _cktravel _ckline
-          _ckn="$(printf '%s\n' "$WB_CHECKIN" | grep -c . || true)"
-          tg_add_section _msg "🗓 每日签到 · ${_ckn}"
-          _ckrows=""
-          _cki=0
-          while IFS="$(printf '\t')" read -r _ckf _cks _ckr _ckcredit _cktravel; do
-            [ -z "$_ckf" ] && continue
-            _cki=$((_cki + 1))
-            if [ "$_cki" -eq "$_ckn" ]; then _cklast=1; else _cklast=0; fi
-            _ckline="$(tg_entry "$_ckf" "$_cks" "$_ckr")"
-            if [ -n "$_ckcredit" ]; then
-              _ckline="${_ckline} · $(escape_html "$_ckcredit")"
-            fi
-            _ckrows+="$(tree_conn "$_cklast")${_ckline}"$'\n'
-            if [ -n "$_cktravel" ]; then
-              _ckrows+="$(tree_sub "$_cklast")$(escape_html "$_cktravel")"$'\n'
-            fi
-          done <<< "$WB_CHECKIN"
-          tg_add_block _msg "${_ckrows%$'\n'}"
-          tg_append _msg $'\n'
-          # 汇总行（总数/成功/今日已签/失败/跳过）：**被跳过**的账号不会有「开始每日签到」
-          # 行、也就不会出现在上面的条目里 —— 只有这行能暴露「有号根本没轮到」，
-          # 光看逐账号条目会把「跳过」误读成「没问题」。
-          if [ -n "${WB_CHECKIN_SUMMARY:-}" ]; then
-            tg_add_kv _msg "本轮汇总" "$WB_CHECKIN_SUMMARY"
+      # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+      local _tier="${8-}"
+      local _msg=""
+      tg_add_title _msg "$1"
+      tg_add_kv _msg "结论" "$2"
+      # 数据目录（机器值 → <code>）移到头部（主人 2026-10-06 要求）：
+      # 它是「这条通知说的是哪台机/哪份数据」的定位信息，与 版本/接口/API Key
+      # 同类；压在正文末尾时夹在「用量/流水」与「原始输出」之间，既不像结论
+      # 也不像明细，读者要找它得翻到底。
+      tg_add_path _msg "数据目录" "$WB_DIR"
+      [ -n "$3" ] && tg_add_path _msg "版本" "$3"
+      [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
+      if [ "${7:-0}" = "1" ]; then
+        tg_add_path _msg "接口" "http://127.0.0.1:${WB_PORT}/v1"
+        # 明文 API Key（主人 23:33 要求）：本机网关访问口令，取值即启动 serve
+        # 时传入的 job 级 AI_GATEWAY_API_KEY，与客户端实际使用的一致
+        # 标签「API Key」+ tg_add_path：值按规范走 <code> 等宽，
+        # 客户端点一下即可整块复制（tg_add_kv 是纯文本，只能手选）
+        tg_add_path _msg "API Key" "${AI_GATEWAY_API_KEY:-未取到}"
+        # 健康自检（2026-11-01 主人要求）：配置 JSON 可解析 / 凭据数 / 端口
+        # 监听 —— 11-01 wb 崩溃循环（config unknown field）若有这行，通知
+        # 当场暴露根因，不用等看板标陈旧才发现。
+        _hc_cfg="✗"; _hc_cred="—"; _hc_port="✗"
+        if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$WB_DIR/config.json" 2>/dev/null; then _hc_cfg="✓"; fi
+        _hc_n="$(find "$WB_DIR" -maxdepth 1 -name 'workbuddy-*.json' 2>/dev/null | grep -c . || true)"
+        if [ "${_hc_n:-0}" -gt 0 ]; then _hc_cred="✓ ${_hc_n} 个"; fi
+        _hc_code="$(curl -s --connect-timeout 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WB_PORT}/health" 2>/dev/null || true)"
+        if [ -n "$_hc_code" ] && [ "$_hc_code" != "000" ]; then _hc_port="✓"; fi
+        tg_add_kv _msg "自检" "配置 $_hc_cfg · 凭据 $_hc_cred · 端口 $_hc_port"
+      fi
+      [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
+      # 凭据段（🔑 凭据 · N）已按主人要求移除（2026-10-05）：凭据文件名去掉
+      # 前后缀后与下方账号池条目名逐字相同，同一份名单渲染两遍纯占版面。
+      # ⚠️ WB_CREDS 变量本身**保留** —— 上方签到汇总仍用它算「跳过」数
+      # （_n_creds - _n_rows），删掉会让跳过数恒为 0。
+      # 账号池：逐账号「一条目 + 多子行」。数据源是函数外的 WB_POOL —— 采集处
+      # （启动步骤）已用 jq 解析 workbuddy-status.json 成 9 列 TSV：
+      #     名录可信标记 \t 凭据文件名 \t 站点 \t 状态 \t 账号冷却 \t 额度 \t 免费模型名 \t 模型冷却 \t Token 过期
+      # 采集处保证**每列都不为空**（空值填哨兵「-」），否则 read 的空白折叠会让
+      # 中段空列后面的值整体左移（实测会把冷却数当模型名渲染）。故这里先把「-」
+      # 还原成空串，再按原来的「非空才并入」逻辑处理，读者看不到哨兵。
+      # 凭据名/站点/状态进条目行，第 5/6/8/9 列（账号冷却 / 额度 / 模型冷却 / Token 过期）
+      # 并成第一个子行，第 7 列（免费模型名，可能很长）另起一个独立子行
+      # 「免费模型 N · <code>名</code> · <code>名</code>」—— 与额度等短字段混在一行会被撑爆。
+      # 子行必须用 tree_sub 前缀手拼 —— tree_lines 把每行都当兄弟条目，
+      # 子行经它会渲染成 ├─/└─，与条目平级（规范 · 清单明细的二层列表：子行与条目正文同列）。
+      if [ -n "${WB_POOL:-}" ]; then
+        local _readyflag _cf _st _state _acdl _quota _fm _cdl _tok _n_acc _rows _i _sub _x _last
+        local _names _n_names _m _mline
+        _n_acc="$(printf '%s\n' "$WB_POOL" | grep -c . || true)"
+        gw_add_pool_section _msg "${_n_acc}"
+        _rows=""
+        _i=0
+        while IFS="$(printf '\t')" read -r _readyflag _cf _st _state _acdl _quota _fm _cdl _tok; do
+          [ -z "$_cf" ] && continue
+          # 哨兵「-」还原成空串（采集处保证列非空，故此处不可能因还原再产生空列错位）
+          # 不要用 `eval "[ ... ] && x="`：本 step 跑在 Actions 默认的 `bash -e` 下
+          # （`set -uo pipefail` 不会关掉 -e），A && B 里 A 为假时整条返回 1，
+          # 循环体末条命令返回 1 会直接终止整个 step —— 只要有任何一列是哨兵「-」
+          # 就会 exit 1。改成 if 语句：无论分支走哪边，返回值恒为 0。
+          # ⚠️ _state 也必须在列：active 已映射为空串（常态不显示「· 可用」），
+          # 采集处的 or_dash 会把空串补成哨兵「-」，不还原就渲染成「· -」。
+          for _x in _state _acdl _quota _fm _cdl _tok; do
+            if [ "${!_x}" = "-" ]; then printf -v "$_x" '%s' ""; fi
+          done
+          _i=$((_i + 1))
+          _last=0
+          [ "$_i" -eq "$_n_acc" ] && _last=1
+          _rows+="$(tree_conn "$_last")$(tg_entry "$_cf" "$_st" "$_state")"$'\n'
+          # 第一个子行：账号冷却 / 额度 / 模型冷却 / Token 过期，逐项非空才并入。
+          # 账号冷却只在 state=cooldown 时有值（采集处已按状态过滤）；
+          # 过期时间在 jq 侧已带「过期 」前缀（裸时间戳读者不知道是什么）。
+          _sub=""
+          for _x in "$_acdl" "$_quota" "$_cdl" "$_tok"; do
+            [ -z "$_x" ] && continue
+            _sub="${_sub:+${_sub} · }${_x}"
+          done
+          [ -n "$_sub" ] && _rows+="$(tree_sub "$_last")$(escape_html "$_sub")"$'\n'
+          # 第二个子行：免费模型清单。全量展示、不折叠（规范 · 折叠行：读者要逐条
+          # 核对哪些模型免费，折叠等于把最需要看的部分藏起来）。模型名是机器值 → <code>，
+          # 逐个转义。名单来自上游模型目录接口 → 格式是「名 · 名 · …」。
+          # 「免费模型 0」只在名录确实取到（_readyflag=1）时才显示 ——
+          # 接口失败时什么都不说，不把「没取到」谎报成「没有免费模型」。
+          _n_names=0
+          _mline=""
+          if [ -n "$_fm" ]; then
+            _names="$(printf '%s' "$_fm" | tr -s ' ' | sed 's/ *· */\n/g')"
+            _n_names="$(printf '%s\n' "$_names" | grep -c . || true)"
+            while IFS= read -r _m; do
+              [ -z "$_m" ] && continue
+              _mline+="${_mline:+ · }<code>$(escape_html "$_m")</code>"
+            done <<< "$_names"
           fi
-          # 下次签到时刻：服务自己算的定时点（东八区，日志原文带 UTC+8 后缀）。
-          if [ -n "${WB_CHECKIN_NEXT:-}" ]; then
-            tg_add_kv _msg "下次签到" "$WB_CHECKIN_NEXT"
+          if [ "$_n_names" -gt 0 ]; then
+            _rows+="$(tree_sub "$_last")$(escape_html "免费模型 ${_n_names}") · ${_mline}"$'\n'
+          elif [ "${_readyflag:-0}" = "1" ]; then
+            _rows+="$(tree_sub "$_last")$(escape_html "免费模型 0")"$'\n'
           fi
+        done <<< "$WB_POOL"
+        tg_add_block _msg "${_rows%$'\n'}"
+      fi
+      # 签到段（2026-09-26 补）：workbuddy-gateway 的每日签到是 serve 内置后台协程
+      # （backgroundDailyCheckin），**没有 CLI 子命令**（--help 里确实没列出），
+      # 也不写进 workbuddy-status.json —— 唯一可观测出口就是 serve.log 的 [Checkin] 行。
+      # 此前本通知完全没有这一段：主人看到的是「5 个账号全绿」的账号池，却无从知道
+      # 今天签到跑没跑、哪个号失败了。本段即补这个缺口。
+      # 数据源 WB_CHECKIN 是上一步合并好的 TSV（5 列）：凭据文件名 \t 站点 \t
+      # 签到结果 \t 签到积分 \t 旅行奖励（后两列可为空，空则不展示）。
+      # 逐账号一条目：签到信息一行装得下；积分跟在结果后（本次/累计/连签），
+      # 旅行奖励有领取动作时独占一条子行（无领取不占行）。
+      # 全量不折叠：账号量级只有个位数，读者要逐号核对，折叠等于把要看的藏起来。
+      if [ -n "${WB_CHECKIN:-}" ]; then
+        local _ckn _ckrows _cki _ckf _cks _ckr _cklast _ckcredit _cktravel _ckline
+        _ckn="$(printf '%s\n' "$WB_CHECKIN" | grep -c . || true)"
+        tg_add_section _msg "🗓 每日签到 · ${_ckn}"
+        _ckrows=""
+        _cki=0
+        while IFS="$(printf '\t')" read -r _ckf _cks _ckr _ckcredit _cktravel; do
+          [ -z "$_ckf" ] && continue
+          _cki=$((_cki + 1))
+          if [ "$_cki" -eq "$_ckn" ]; then _cklast=1; else _cklast=0; fi
+          _ckline="$(tg_entry "$_ckf" "$_cks" "$_ckr")"
+          if [ -n "$_ckcredit" ]; then
+            _ckline="${_ckline} · $(escape_html "$_ckcredit")"
+          fi
+          _ckrows+="$(tree_conn "$_cklast")${_ckline}"$'\n'
+          if [ -n "$_cktravel" ]; then
+            _ckrows+="$(tree_sub "$_cklast")$(escape_html "$_cktravel")"$'\n'
+          fi
+        done <<< "$WB_CHECKIN"
+        tg_add_block _msg "${_ckrows%$'\n'}"
+        # 下一条是 kv 行（tg_add_kv 不补段前空行），这个补行必须保留
+        tg_append _msg $'\n'
+        # 汇总行（总数/成功/今日已签/失败/跳过）：**被跳过**的账号不会有「开始每日签到」
+        # 行、也就不会出现在上面的条目里 —— 只有这行能暴露「有号根本没轮到」，
+        # 光看逐账号条目会把「跳过」误读成「没问题」。
+        if [ -n "${WB_CHECKIN_SUMMARY:-}" ]; then
+          tg_add_kv _msg "本轮汇总" "$WB_CHECKIN_SUMMARY"
         fi
-        # 模型倍率段：数据源是上方生成的 WB_RATES_TXT（wb-models-cache.json 的
-        # catalogs + 免费实测，按站点分组、站点内倍率升序（价格低者在上）每模型一行、
-        # **全量不截断**）。
-        # 取数失败/缓存缺失时为空，整段跳过（与凭据段同口径），绝不编造倍率。
-        # 2026-11-18 并入主通知（原独立第二条）：send_tg 自动分片后不存在超限丢弃，
-        # 独立成篇只会让重要频道多一条常态播报（规范 · 档位判定）。
-        if [ -n "${WB_RATES_TXT:-}" ]; then
-          # 计数形态与 gw_add_rates_section 同口径（📊 … · N，不带文字）
-          tg_add_section _msg "📊 模型倍率 · ${WB_RATES_N:-0}${WB_RATES_FREE_TAG:-}"
-          tg_add_pre _msg "$WB_RATES_TXT"
-          # tg_add_pre 不补尾空行，对齐账号池段：块尾补一个，避免下一段紧贴
-          tg_append _msg $'\n'
+        # 下次签到时刻：服务自己算的定时点（东八区，日志原文带 UTC+8 后缀）。
+        if [ -n "${WB_CHECKIN_NEXT:-}" ]; then
+          tg_add_kv _msg "下次签到" "$WB_CHECKIN_NEXT"
         fi
-        # 用量 + 流水（看板独有，2026-10-05 补进通知）：只渲染本网关自己，
-        # 避免 wb 通知里出现 zcode 数据（语义串台）。调 board.py 的 CLI 子命令 ——
-        # 与看板**共用同一份渲染代码与本地实时 usage**，不另写一套、不走 Dropbox 旧副本
-        # （那版仅收尾回推，实测落后 4 小时丢 93% 行）。文件缺失时 CLI 输出空串，静默跳过。
-        # 资产段（签到汇总 + 额度刷新）：路线 B（2026-11-01 主人拍板）——口径
-        # 真源在看板，通知只引用 assets CLI 输出，看板改措辞自动跟上。
-        gw_add_board_assets _msg workbuddy
-        gw_add_board_usage _msg workbuddy 12
-        gw_add_original_output _msg "$6"
-        # 2026-11-18 档位收紧（规范 · 档位判定）：本函数服务三类调用点，按标题分诊——
-        # ❌ 启动失败 / ⚠️ 无可用账号（需人工扫码）→ alert；🟢 已就绪 → 普通档。
-        case "$1" in
-          ❌*|⚠️*) gw_send _msg alert ;;
-          *)       gw_send _msg "" ;;
-        esac
-        if [ $? -eq 0 ]; then
-          echo "✅ workbuddy-gateway 通知已发送"
-        else
-          echo "::warning::TG 通知发送失败（不影响任务）"
+      fi
+      # 模型倍率段：数据源是上方生成的 WB_RATES_TXT（wb-models-cache.json 的
+      # catalogs + 免费实测，按站点分组、站点内倍率升序（价格低者在上）每模型一行、
+      # **全量不截断**）。
+      # 取数失败/缓存缺失时为空，整段跳过（与凭据段同口径），绝不编造倍率。
+      # 2026-11-18 并入主通知（原独立第二条）：send_tg 自动分片后不存在超限丢弃，
+      # 独立成篇只会让重要频道多一条常态播报（规范 · 档位判定）。
+      if [ -n "${WB_RATES_TXT:-}" ]; then
+        # 计数位只放数字（规范 · 分节）；「含免费 N」下沉为说明段
+        tg_add_section _msg "📊 模型倍率 · ${WB_RATES_N:-0}"
+        if [ "${WB_RATES_FREE_N:-0}" -gt 0 ]; then
+          tg_add_note _msg "含免费模型 ${WB_RATES_FREE_N} 个"
         fi
+        tg_add_pre _msg "$WB_RATES_TXT"
+      fi
+      # 用量 + 流水（看板独有，2026-10-05 补进通知）：只渲染本网关自己，
+      # 避免 wb 通知里出现 zcode 数据（语义串台）。调 board.py 的 CLI 子命令 ——
+      # 与看板**共用同一份渲染代码与本地实时 usage**，不另写一套、不走 Dropbox 旧副本
+      # （那版仅收尾回推，实测落后 4 小时丢 93% 行）。文件缺失时 CLI 输出空串，静默跳过。
+      # 资产段（签到汇总 + 额度刷新）：路线 B（2026-11-01 主人拍板）——口径
+      # 真源在看板，通知只引用 assets CLI 输出，看板改措辞自动跟上。
+      gw_add_board_assets _msg workbuddy
+      gw_add_board_usage _msg workbuddy 12
+      gw_add_original_output _msg "$6"
+      # 档位由调用点经第 8 参显式声明（规范 · 档位判定），不再按标题分诊
+      gw_send _msg "$_tier"
+      if [ $? -eq 0 ]; then
+        echo "✅ workbuddy-gateway 通知已发送"
       else
-        echo "⚠️ Telegram secrets missing, skip workbuddy-gateway notification."
+        echo "::warning::TG 通知发送失败（不影响任务）"
       fi
     }
 
@@ -395,7 +389,7 @@
       echo "❌ 二进制不可执行：$WB_BIN（下载失败、校验失败或权限位丢失）" >&2
       # 不调用 services.sh ensure：宁可本轮降级，也不执行来源未校验的产物。
       wb_notify "❌ workbuddy-gateway 启动失败" "二进制缺失或校验失败" \
-        "${WB_VER:-}" "${WB_UPDATE:-}" "${WB_REASON:-无法取得可校验的 release 产物}" "" 0
+        "${WB_VER:-}" "${WB_UPDATE:-}" "${WB_REASON:-无法取得可校验的 release 产物}" "" 0 "alert"
       exit 1
     fi
     # serve 的工作目录是 Dropbox（WB_DIR，2026-10-06 起数据直写：凭据/状态/缓存/logs 都落这里），
@@ -1136,12 +1130,13 @@
     # 文件已移除，别再加回来（域文档：docs/openclaw.md「九、通知口径」9.1）。
     if [ "$WB_READY" = "1" ]; then
       if [ -n "$WB_ACCOUNTS" ]; then
-        wb_notify "🟢 workbuddy-gateway 已就绪" "$WB_ACCOUNTS" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1
+        wb_notify "🟢 workbuddy-gateway 已就绪" "$WB_ACCOUNTS" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1 ""
       else
         # 网关自己起来了、但账号池为空：多半是数据目录里还没有 workbuddy*.json
         # （二维码登录只能人工做），如实标注为可用性问题，不假装就绪。
+        # ⚠️ 跨档走 alert 侧：网关在但账号池为空，恢复需人工扫码登录（规范 · 档位判定）
         wb_notify "⚠️ workbuddy-gateway 已启动 · 无可用账号" \
-          "账号池为空 · 需人工扫码登录" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1
+          "账号池为空 · 需人工扫码登录" "$WB_VER" "$WB_UPDATE" "$WB_REASON" "" 1 "alert"
       fi
     else
       WB_TAIL="$(tg_tail_file_safe "$WB_LOG" 1200)"
@@ -1169,8 +1164,8 @@
       fi
       # WB_REASON 可能为空，拼串前先规整，避免出现「原因： serve …」的前导空格
       _wb_fail_reason="${WB_REASON:+${WB_REASON} · }${_wb_fail_reason}"
-      wb_notify "❌ workbuddy-gateway 启动失败" "未监听 ${WB_PORT} · 退出码 1" "$WB_VER" \
-        "$WB_UPDATE" "$_wb_fail_reason" "$WB_TAIL" 0
+      wb_notify "❌ workbuddy-gateway 启动失败" "未监听 ${WB_PORT} · 启动自检未通过" "$WB_VER" \
+        "$WB_UPDATE" "$_wb_fail_reason" "$WB_TAIL" 0 "alert"
     fi
   )
   _up_rc=$?

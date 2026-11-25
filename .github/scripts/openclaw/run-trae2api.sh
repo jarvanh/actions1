@@ -42,156 +42,149 @@
     # （uid/昵称/状态/积分进条目行，该账号最早过期的前 3 个包各占一个子行）。
     trae_notify() {
       TRAE_NOTIFY_OK=0
-      if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-        local _msg=""
-        tg_add_title _msg "$1"
-        tg_add_kv _msg "结论" "$2"
-        # 数据目录（机器值 → <code>）移到头部，与 wb_notify 同口径
-        # （主人 2026-10-06 要求）：它是「这条通知说的是哪份数据」的定位信息，
-        # 与 版本/接口/API Key 同类；压在正文末尾夹在用量段与原始输出之间，
-        # 既不像结论也不像明细，读者要找它得翻到底。
-        tg_add_path _msg "数据目录" "$TRAE_DATA"
-        [ -n "$3" ] && tg_add_path _msg "版本" "$3"
-        [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
-        if [ "${7:-0}" = "1" ]; then
-          tg_add_path _msg "接口" "http://127.0.0.1:${TRAE_PORT}/v1"
-          # 明文 API Key（主人 23:33 要求，与 workbuddy 段同款展示）：
-          # 从 Dropbox 数据目录 .env 读取，即面板/CLI 实际使用的那把
-          local _trae_key="$(grep -m1 '^TW2A_API_KEY=' "${TRAE_DATA}/.env" 2>/dev/null | cut -d= -f2- || true)"
-          # 标签「API Key」+ tg_add_path：值按规范走 <code> 等宽，
-          # 客户端点一下即可整块复制（tg_add_kv 是纯文本，只能手选）
-          tg_add_path _msg "API Key" "${_trae_key:-未取到}"
-        fi
-        [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
-        # 凭据段（🔑 凭据 · N）已按主人要求移除（2026-10-05），与 wb_notify 同口径。
-        # TRAE_CREDS 变量保留（采集处仍在产出，供将来其它用途），仅不再渲染。
-        # 账号池：与 wb_notify 同构的「条目 + 子行」形态。子行必须用 tree_sub
-        # 前缀手拼 —— tree_lines 把每行都当兄弟条目，子行经它会渲染成 ├─/└─，
-        # 与条目平级（规范 · 清单明细的二层列表：子行与条目正文同列）。
-        # 错峰签到（主人 09-25 定）：checkin 先零请求落盘全部账号的排程行
-        # （skipped=scheduled/cooldown/already，带 planned_at），真实签到完成后
-        # 追加结果行 —— 同一 uid 会有两行，按 uid 取末行：有结果显示结果，
-        # 没轮到的显示「安排 HH:MM」；计数也按去重后的账号数。
-        if [ -s "${CHECKIN_JSONL:-}" ]; then
-          local _total _rows _i _line _uid _nick _cr _err _skipr _st _exp3 _eline _last _planned
-          # 按 uid 取末行（保持首次出现顺序）：JSONL 逐行 uid 序列去重拼接
-          _uids="$(jq -r '.uid' "$CHECKIN_JSONL" 2>/dev/null | awk '!seen[$0]++' || true)"
-          _total="$(printf '%s\n' "$_uids" | grep -c . || true)"
-          gw_add_pool_section _msg "${_total}"
-          _rows=""
-          _i=0
-          while IFS= read -r _uid; do
-            [ -z "$_uid" ] && continue
-            _i=$((_i + 1))
-            _last=0
-            [ "$_i" -eq "$_total" ] && _last=1
-            _line="$(jq -c --arg uid "$_uid" 'select(.uid == $uid)' "$CHECKIN_JSONL" 2>/dev/null | tail -n 1 || true)"
-            _nick=$(jq -r '(.nickname // "-")' <<<"$_line" 2>/dev/null || echo "-")
-            _cr=$(jq -r '.credits' <<<"$_line" 2>/dev/null || echo "-")
-            _err=$(jq -r '(.err // "")' <<<"$_line" 2>/dev/null || true)
-            _skipr=$(jq -r '(.skip_reason // "")' <<<"$_line" 2>/dev/null || true)
-            _planned=$(jq -r '(.planned_at // "")' <<<"$_line" 2>/dev/null || true)
-            if [ -n "$_err" ]; then
-              _st="⚠️ $_err"
-            elif [ "$(jq -r '.claimed' <<<"$_line" 2>/dev/null || true)" = "true" ]; then
-              _st="签到 ✓ 本轮领取"
-            elif [ "$(jq -r '.checked_in' <<<"$_line" 2>/dev/null || true)" = "true" ]; then
-              _st="今日已签"
-            elif [ -n "$_skipr" ] && [ -n "$_planned" ]; then
-              # 排程/冷却中的账号：显示安排的签到时间（主人 09-25 定）
-              _st="$_skipr · 安排 ${_planned}"
-            elif [ -n "$_skipr" ]; then
-              _st="$_skipr"
-            else
-              _st="今日已签"
-            fi
-            # 条目行只留「uid · 昵称」，签到状态与积分下移成子行
-            # （主人 2026-10-06 要求：少用 · 分割、多换行）。此前四段全挤在
-            # 条目行，读起来是一坨；与看板 trae 段同版式（board.py 该段
-            # 注释里的样板即「今日已签 · 积分 3517」独占一行）。
-            _rows+="$(tree_conn "$_last")$(tg_entry "$_uid" "$_nick")"$'\n'
-            _rows+="$(tree_sub "$_last")$(escape_html "${_st} · 积分 ${_cr}")"$'\n'
-            # 子行：该账号未用完的包里最早过期的前 3 个（逐包一行，完整时间戳）
-            _exp3=$(jq -r --arg uid "$_uid" '[.[] | select(.uid == $uid and .remain > 0 and .expire_at > 0)] | sort_by(.expire_at) | .[:3][] | "剩 \(.remain) 分 · \(.expire_fmt) 过期"' "${PACKS_JSON:-}" 2>/dev/null || true)
-            if [ -n "$_exp3" ]; then
-              while IFS= read -r _eline; do
-                [ -z "$_eline" ] && continue
-                _rows+="$(tree_sub "$_last")$(escape_html "$_eline")"$'\n'
-              done <<< "$_exp3"
-            fi
-          done <<< "$_uids"
-          tg_add_block _msg "${_rows%$'\n'}"
-          # 块尾补一个空行：tg_add_block 不补尾空行，下一个 kv（数据目录）会紧贴
-          # 末条子行渲染，版式与 wb_notify（块与 kv 区之间空一行）一致。
-          tg_append _msg $'\n'
-        fi
-        # 签到健康段（主人 09-30 定：原先独立的「签到简报」并入已就绪通知，
-        # 不再单独发一条）。只列**需要关注**的账号（连败>0 / 换代过 / 仍在退避），
-        # 全健康时整段跳过 —— 健康是常态，异常才值得占版面，否则每轮重复渲染
-        # 四行「连败 0」纯属噪音。
-        # 数据源：checkin-state.json（连败/上次成功）+ state.json（自愈换代/退避）。
-        # 换代 gen>0 是 9074 自愈动过手的证据（不是故障），故单列且不加 ⚠️。
-        # 2026-10-04 主人：裸写「自愈换代 gen 1」外人读不懂 → 条目改白话
-        # 「签到设备换代 +1」（主人终版措辞），分节计数写 `· N`，
-        # 「N 个账号有备注」下沉为说明段（N 是账号数不是失败数，避免被误读为「N 个失败」）。
-        local _ck_state _st_state _hrows _hu _hfc _hlcd _hgen _hrc _hnick _hinfo
-        _ck_state="${TRAE_DATA}/data/checkin-state.json"
-        _st_state="${TRAE_DATA}/data/state.json"
-        _hrows=""
-        _hn=0
-        if [ -s "$_ck_state" ]; then
-          while IFS= read -r _hu; do
-            [ -z "$_hu" ] && continue
-            _hfc=$(jq -r --arg u "$_hu" '.[$u].fail_count // 0' "$_ck_state" 2>/dev/null || echo 0)
-            _hlcd=$(jq -r --arg u "$_hu" '.[$u].last_claim_date // "-"' "$_ck_state" 2>/dev/null || echo "-")
-            _hgen=$(jq -r --arg u "$_hu" '.accounts[$u].checkin_device_gen // 0' "$_st_state" 2>/dev/null || echo 0)
-            _hrc=$(jq -r --arg u "$_hu" '.accounts[$u].checkin_retry_count // 0' "$_st_state" 2>/dev/null || echo 0)
-            # 全健康 → 跳过（不占版面）
-            [ "${_hfc:-0}" -gt 0 ] || [ "${_hgen:-0}" -gt 0 ] || [ "${_hrc:-0}" -gt 0 ] || continue
-            _hnick=$(jq -r --arg uid "$_hu" '[.[] | select(.uid == $uid) | .nickname] | last // ""' "${CHECKIN_JSONL:-/dev/null}" 2>/dev/null || true)
-            [ -n "$_hnick" ] || _hnick="$_hu"
-            _hinfo="上次成功 ${_hlcd}"
-            [ "${_hfc:-0}" -gt 0 ] && _hinfo="${_hinfo} · ⚠️ 连续失败 ${_hfc} 次"
-            [ "${_hgen:-0}" -gt 0 ] && _hinfo="${_hinfo} · 签到设备换代 +1"
-            [ "${_hrc:-0}" -gt 0 ] && _hinfo="${_hinfo} · ⏳ 退避重试中（已退 ${_hrc} 次）"
-            # 主体是「昵称 · 健康备注」= 自然语言（规范 · 取值行口径），走
-            # tg_add_entry_text 裸文本；tg_add_entry 会把整串当机器值套 <code>
-            tg_add_entry_text _hrows "${_hnick} · ${_hinfo}"
-            _hn=$((_hn + 1))
-          done <<< "$(jq -r 'keys[]' "$_ck_state" 2>/dev/null)"
-        fi
-        if [ "$_hn" -gt 0 ]; then
-          tg_add_section _msg "🩺 签到健康 · ${_hn}"
-          tg_add_note _msg "以上账号有签到备注"
-          tg_add_block _msg "$(tree_lines "${_hrows%$'\n'}")"
-          tg_append _msg $'\n'
-        fi
-        # 模型倍率段：数据源是 7.5 生成的 RATES_TXT（/v1/models 的
-        # consumption_rate，倍率升序（价格低的排上面）、每模型一行）；服务未就绪/
-        # 取数失败时为空，
-        # 整段跳过（与凭据段同口径）。section 计数与「🔑 凭据 · N」同构。
-        if [ -n "${RATES_TXT:-}" ]; then
-          gw_add_rates_section _msg "${RATES_N:-0}"
-          tg_add_pre _msg "$RATES_TXT"
-          # tg_add_pre 内部 <pre> 包裹 + 转义；段尾补空行对齐账号池段
-          tg_append _msg $'\n'
-        fi
-        # 用量 + 流水（与 wb_notify 同口径，2026-10-05 补）：只渲染 trae 自己的，
-        # 调 board.py CLI 与看板共用渲染代码与数据源。trae 当日无 usage 文件时
-        # CLI 输出空串，静默跳过（不留空行）。
-        # 资产段（签到汇总 + 即将过期）：路线 B —— 口径真源在看板（2026-11-01）。
-        gw_add_board_assets _msg trae
-        gw_add_board_usage _msg trae 12
-        gw_add_original_output _msg "$6"
-        # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
-        # 1（🟢 已就绪 / ⚠️ 签到无输出，服务在）→ 普通档；0（❌ 启动失败）→ alert。
-        if [ "${7:-0}" = "1" ]; then
-          if gw_send _msg ""; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
-        else
-          if gw_send _msg alert; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
-        fi
+      # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+      local _msg=""
+      tg_add_title _msg "$1"
+      tg_add_kv _msg "结论" "$2"
+      # 数据目录（机器值 → <code>）移到头部，与 wb_notify 同口径
+      # （主人 2026-10-06 要求）：它是「这条通知说的是哪份数据」的定位信息，
+      # 与 版本/接口/API Key 同类；压在正文末尾夹在用量段与原始输出之间，
+      # 既不像结论也不像明细，读者要找它得翻到底。
+      tg_add_path _msg "数据目录" "$TRAE_DATA"
+      [ -n "$3" ] && tg_add_path _msg "版本" "$3"
+      [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
+      if [ "${7:-0}" = "1" ]; then
+        tg_add_path _msg "接口" "http://127.0.0.1:${TRAE_PORT}/v1"
+        # 明文 API Key（主人 23:33 要求，与 workbuddy 段同款展示）：
+        # 从 Dropbox 数据目录 .env 读取，即面板/CLI 实际使用的那把
+        local _trae_key="$(grep -m1 '^TW2A_API_KEY=' "${TRAE_DATA}/.env" 2>/dev/null | cut -d= -f2- || true)"
+        # 标签「API Key」+ tg_add_path：值按规范走 <code> 等宽，
+        # 客户端点一下即可整块复制（tg_add_kv 是纯文本，只能手选）
+        tg_add_path _msg "API Key" "${_trae_key:-未取到}"
+      fi
+      [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
+      # 凭据段（🔑 凭据 · N）已按主人要求移除（2026-10-05），与 wb_notify 同口径。
+      # TRAE_CREDS 变量保留（采集处仍在产出，供将来其它用途），仅不再渲染。
+      # 账号池：与 wb_notify 同构的「条目 + 子行」形态。子行必须用 tree_sub
+      # 前缀手拼 —— tree_lines 把每行都当兄弟条目，子行经它会渲染成 ├─/└─，
+      # 与条目平级（规范 · 清单明细的二层列表：子行与条目正文同列）。
+      # 错峰签到（主人 09-25 定）：checkin 先零请求落盘全部账号的排程行
+      # （skipped=scheduled/cooldown/already，带 planned_at），真实签到完成后
+      # 追加结果行 —— 同一 uid 会有两行，按 uid 取末行：有结果显示结果，
+      # 没轮到的显示「安排 HH:MM」；计数也按去重后的账号数。
+      if [ -s "${CHECKIN_JSONL:-}" ]; then
+        local _total _rows _i _line _uid _nick _cr _err _skipr _st _exp3 _eline _last _planned
+        # 按 uid 取末行（保持首次出现顺序）：JSONL 逐行 uid 序列去重拼接
+        _uids="$(jq -r '.uid' "$CHECKIN_JSONL" 2>/dev/null | awk '!seen[$0]++' || true)"
+        _total="$(printf '%s\n' "$_uids" | grep -c . || true)"
+        gw_add_pool_section _msg "${_total}"
+        _rows=""
+        _i=0
+        while IFS= read -r _uid; do
+          [ -z "$_uid" ] && continue
+          _i=$((_i + 1))
+          _last=0
+          [ "$_i" -eq "$_total" ] && _last=1
+          _line="$(jq -c --arg uid "$_uid" 'select(.uid == $uid)' "$CHECKIN_JSONL" 2>/dev/null | tail -n 1 || true)"
+          _nick=$(jq -r '(.nickname // "-")' <<<"$_line" 2>/dev/null || echo "-")
+          _cr=$(jq -r '.credits' <<<"$_line" 2>/dev/null || echo "-")
+          _err=$(jq -r '(.err // "")' <<<"$_line" 2>/dev/null || true)
+          _skipr=$(jq -r '(.skip_reason // "")' <<<"$_line" 2>/dev/null || true)
+          _planned=$(jq -r '(.planned_at // "")' <<<"$_line" 2>/dev/null || true)
+          if [ -n "$_err" ]; then
+            _st="⚠️ $_err"
+          elif [ "$(jq -r '.claimed' <<<"$_line" 2>/dev/null || true)" = "true" ]; then
+            _st="签到 ✓ 本轮领取"
+          elif [ "$(jq -r '.checked_in' <<<"$_line" 2>/dev/null || true)" = "true" ]; then
+            _st="今日已签"
+          elif [ -n "$_skipr" ] && [ -n "$_planned" ]; then
+            # 排程/冷却中的账号：显示安排的签到时间（主人 09-25 定）
+            _st="$_skipr · 安排 ${_planned}"
+          elif [ -n "$_skipr" ]; then
+            _st="$_skipr"
+          else
+            _st="今日已签"
+          fi
+          # 条目行只留「uid · 昵称」，签到状态与积分下移成子行
+          # （主人 2026-10-06 要求：少用 · 分割、多换行）。此前四段全挤在
+          # 条目行，读起来是一坨；与看板 trae 段同版式（board.py 该段
+          # 注释里的样板即「今日已签 · 积分 3517」独占一行）。
+          _rows+="$(tree_conn "$_last")$(tg_entry "$_uid" "$_nick")"$'\n'
+          _rows+="$(tree_sub "$_last")$(escape_html "${_st} · 积分 ${_cr}")"$'\n'
+          # 子行：该账号未用完的包里最早过期的前 3 个（逐包一行，完整时间戳）
+          _exp3=$(jq -r --arg uid "$_uid" '[.[] | select(.uid == $uid and .remain > 0 and .expire_at > 0)] | sort_by(.expire_at) | .[:3][] | "剩 \(.remain) 分 · \(.expire_fmt) 过期"' "${PACKS_JSON:-}" 2>/dev/null || true)
+          if [ -n "$_exp3" ]; then
+            while IFS= read -r _eline; do
+              [ -z "$_eline" ] && continue
+              _rows+="$(tree_sub "$_last")$(escape_html "$_eline")"$'\n'
+            done <<< "$_exp3"
+          fi
+        done <<< "$_uids"
+        tg_add_block _msg "${_rows%$'\n'}"
+
+      fi
+      # 签到健康段（主人 09-30 定：原先独立的「签到简报」并入已就绪通知，
+      # 不再单独发一条）。只列**需要关注**的账号（连败>0 / 换代过 / 仍在退避），
+      # 全健康时整段跳过 —— 健康是常态，异常才值得占版面，否则每轮重复渲染
+      # 四行「连败 0」纯属噪音。
+      # 数据源：checkin-state.json（连败/上次成功）+ state.json（自愈换代/退避）。
+      # 换代 gen>0 是 9074 自愈动过手的证据（不是故障），故单列且不加 ⚠️。
+      # 2026-10-04 主人：裸写「自愈换代 gen 1」外人读不懂 → 条目改白话
+      # 「签到设备换代 +1」（主人终版措辞），分节计数写 `· N`，
+      # 「N 个账号有备注」下沉为说明段（N 是账号数不是失败数，避免被误读为「N 个失败」）。
+      local _ck_state _st_state _hrows _hu _hfc _hlcd _hgen _hrc _hnick _hinfo
+      _ck_state="${TRAE_DATA}/data/checkin-state.json"
+      _st_state="${TRAE_DATA}/data/state.json"
+      _hrows=""
+      _hn=0
+      if [ -s "$_ck_state" ]; then
+        while IFS= read -r _hu; do
+          [ -z "$_hu" ] && continue
+          _hfc=$(jq -r --arg u "$_hu" '.[$u].fail_count // 0' "$_ck_state" 2>/dev/null || echo 0)
+          _hlcd=$(jq -r --arg u "$_hu" '.[$u].last_claim_date // "-"' "$_ck_state" 2>/dev/null || echo "-")
+          _hgen=$(jq -r --arg u "$_hu" '.accounts[$u].checkin_device_gen // 0' "$_st_state" 2>/dev/null || echo 0)
+          _hrc=$(jq -r --arg u "$_hu" '.accounts[$u].checkin_retry_count // 0' "$_st_state" 2>/dev/null || echo 0)
+          # 全健康 → 跳过（不占版面）
+          [ "${_hfc:-0}" -gt 0 ] || [ "${_hgen:-0}" -gt 0 ] || [ "${_hrc:-0}" -gt 0 ] || continue
+          _hnick=$(jq -r --arg uid "$_hu" '[.[] | select(.uid == $uid) | .nickname] | last // ""' "${CHECKIN_JSONL:-/dev/null}" 2>/dev/null || true)
+          [ -n "$_hnick" ] || _hnick="$_hu"
+          _hinfo="上次成功 ${_hlcd}"
+          [ "${_hfc:-0}" -gt 0 ] && _hinfo="${_hinfo} · ⚠️ 连续失败 ${_hfc} 次"
+          [ "${_hgen:-0}" -gt 0 ] && _hinfo="${_hinfo} · 签到设备换代 +1"
+          [ "${_hrc:-0}" -gt 0 ] && _hinfo="${_hinfo} · ⏳ 退避重试中（已退 ${_hrc} 次）"
+          # 主体是「昵称 · 健康备注」= 自然语言（规范 · 取值行口径），走
+          # tg_add_entry_text 裸文本；tg_add_entry 会把整串当机器值套 <code>
+          tg_add_entry_text _hrows "${_hnick} · ${_hinfo}"
+          _hn=$((_hn + 1))
+        done <<< "$(jq -r 'keys[]' "$_ck_state" 2>/dev/null)"
+      fi
+      if [ "$_hn" -gt 0 ]; then
+        tg_add_section _msg "🩺 签到健康 · ${_hn}"
+        tg_add_note _msg "以上账号有签到备注"
+        tg_add_block _msg "$(tree_lines "${_hrows%$'\n'}")"
+        tg_append _msg $'\n'
+      fi
+      # 模型倍率段：数据源是 7.5 生成的 RATES_TXT（/v1/models 的
+      # consumption_rate，倍率升序（价格低的排上面）、每模型一行）；服务未就绪/
+      # 取数失败时为空，
+      # 整段跳过（与凭据段同口径）。section 计数与「🔑 凭据 · N」同构。
+      if [ -n "${RATES_TXT:-}" ]; then
+        gw_add_rates_section _msg "${RATES_N:-0}"
+        tg_add_pre _msg "$RATES_TXT"
+      fi
+      # 用量 + 流水（与 wb_notify 同口径，2026-10-05 补）：只渲染 trae 自己的，
+      # 调 board.py CLI 与看板共用渲染代码与数据源。trae 当日无 usage 文件时
+      # CLI 输出空串，静默跳过（不留空行）。
+      # 资产段（签到汇总 + 即将过期）：路线 B —— 口径真源在看板（2026-11-01）。
+      gw_add_board_assets _msg trae
+      gw_add_board_usage _msg trae 12
+      gw_add_original_output _msg "$6"
+      # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
+      # 1（🟢 已就绪 / ⚠️ 签到无输出，服务在）→ 普通档；0（❌ 启动失败）→ alert。
+      if [ "${7:-0}" = "1" ]; then
+        if gw_send _msg ""; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
       else
-        echo "⚠️ Telegram secrets missing, skip trae2api notification."
+        if gw_send _msg alert; then TRAE_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
       fi
     }
 
@@ -440,7 +433,7 @@
     # 标题/结论随签到结果走：无输出 = 签到工具自身异常（⚠️ 中间态，对齐 workbuddy
     # 的「已启动 · 无可用账号」调用点），服务本身仍就绪 → 接口行照常展示（第 7 参 1）。
     _title="🟢 trae2api 已就绪"
-    _conclusion="已就绪 · 签到工具无输出（详见原始输出）"
+    _conclusion="已就绪 · 签到工具无输出（详见运行日志）"
     # 必须先初始化：本 step 顶部是 set -euo pipefail（带 -u），而下面的 else 分支
     # 不赋值 _raw_out，trae_notify 第 6 参展开它会 unbound variable 直接退出整 step。
     _raw_out=""

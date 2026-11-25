@@ -72,11 +72,14 @@ def run(cmd, capture=True, **kwargs):
     return subprocess.run(cmd, shell=isinstance(cmd, str), text=True, **kwargs)
 
 
-def notify(message):
+def notify(message, tier=""):
     """立即发送 Telegram 通知。失败只打印日志，不中断主流程。
 
     统一收尾区（⏱ 已运行 X · 🔗 运行日志）由 tg_notify.sh 的 tg_add_footer 追加：
     复用全库唯一真源，python 侧不再自造时长格式（无 TG_RUN_* 时自动跳过）。
+
+    tier: "alert" → 重要通知（❌ 失败类）；缺省 → 普通（⏭️ 跳过类）
+    档位判定见 docs/telegram-notify.md · 发送层要求。
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[notify] 跳过：缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，消息: {message}")
@@ -86,9 +89,11 @@ def notify(message):
         print(f"[notify] 跳过：通知脚本不存在: {tg_script}")
         return
     print(f"[notify] 发送即时通知: {message[:200]}")
+    # 第二实参 tier 同样走 shlex.quote：空串不拼参数（send_tg 缺省即普通档）
+    tier_arg = f" {shlex.quote(tier)}" if tier else ""
     result = run(["bash", "-c",
                   f"source {shlex.quote(tg_script)} && msg={shlex.quote(message)} "
-                  f"&& tg_add_footer msg && send_tg \"$msg\""])
+                  f"&& tg_add_footer msg && send_tg \"$msg\"{tier_arg}"])
     if result.returncode != 0:
         print(f"[notify] 发送通知失败 (code {result.returncode}): {result.stderr}")
 
@@ -361,7 +366,7 @@ def get_video_list():
             f"原因：列出远端文件失败 · 退出码 {result.returncode}",
             # 多行日志走 <pre>（与下载失败通知同款口径：规范 · 失败与异常要求给出原始输出）
             f"错误输出：\n{tg_pre_block((result.stderr or '(无错误输出)')[-500:].strip())}",
-        ]))
+        ]), "alert")  # ❌ 失败 → alert（规范 · 档位判定）
         return [], []
 
     try:
@@ -380,7 +385,7 @@ def get_video_list():
             TG_SEP,
             f"分组：{tg_entry(CAPTION_PREFIX)}",  # 机器值 → <code>（规范 · 取值行口径）
             f"原因：远端文件列表解析失败：<code>{esc(e)}</code>",
-        ]))
+        ]), "alert")  # ❌ 失败 → alert（规范 · 档位判定）
         return [], []
 
     if not isinstance(items, list):
@@ -503,7 +508,7 @@ def main():
                     # 多行日志走 <pre>（与「输出尾部」同款，避免裸换行破坏排版）
                     "\n错误输出：\n" + tg_pre_block(result.stderr[-500:].strip() if result.stderr else "(无错误输出)"),
                 ],
-            ))
+            ), "alert")  # ❌ 失败 → alert（规范 · 档位判定）
             continue
         file_size = os.path.getsize(local_file)
         print(f"✅ 下载完成: {file} (大小 {human_size(file_size)} / {file_size} bytes, 耗时 {dl_elapsed:.2f}s)")
@@ -522,7 +527,7 @@ def main():
                 "❌ 处理/上传失败",
                 file, -1.0,
                 [f"\n📄 原因\n{tg_pre_block(proc_one)}"],
-            ))
+            ), "alert")  # ❌ 失败 → alert（规范 · 档位判定）
             continue
         print(f"🎬 开始处理/上传: {file}")
         up_start = time.time()
@@ -606,7 +611,7 @@ def main():
                     file, up_elapsed,
                     # 多行块统一用 tg_pre_block（转义 + <pre> 包裹）
                     [f"\n错误输出：\n{tg_pre_block(err_tail)}"] if err_tail else ["错误输出：无详细内容，见运行日志"],
-                ))
+                ), "alert")  # ❌ 失败 → alert（规范 · 档位判定）
 
         # 清理工作目录
         if os.path.exists(WORK_DIR):

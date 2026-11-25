@@ -2229,180 +2229,177 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            # 发送层要在下面的日志截断之前就可用（tg_tail_safe 在此文件定义）。
-            source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
-            step_log="/tmp/run-openclaw-step.log"
-            meta_file="/tmp/run-openclaw-meta.env"
-            install_outcome="${{ steps.install_openclaw.outcome }}"
-            run_outcome="${{ steps.run_openclaw.outcome }}"
+          # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+          # 发送层要在下面的日志截断之前就可用（tg_tail_safe 在此文件定义）。
+          source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
+          step_log="/tmp/run-openclaw-step.log"
+          meta_file="/tmp/run-openclaw-meta.env"
+          install_outcome="${{ steps.install_openclaw.outcome }}"
+          run_outcome="${{ steps.run_openclaw.outcome }}"
 
-            sanitize_log() {
-              perl -pe 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g'
-            }
+          sanitize_log() {
+            perl -pe 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g'
+          }
 
-            error_summary=""
-            # Install/恢复失败优先取它自己的日志：此时 Run OpenClaw 可能已经
-            # 被 doctor 用空壳配置拉起并“成功”，openclaw.log 里看不到恢复失败的真因。
-            if [ "$install_outcome" = "failure" ] && [ -f /tmp/install-openclaw-step.log ]; then
-              error_summary=$(sanitize_log < /tmp/install-openclaw-step.log | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid|解包失败|不可用|revision|拒绝' | tail -n 30 || true)
-              if [ -z "$error_summary" ]; then
-                error_summary=$(sanitize_log < /tmp/install-openclaw-step.log | tail -n 60 || true)
-              fi
-            fi
-            if [ -z "$error_summary" ] && [ -f openclaw.log ]; then
-              error_summary=$(sanitize_log < openclaw.log | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid' | tail -n 20 || true)
-              if [ -z "$error_summary" ]; then
-                error_summary=$(sanitize_log < openclaw.log | tail -n 40 || true)
-              fi
-            fi
-            if [ -z "$error_summary" ] && [ -f "$step_log" ]; then
-              error_summary=$(sanitize_log < "$step_log" | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid|doctor|fallback|restart' | tail -n 30 || true)
-              if [ -z "$error_summary" ]; then
-                error_summary=$(sanitize_log < "$step_log" | tail -n 60 || true)
-              fi
-            fi
+          error_summary=""
+          # Install/恢复失败优先取它自己的日志：此时 Run OpenClaw 可能已经
+          # 被 doctor 用空壳配置拉起并“成功”，openclaw.log 里看不到恢复失败的真因。
+          if [ "$install_outcome" = "failure" ] && [ -f /tmp/install-openclaw-step.log ]; then
+            error_summary=$(sanitize_log < /tmp/install-openclaw-step.log | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid|解包失败|不可用|revision|拒绝' | tail -n 30 || true)
             if [ -z "$error_summary" ]; then
-              error_summary="openclaw.log 与步骤日志均未找到可用摘要"
+              error_summary=$(sanitize_log < /tmp/install-openclaw-step.log | tail -n 60 || true)
             fi
-            # 与同文件 send_telegram_alert / send_archive_alert 同口径（尾部 1200 字节）：
-            # 超长输出会让 <pre> 跨 4000 字符分片、标签断开即破版（规范 · 分节）
-            error_summary=$(tg_tail_safe "$error_summary" 1200)
-
-            ts_host=""
-            ts_ip=""
-            if [ -f "$HOME/ts.env" ]; then
-              ts_host=$(grep '^TS_HOST=' "$HOME/ts.env" | tail -n 1 | cut -d= -f2- || true)
-              ts_ip=$(grep '^TS_IP=' "$HOME/ts.env" | tail -n 1 | cut -d= -f2- || true)
-            fi
-            ssh_entry="Tailscale SSH 暂不可用 · 稍后查看 Actions 日志"
-            # 2026-11-15：只认正名。撞名降级出的 openclaw-1/-2、交接期的
-            # openclaw-next 都不是主人该用的入口（数分钟即失效，且与正名通知
-            # 互相打架）—— 非正名时给结论，不给临时地址。
-            if [ "${ts_host:-}" = "openclaw" ]; then
-              if [ -n "$ts_ip" ]; then
-                ssh_entry="tailscale ssh runner@${ts_host} · 或 ssh runner@${ts_ip}"
-              else
-                ssh_entry="tailscale ssh runner@${ts_host}"
-              fi
-            elif [ -n "${ts_host:-}" ]; then
-              ssh_entry="SSH 入口回收中 · 收回后自动补发正名"
-            fi
-
-            current_version=""
-            fallback_version=""
-            fallback_version_source=""
-            recorded_successful_version=""
-            fail_stage=""
-            initial_start_duration_sec=""
-            preflight_doctor_duration_sec=""
-            fallback_reinstall_duration_sec=""
-            if [ -f "$meta_file" ]; then
-              current_version=$(grep '^CURRENT_OPENCLAW_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              fallback_version=$(grep '^FALLBACK_TARGET_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              fallback_version_source=$(grep '^FALLBACK_VERSION_SOURCE=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              recorded_successful_version=$(grep '^RECORDED_SUCCESSFUL_OPENCLAW_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              fail_stage=$(grep '^FAIL_STAGE=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              initial_start_duration_sec=$(grep '^INITIAL_START_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              preflight_doctor_duration_sec=$(grep '^PREFLIGHT_DOCTOR_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-              fallback_reinstall_duration_sec=$(grep '^FALLBACK_REINSTALL_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
-            fi
-
-            # 恢复来源（2026-10-23）：自愈失败时也要能看出是不是靠历史 revision 起的。
-            restore_source=""
-            restore_rev=""
-            restore_rev_time=""
-            restore_time_display=""
-            if [ -f /tmp/openclaw-restore-meta.env ]; then
-              restore_source=$(grep '^OPENCLAW_RESTORE_SOURCE=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
-              restore_rev=$(grep '^OPENCLAW_RESTORE_REV=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
-              restore_rev_time=$(grep '^OPENCLAW_RESTORE_REV_TIME=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
-            fi
-            if [ -n "$restore_rev_time" ]; then
-              _restore_local=$(TZ=Asia/Shanghai date -d "$restore_rev_time" '+%Y-%m-%d %H:%M' 2>/dev/null || true)
-              if [ -n "$_restore_local" ]; then
-                restore_time_display="${_restore_local}（东八区）"
-              else
-                restore_time_display="$restore_rev_time"
-              fi
-            fi
-
-            export RUN_URL="${TG_RUN_URL}"
-            export SSH_ENTRY="$ssh_entry"
-            export ERROR_SUMMARY="$error_summary"
-            export CURRENT_VERSION="$current_version"
-            export FALLBACK_VERSION="$fallback_version"
-            export FALLBACK_VERSION_SOURCE="$fallback_version_source"
-            export RECORDED_SUCCESSFUL_VERSION="$recorded_successful_version"
-            export FAIL_STAGE="$fail_stage"
-            export INITIAL_START_DURATION_SEC="$initial_start_duration_sec"
-            export PREFLIGHT_DOCTOR_DURATION_SEC="$preflight_doctor_duration_sec"
-            export FALLBACK_REINSTALL_DURATION_SEC="$fallback_reinstall_duration_sec"
-            # 统一 HTML 版式 + 统一收尾区（动态值一律转义；日志收敛 <pre> 等宽块；
-            # HTML 解析失败直接报错不重发——修复"声明 parse_mode=HTML 但未转义"的隐患）
-            # 失败阶段英文 token → 中文标签（规范 · 失败与异常：英文原因 token 不得直出通知）
-            fail_stage_label=""
-            if [ -n "$fail_stage" ]; then
-              case "$fail_stage" in
-                preflight_doctor) fail_stage_label="预检修复";;
-                config_validate) fail_stage_label="配置校验";;
-                initial_start) fail_stage_label="首次启动";;
-                fallback_reinstall) fail_stage_label="回退重装";;
-                *) fail_stage_label="$fail_stage";;
-              esac
-            fi
-            # Install/恢复失败且 Run OpenClaw 没给出更具体阶段时，明确标成「安装/恢复」，
-            # 不再让通知看起来像一次普通的启动失败。Install 被前置失败跳过也算。
-            if [ "$install_outcome" != "success" ] && [ -z "$fail_stage_label" ]; then
-              fail_stage_label="安装/恢复"
-            fi
-            # 耗时显示走真源 tg_format_ms（规范 · 时长 第 3/4 层）：≥1 秒两位小数秒、
-            # 不足 1 秒整数毫秒 —— 上游写入的是整数秒，恒按 %.2f 输出时 0 会显示成
-            # "0.00 秒"：看不出快慢，也让人怀疑没测到。真源唯一实现，不再内联副本。
-            msg=""
-            tg_add_title msg "🚨 OpenClaw 自愈失败"
-            # 英文步骤名不直出通知（规范 · 失败与异常）
-            tg_add_kv msg "步骤" "运行 OpenClaw"
-            tg_add_path msg "Run ID" "${{ github.run_id }}"
-            if [ "$restore_source" = "revision" ]; then
-              tg_add_path msg "恢复来源" "历史 revision ${restore_rev:-未知}"
-              tg_add_path msg "创建时间" "${restore_time_display:-未知}"
-            fi
-            [ -n "$fail_stage_label" ] && tg_add_kv msg "失败阶段" "$fail_stage_label"
-            [ -n "$current_version" ] && tg_add_path msg "当前版本" "$current_version"
-            [ -n "$fallback_version" ] && tg_add_path msg "回退版本" "$fallback_version"
-            # 英文 token 不直出通知（规范 · 失败与异常）：known_good_file / meta_lastTouchedVersion → 中文
-            if [ -n "$fallback_version_source" ]; then
-              case "$fallback_version_source" in
-                known_good_file) _fvs="known-good 版本文件" ;;
-                meta_lastTouchedVersion) _fvs="meta 里的 lastTouchedVersion" ;;
-                *) _fvs="$fallback_version_source" ;;
-              esac
-              tg_add_kv msg "回退来源" "$_fvs"
-            fi
-            [ -n "$recorded_successful_version" ] && tg_add_path msg "成功版本记录" "$recorded_successful_version"
-            # 耗时走 tg_format_ms（规范 · 时长第 3/4 层），不再一律按秒两位小数
-            [ -n "$initial_start_duration_sec" ] && tg_add_kv msg "首次启动耗时" "$(tg_format_ms "$initial_start_duration_sec")"
-            [ -n "$preflight_doctor_duration_sec" ] && tg_add_kv msg "预检修复耗时" "$(tg_format_ms "$preflight_doctor_duration_sec")"
-            [ -n "$fallback_reinstall_duration_sec" ] && tg_add_kv msg "回退重装耗时" "$(tg_format_ms "$fallback_reinstall_duration_sec")"
-            # 可执行命令才等宽；「暂不可用」是自然语言，走裸文本（规范 · 取值行口径）
-            if [ -n "$ssh_entry" ]; then
-              case "$ssh_entry" in
-                tailscale\ ssh*) tg_add_path msg "SSH 调试" "$ssh_entry" ;;
-                *)                tg_add_kv   msg "SSH 调试" "$ssh_entry" ;;
-              esac
-            fi
-            tg_add_section msg "🧾 关键日志"
-            # 走真源 tg_add_pre（转义 + <pre> 包裹），与同文件归档告警同款；
-            # 此前本处手拼 <pre>，是 tg_add_pre 的重复实现
-            tg_add_pre msg "$error_summary"
-            tg_add_footer msg
-            # 统一走发送层：429 按 retry_after 重试已内置，HTML 解析失败直接报错。
-            # 用 chunked 版：日志经转义后可能膨胀到单条上限，分片比整条被拒好
-            send_tg_chunked "$msg" alert || true
-          else
-            echo "⚠️ Telegram alert skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty"
           fi
+          if [ -z "$error_summary" ] && [ -f openclaw.log ]; then
+            error_summary=$(sanitize_log < openclaw.log | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid' | tail -n 20 || true)
+            if [ -z "$error_summary" ]; then
+              error_summary=$(sanitize_log < openclaw.log | tail -n 40 || true)
+            fi
+          fi
+          if [ -z "$error_summary" ] && [ -f "$step_log" ]; then
+            error_summary=$(sanitize_log < "$step_log" | grep -Ei 'error|fail|exception|unhealthy|timed out|cannot|denied|missing|invalid|doctor|fallback|restart' | tail -n 30 || true)
+            if [ -z "$error_summary" ]; then
+              error_summary=$(sanitize_log < "$step_log" | tail -n 60 || true)
+            fi
+          fi
+          if [ -z "$error_summary" ]; then
+            error_summary="openclaw.log 与步骤日志均未找到可用摘要"
+          fi
+          # 与同文件 send_telegram_alert / send_archive_alert 同口径（尾部 1200 字节）：
+          # 超长输出会让 <pre> 跨 4000 字符分片、标签断开即破版（规范 · 分节）
+          error_summary=$(tg_tail_safe "$error_summary" 1200)
+
+          ts_host=""
+          ts_ip=""
+          if [ -f "$HOME/ts.env" ]; then
+            ts_host=$(grep '^TS_HOST=' "$HOME/ts.env" | tail -n 1 | cut -d= -f2- || true)
+            ts_ip=$(grep '^TS_IP=' "$HOME/ts.env" | tail -n 1 | cut -d= -f2- || true)
+          fi
+          ssh_entry="Tailscale SSH 暂不可用 · 稍后查看 Actions 日志"
+          # 2026-11-15：只认正名。撞名降级出的 openclaw-1/-2、交接期的
+          # openclaw-next 都不是主人该用的入口（数分钟即失效，且与正名通知
+          # 互相打架）—— 非正名时给结论，不给临时地址。
+          if [ "${ts_host:-}" = "openclaw" ]; then
+            if [ -n "$ts_ip" ]; then
+              ssh_entry="tailscale ssh runner@${ts_host} · 或 ssh runner@${ts_ip}"
+            else
+              ssh_entry="tailscale ssh runner@${ts_host}"
+            fi
+          elif [ -n "${ts_host:-}" ]; then
+            ssh_entry="SSH 入口回收中 · 收回后自动补发正名"
+          fi
+
+          current_version=""
+          fallback_version=""
+          fallback_version_source=""
+          recorded_successful_version=""
+          fail_stage=""
+          initial_start_duration_sec=""
+          preflight_doctor_duration_sec=""
+          fallback_reinstall_duration_sec=""
+          if [ -f "$meta_file" ]; then
+            current_version=$(grep '^CURRENT_OPENCLAW_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            fallback_version=$(grep '^FALLBACK_TARGET_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            fallback_version_source=$(grep '^FALLBACK_VERSION_SOURCE=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            recorded_successful_version=$(grep '^RECORDED_SUCCESSFUL_OPENCLAW_VERSION=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            fail_stage=$(grep '^FAIL_STAGE=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            initial_start_duration_sec=$(grep '^INITIAL_START_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            preflight_doctor_duration_sec=$(grep '^PREFLIGHT_DOCTOR_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+            fallback_reinstall_duration_sec=$(grep '^FALLBACK_REINSTALL_DURATION_SEC=' "$meta_file" | tail -n 1 | cut -d= -f2- || true)
+          fi
+
+          # 恢复来源（2026-10-23）：自愈失败时也要能看出是不是靠历史 revision 起的。
+          restore_source=""
+          restore_rev=""
+          restore_rev_time=""
+          restore_time_display=""
+          if [ -f /tmp/openclaw-restore-meta.env ]; then
+            restore_source=$(grep '^OPENCLAW_RESTORE_SOURCE=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
+            restore_rev=$(grep '^OPENCLAW_RESTORE_REV=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
+            restore_rev_time=$(grep '^OPENCLAW_RESTORE_REV_TIME=' /tmp/openclaw-restore-meta.env | tail -n 1 | cut -d= -f2- || true)
+          fi
+          if [ -n "$restore_rev_time" ]; then
+            _restore_local=$(TZ=Asia/Shanghai date -d "$restore_rev_time" '+%Y-%m-%d %H:%M' 2>/dev/null || true)
+            if [ -n "$_restore_local" ]; then
+              restore_time_display="${_restore_local}（东八区）"
+            else
+              restore_time_display="$restore_rev_time"
+            fi
+          fi
+
+          export RUN_URL="${TG_RUN_URL}"
+          export SSH_ENTRY="$ssh_entry"
+          export ERROR_SUMMARY="$error_summary"
+          export CURRENT_VERSION="$current_version"
+          export FALLBACK_VERSION="$fallback_version"
+          export FALLBACK_VERSION_SOURCE="$fallback_version_source"
+          export RECORDED_SUCCESSFUL_VERSION="$recorded_successful_version"
+          export FAIL_STAGE="$fail_stage"
+          export INITIAL_START_DURATION_SEC="$initial_start_duration_sec"
+          export PREFLIGHT_DOCTOR_DURATION_SEC="$preflight_doctor_duration_sec"
+          export FALLBACK_REINSTALL_DURATION_SEC="$fallback_reinstall_duration_sec"
+          # 统一 HTML 版式 + 统一收尾区（动态值一律转义；日志收敛 <pre> 等宽块；
+          # HTML 解析失败直接报错不重发——修复"声明 parse_mode=HTML 但未转义"的隐患）
+          # 失败阶段英文 token → 中文标签（规范 · 失败与异常：英文原因 token 不得直出通知）
+          fail_stage_label=""
+          if [ -n "$fail_stage" ]; then
+            case "$fail_stage" in
+              preflight_doctor) fail_stage_label="预检修复";;
+              config_validate) fail_stage_label="配置校验";;
+              initial_start) fail_stage_label="首次启动";;
+              fallback_reinstall) fail_stage_label="回退重装";;
+              *) fail_stage_label="$fail_stage";;
+            esac
+          fi
+          # Install/恢复失败且 Run OpenClaw 没给出更具体阶段时，明确标成「安装/恢复」，
+          # 不再让通知看起来像一次普通的启动失败。Install 被前置失败跳过也算。
+          if [ "$install_outcome" != "success" ] && [ -z "$fail_stage_label" ]; then
+            fail_stage_label="安装/恢复"
+          fi
+          # 耗时显示走真源 tg_format_ms（规范 · 时长 第 3/4 层）：≥1 秒两位小数秒、
+          # 不足 1 秒整数毫秒 —— 上游写入的是整数秒，恒按 %.2f 输出时 0 会显示成
+          # "0.00 秒"：看不出快慢，也让人怀疑没测到。真源唯一实现，不再内联副本。
+          msg=""
+          tg_add_title msg "🚨 OpenClaw 自愈失败"
+          # 英文步骤名不直出通知（规范 · 失败与异常）
+          tg_add_kv msg "步骤" "运行 OpenClaw"
+          tg_add_path msg "Run ID" "${{ github.run_id }}"
+          if [ "$restore_source" = "revision" ]; then
+            tg_add_path msg "恢复来源" "历史 revision ${restore_rev:-未知}"
+            tg_add_path msg "创建时间" "${restore_time_display:-未知}"
+          fi
+          [ -n "$fail_stage_label" ] && tg_add_kv msg "失败阶段" "$fail_stage_label"
+          [ -n "$current_version" ] && tg_add_path msg "当前版本" "$current_version"
+          [ -n "$fallback_version" ] && tg_add_path msg "回退版本" "$fallback_version"
+          # 英文 token 不直出通知（规范 · 失败与异常）：known_good_file / meta_lastTouchedVersion → 中文
+          if [ -n "$fallback_version_source" ]; then
+            case "$fallback_version_source" in
+              known_good_file) _fvs="known-good 版本文件" ;;
+              meta_lastTouchedVersion) _fvs="meta 里的 lastTouchedVersion" ;;
+              *) _fvs="$fallback_version_source" ;;
+            esac
+            tg_add_kv msg "回退来源" "$_fvs"
+          fi
+          [ -n "$recorded_successful_version" ] && tg_add_path msg "成功版本记录" "$recorded_successful_version"
+          # 耗时走 tg_format_ms（规范 · 时长第 3/4 层），不再一律按秒两位小数
+          [ -n "$initial_start_duration_sec" ] && tg_add_kv msg "首次启动耗时" "$(tg_format_ms "$initial_start_duration_sec")"
+          [ -n "$preflight_doctor_duration_sec" ] && tg_add_kv msg "预检修复耗时" "$(tg_format_ms "$preflight_doctor_duration_sec")"
+          [ -n "$fallback_reinstall_duration_sec" ] && tg_add_kv msg "回退重装耗时" "$(tg_format_ms "$fallback_reinstall_duration_sec")"
+          # 可执行命令才等宽；「暂不可用」是自然语言，走裸文本（规范 · 取值行口径）
+          if [ -n "$ssh_entry" ]; then
+            case "$ssh_entry" in
+              tailscale\ ssh*) tg_add_path msg "SSH 调试" "$ssh_entry" ;;
+              *)                tg_add_kv   msg "SSH 调试" "$ssh_entry" ;;
+            esac
+          fi
+          tg_add_section msg "🧾 关键日志"
+          # 走真源 tg_add_pre（转义 + <pre> 包裹），与同文件归档告警同款；
+          # 此前本处手拼 <pre>，是 tg_add_pre 的重复实现
+          tg_add_pre msg "$error_summary"
+          tg_add_footer msg
+          # 统一走发送层：429 按 retry_after 重试已内置，HTML 解析失败直接报错。
+          # 用 chunked 版：日志经转义后可能膨胀到单条上限，分片比整条被拒好
+          send_tg_chunked "$msg" alert || true
 
       - name: Run Cloudflared Tunnel
         # 2026-10-29 下线优化（B1）：同 Install Cloudflared 护栏口径；隧道此刻才启动，
@@ -3003,16 +3000,15 @@ jobs:
             echo "ℹ️ 本轮由 handoff guard 让位取消，跳过入口失败通知"
             exit 0
           fi
-          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
-            msg=""
-            tg_add_title msg "⚠️ Tailscale SSH 入口设置失败"
-            tg_add_path msg "Run ID" "${{ github.run_id }}"
-            tg_add_kv msg "影响" "本轮无 SSH 调试入口；OpenClaw 主流程不受影响"
-            tg_add_note msg "排查：查看 Actions 日志中「Tailscale daemon 纳管」与「Setup Tailscale」两步。"
-            tg_add_footer msg
-            send_tg "$msg" alert || true
-          fi
+          # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+          source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
+          msg=""
+          tg_add_title msg "⚠️ Tailscale SSH 入口设置失败"
+          tg_add_path msg "Run ID" "${{ github.run_id }}"
+          tg_add_kv msg "影响" "本轮无 SSH 调试入口；OpenClaw 主流程不受影响"
+          tg_add_note msg "排查：查看 Actions 日志中「Tailscale daemon 纳管」与「Setup Tailscale」两步。"
+          tg_add_footer msg
+          send_tg "$msg" alert || true
 
 
       - name: Collect background post-health tasks
@@ -4394,32 +4390,31 @@ jobs:
           }
           send_telegram_alert() {
             local obj="$1" verdict="$2" reason="${3:-}" detail="${4:-}"
-            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-              local run_id="${GITHUB_RUN_ID:-manual}"
-              # 统一 HTML 版式 + 统一收尾区（tg_add_* 内置转义，值原样传入即可；
-              # 二次 escape_html 会把 & 变成 &amp;amp; 字面量直出）。真源已在 step
-              # 顶层 source（规范 · 通知函数的正确接法），函数体只用助手、不再重复 source。
-              local full_msg=""
-              tg_add_title full_msg "⚠️ 归档告警 · $(obj_label "$obj")"
-              tg_add_path full_msg "对象" "$obj"
-              tg_add_kv full_msg "结论" "$verdict"
-              if [ -n "$reason" ]; then
-                tg_add_kv full_msg "原因" "$reason"
-              fi
-              # Run ID 属机器值 → <code>（规范 · 机器值）；排在 kv 区末行，
-              # 让 <pre> 原始输出成为正文最后一块（其后只跟收尾区）
-              tg_add_path full_msg "Run ID" "${run_id}"
-              if [ -n "$detail" ]; then
-                # 多行原始输出 → <pre>（规范 · 多行块）；取尾部 1200 字节（与 file_split.sh
-                # 日志摘要同口径）：超长输出会让 <pre> 跨 4000 字符分片，标签断开即破版
-                tg_add_section full_msg "🧾 原始输出"
-                tg_add_pre full_msg "$(tg_tail_safe "$detail" 1200)"
-              fi
-              tg_add_footer full_msg
-              # 走发送层而非 curl 直发：429 重试已内建，HTML 解析失败直接报错（规范 · 发送层），
-              # 429 限流按 retry_after 等待重试，disable_web_page_preview 内置
-              send_tg "$full_msg" alert || true
+            # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+            local run_id="${GITHUB_RUN_ID:-manual}"
+            # 统一 HTML 版式 + 统一收尾区（tg_add_* 内置转义，值原样传入即可；
+            # 二次 escape_html 会把 & 变成 &amp;amp; 字面量直出）。真源已在 step
+            # 顶层 source（规范 · 通知函数的正确接法），函数体只用助手、不再重复 source。
+            local full_msg=""
+            tg_add_title full_msg "⚠️ 归档告警 · $(obj_label "$obj")"
+            tg_add_path full_msg "对象" "$obj"
+            tg_add_kv full_msg "结论" "$verdict"
+            if [ -n "$reason" ]; then
+              tg_add_kv full_msg "原因" "$reason"
             fi
+            # Run ID 属机器值 → <code>（规范 · 机器值）；排在 kv 区末行，
+            # 让 <pre> 原始输出成为正文最后一块（其后只跟收尾区）
+            tg_add_path full_msg "Run ID" "${run_id}"
+            if [ -n "$detail" ]; then
+              # 多行原始输出 → <pre>（规范 · 多行块）；取尾部 1200 字节（与 file_split.sh
+              # 日志摘要同口径）：超长输出会让 <pre> 跨 4000 字符分片，标签断开即破版
+              tg_add_section full_msg "🧾 原始输出"
+              tg_add_pre full_msg "$(tg_tail_safe "$detail" 1200)"
+            fi
+            tg_add_footer full_msg
+            # 走发送层而非 curl 直发：429 重试已内建，HTML 解析失败直接报错（规范 · 发送层），
+            # 429 限流按 retry_after 等待重试，disable_web_page_preview 内置
+            send_tg "$full_msg" alert || true
           }
 
           echo $$ > "$PID_FILE"
@@ -4786,17 +4781,14 @@ jobs:
 
           send_shutdown_warning() {
             sleep "${SHUTDOWN_DELAY_SECONDS}"
-            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-              msg=""
-              tg_add_title msg "⛔ OpenClaw 约 ${SHUTDOWN_WARNING_BEFORE_MINUTES} 分钟后停机"
-              # A1 反转后的真停机口径：停机瞬间 = 数据安全边界，停机前写入都安全
-              tg_add_kv msg "随后执行" "停 OpenClaw（落定数据）→ 归档 → 停 AI 栈"
-              tg_add_note msg "请在此 ${SHUTDOWN_WARNING_BEFORE_MINUTES} 分钟内保存状态或完成当前操作；停机后写入不再入档。"
-              tg_add_footer msg
-              send_tg "$msg" alert || true
-            else
-              echo "⚠️ Telegram secrets missing, skip shutdown warning."
-            fi
+            # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+            msg=""
+            tg_add_title msg "⛔ OpenClaw 约 ${SHUTDOWN_WARNING_BEFORE_MINUTES} 分钟后停机"
+            # A1 反转后的真停机口径：停机瞬间 = 数据安全边界，停机前写入都安全
+            tg_add_kv msg "随后执行" "停 OpenClaw（落定数据）→ 归档 → 停 AI 栈"
+            tg_add_note msg "请在此 ${SHUTDOWN_WARNING_BEFORE_MINUTES} 分钟内保存状态或完成当前操作；停机后写入不再入档。"
+            tg_add_footer msg
+            send_tg "$msg" alert || true
           }
 
           # 2026-11-17 降噪（主人）：T-15 预告与「交接准备中」的『预计交出/预计冻结』
@@ -5245,27 +5237,26 @@ jobs:
           }
           send_archive_alert() {
             local obj="$1" verdict="$2" reason="${3:-}" detail="${4:-}"
-            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-              local run_id="${GITHUB_RUN_ID:-manual}"
-              # 真源已在 step 顶层 source（规范 · 通知函数的正确接法）：本函数被收尾 step 在主 shell 里直接调用，
-              # 函数体内再 source 一次会覆盖调用点的本地覆写（此前靠 source 幂等侥幸无碍）
-              local full_msg=""
-              # 标题区分阶段：周期归档与最终归档走两个函数，此前标题完全相同，
-              # 读者分不清告警来自哪一轮（调用点里的 "final" 前缀已由本标题承担）
-              tg_add_title full_msg "⚠️ 最终归档告警 · $(obj_label "$obj")"
-              tg_add_path full_msg "对象" "$obj"
-              tg_add_kv full_msg "结论" "$verdict"
-              if [ -n "$reason" ]; then
-                tg_add_kv full_msg "原因" "$reason"
-              fi
-              tg_add_path full_msg "Run ID" "$run_id"
-              if [ -n "$detail" ]; then
-                tg_add_section full_msg "🧾 原始输出"
-                tg_add_pre full_msg "$(tg_tail_safe "$detail" 1200)"
-              fi
-              tg_add_footer full_msg
-              send_tg "$full_msg" alert || true
+            # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+            local run_id="${GITHUB_RUN_ID:-manual}"
+            # 真源已在 step 顶层 source（规范 · 通知函数的正确接法）：本函数被收尾 step 在主 shell 里直接调用，
+            # 函数体内再 source 一次会覆盖调用点的本地覆写（此前靠 source 幂等侥幸无碍）
+            local full_msg=""
+            # 标题区分阶段：周期归档与最终归档走两个函数，此前标题完全相同，
+            # 读者分不清告警来自哪一轮（调用点里的 "final" 前缀已由本标题承担）
+            tg_add_title full_msg "⚠️ 最终归档告警 · $(obj_label "$obj")"
+            tg_add_path full_msg "对象" "$obj"
+            tg_add_kv full_msg "结论" "$verdict"
+            if [ -n "$reason" ]; then
+              tg_add_kv full_msg "原因" "$reason"
             fi
+            tg_add_path full_msg "Run ID" "$run_id"
+            if [ -n "$detail" ]; then
+              tg_add_section full_msg "🧾 原始输出"
+              tg_add_pre full_msg "$(tg_tail_safe "$detail" 1200)"
+            fi
+            tg_add_footer full_msg
+            send_tg "$full_msg" alert || true
           }
 
           # 归档结果累积（供收尾的「最终归档结果」通知读取）：对象 \t 结论 \t 字节 \t 备注
@@ -5821,17 +5812,14 @@ jobs:
             # 字段口径见 docs/openclaw.md「九、通知口径」9.1（与运行步骤的 wb_notify 同源）。
             # 收尾没有 WB_CREDS / WB_POOL（那是启动步骤的局部变量），本函数只出
             # 结论 + 版本 + 数据目录：网关已停，再列账号池会让人以为服务还在跑。
-            if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-              local _msg=""
-              tg_add_title _msg "$1"
-              tg_add_kv _msg "结论" "$2"
-              [ -n "${WB_VER:-}" ] && tg_add_path _msg "版本" "$WB_VER"
-              tg_add_path _msg "数据目录" "$WB_DIR"
-              tg_add_footer _msg
-              send_tg "$_msg" alert || echo "::warning::TG 通知发送失败（不影响任务）"
-            else
-              echo "⚠️ Telegram secrets missing, skip workbuddy-gateway stop notification."
-            fi
+            # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+            local _msg=""
+            tg_add_title _msg "$1"
+            tg_add_kv _msg "结论" "$2"
+            [ -n "${WB_VER:-}" ] && tg_add_path _msg "版本" "$WB_VER"
+            tg_add_path _msg "数据目录" "$WB_DIR"
+            tg_add_footer _msg
+            send_tg "$_msg" alert || echo "::warning::TG 通知发送失败（不影响任务）"
           }
           # 2026-11-18 合并降噪（主人拍板）：四套宿主服务的「正常停止」不再各发一条，
           # 汇总为一条普通档「服务已停止」；进程残留仍单独 alert（需人处理），不进汇总。
@@ -5886,14 +5874,12 @@ jobs:
           (
             set +e
             if [ "$AC_STILL_RUNNING" = "1" ]; then
-              if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-                _m=""
-                tg_add_title _m "⚠️ autoclaw-proxy 已停止 · 进程残留"
-                tg_add_kv _m "结论" "强制结束后仍有进程残留"
-                tg_add_path _m "端口" "8322"
-                tg_add_footer _m
-                send_tg "$_m" alert || true
-              fi
+              _m=""
+              tg_add_title _m "⚠️ autoclaw-proxy 已停止 · 进程残留"
+              tg_add_kv _m "结论" "强制结束后仍有进程残留"
+              tg_add_path _m "端口" "8322"
+              tg_add_footer _m
+              send_tg "$_m" alert || true
             else
               printf '<code>%s</code> · %s\n' "autoclaw-proxy" "数据目录保持原状" >> /tmp/openclaw-stop-ok.list
             fi
@@ -5933,14 +5919,12 @@ jobs:
           (
             set +e
             if [ "$Z2A_STILL_RUNNING" = "1" ]; then
-              if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-                _m=""
-                tg_add_title _m "⚠️ zcode2api 已停止 · 进程残留"
-                tg_add_kv _m "结论" "强制结束后仍有进程残留"
-                tg_add_path _m "端口" "8319"
-                tg_add_footer _m
-                send_tg "$_m" alert || true
-              fi
+              _m=""
+              tg_add_title _m "⚠️ zcode2api 已停止 · 进程残留"
+              tg_add_kv _m "结论" "强制结束后仍有进程残留"
+              tg_add_path _m "端口" "8319"
+              tg_add_footer _m
+              send_tg "$_m" alert || true
             else
               printf '<code>%s</code> · %s\n' "zcode2api" "数据目录保持原状" >> /tmp/openclaw-stop-ok.list
             fi
@@ -5979,14 +5963,12 @@ jobs:
           (
             set +e
             if [ "$GL_STILL_RUNNING" = "1" ]; then
-              if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-                _m=""
-                tg_add_title _m "⚠️ qingyan-proxy 已停止 · 进程残留"
-                tg_add_kv _m "结论" "强制结束后仍有进程残留"
-                tg_add_path _m "端口" "8320"
-                tg_add_footer _m
-                send_tg "$_m" alert || true
-              fi
+              _m=""
+              tg_add_title _m "⚠️ qingyan-proxy 已停止 · 进程残留"
+              tg_add_kv _m "结论" "强制结束后仍有进程残留"
+              tg_add_path _m "端口" "8320"
+              tg_add_footer _m
+              send_tg "$_m" alert || true
             else
               printf '<code>%s</code> · %s\n' "qingyan-proxy" "运行目录保持原状" >> /tmp/openclaw-stop-ok.list
             fi

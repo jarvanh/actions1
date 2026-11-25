@@ -86,6 +86,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ⚠️ 删除失败需人工重试 → alert 档（规范 · 档位判定）
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           AUTO_DELETE: ${{ github.event.inputs.auto_delete_duplicates == 'true' }}
           DEDUPE_BY_ID_ONLY: ${{ github.event.inputs.dedupe_by_id_only == 'true' }}
         run: |
@@ -101,6 +104,9 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID_PH }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ❌ 清理失败走 alert 档（规范 · 档位判定）
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
         run: |
           bash "${GITHUB_WORKSPACE}/.github/scripts/tg-channel/reset_tg_channel.sh" \
             "${TELEGRAM_CHANNEL_ID}" \
@@ -117,6 +123,9 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID_PH }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ⚠️（部分失败需人工重试）/ ❌（全部失败）→ alert；📺 成功走普通
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           PYTHONUNBUFFERED: "1"
         run: |
           # 缺 secret 早失败：只列名称、不打印值。
@@ -145,6 +154,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID_PH }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 本步通知当前走普通档（损坏清单 / 汇总），预置 alert 凭据：将来升档不必再改 env
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION }}
@@ -309,12 +321,17 @@ jobs:
           fi
 
           # 逐条构造成员条目（文件名 · 大小 · URL），交给 tree_fold 统一截断；
-          # 不再把整行塞进 <code>（规范 · 条目与树形）
+          # 不再把整行塞进 <code>（规范 · 条目与树形）。
+          # URL 是读者点得开的外部链接 → <a>（规范 · 机器值）；tg_entry 会对元数据整体
+          # 转义（标签被吃掉），故只让它处理文件名/大小，链接段手工拼 <a>。
           FILE_LIST=""
           if [ -f new_downloads_list.txt ]; then
             while IFS=$'\t' read -r _n _s _u || [ -n "${_n:-}" ]; do
               [ -z "$_n" ] && continue
-              FILE_LIST+="$(tg_entry "$_n" "$_s" "$_u")"$'\n'
+              _u="${_u%$'\r'}"
+              _line=$(tg_entry "$_n" "$_s")
+              [ -n "$_u" ] && _line+=" · <a href=\"$(escape_html "$_u")\">打开</a>"
+              FILE_LIST+="${_line}"$'\n'
             done < new_downloads_list.txt
           fi
 
@@ -328,6 +345,7 @@ jobs:
           # 转码上传频道」，写「下载」会让人以为只下不传，也解释不了下面那几行
           # 库存/已上传统计
           if [ "${DOWNLOAD_FAILED:-0}" -eq 1 ]; then
+            # ⚠️ 走普通侧：yt-dlp 失败=本轮自动降级未取全，服务/链路可用、下轮自动重试，无需动手（规范 · 档位判定）
             tg_add_title msg "⚠️ ph 收藏夹同步未完成"
             tg_add_kv msg "下载结果" "yt-dlp 失败，本轮未取到新视频（详见运行日志）"
           else

@@ -46,40 +46,37 @@ QODER_IMAGE="ghcr.io/jarvanh/qoder2api-hub:${QODER_TAG}"
 # 已不在，展示指向已停进程的地址会误导读者，与 wb_notify 同口径）。
 qoder_notify() {
   QODER_NOTIFY_OK=0
-  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-    local _msg=""
-    tg_add_title _msg "$1"
-    tg_add_kv _msg "结论" "$2"
-    tg_add_path _msg "数据目录" "$QODER_DATA"
-    [ -n "$3" ] && tg_add_path _msg "版本" "$3"
-    [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
-    if [ "${7:-0}" = "1" ]; then
-      tg_add_path _msg "接口" "http://127.0.0.1:${QODER_PORT}/v1"
-      # 看板入口 + 面板密码（与看板 admin_entries 统一走 https 8447）：
-      # ts.env 由 Tailscale 步骤在本 step 之前写出；缺失时两行整体跳过。
-      if [ -n "${TS_FQDN:-}" ]; then
-        # 看板是读者点得开的外部链接 → <a>（规范 · 机器值）；接口地址是本机回环，仍走 <code>
-        tg_add_link _msg "看板" "https://${TS_FQDN}:8447/" "打开看板"
-        # 设计如此：看板密码明文进 TG 通知（便于手机端直接登录）。
-        local _qp="$(cat "$QODER_DATA/.panel-password" 2>/dev/null || true)"
-        tg_add_path _msg "看板密码" "${_qp:-未取到}"
-      fi
-      # 设计如此：API Key 明文进 TG 通知（与原展示口径一致）。
-      tg_add_path _msg "API Key" "$(read_qoder_key | grep . || echo 未取到)"
-      # 资产段（签到汇总）：路线 B —— 口径真源在看板（2026-11-01）。
-      gw_add_board_assets _msg qoder
+  # alert 档不加凭据静默守卫：凭据缺失由发送层失败留痕（规范 · 接线）
+  local _msg=""
+  tg_add_title _msg "$1"
+  tg_add_kv _msg "结论" "$2"
+  tg_add_path _msg "数据目录" "$QODER_DATA"
+  [ -n "$3" ] && tg_add_path _msg "版本" "$3"
+  [ -n "$4" ] && tg_add_kv _msg "更新" "$4"
+  if [ "${7:-0}" = "1" ]; then
+    tg_add_path _msg "接口" "http://127.0.0.1:${QODER_PORT}/v1"
+    # 看板入口 + 面板密码（与看板 admin_entries 统一走 https 8447）：
+    # ts.env 由 Tailscale 步骤在本 step 之前写出；缺失时两行整体跳过。
+    if [ -n "${TS_FQDN:-}" ]; then
+      # 看板是读者点得开的外部链接 → <a>（规范 · 机器值）；接口地址是本机回环，仍走 <code>
+      tg_add_link _msg "看板" "https://${TS_FQDN}:8447/" "打开看板"
+      # 设计如此：看板密码明文进 TG 通知（便于手机端直接登录）。
+      local _qp="$(cat "$QODER_DATA/.panel-password" 2>/dev/null || true)"
+      tg_add_path _msg "看板密码" "${_qp:-未取到}"
     fi
-    [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
-    gw_add_original_output _msg "$6"
-    # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
-    # 1（🟢 已就绪）→ 普通档；0（❌ 启动失败）→ alert。
-    if [ "${7:-0}" = "1" ]; then
-      if gw_send _msg ""; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
-    else
-      if gw_send _msg alert; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
-    fi
+    # 设计如此：API Key 明文进 TG 通知（与原展示口径一致）。
+    tg_add_path _msg "API Key" "$(read_qoder_key | grep . || echo 未取到)"
+    # 资产段（签到汇总）：路线 B —— 口径真源在看板（2026-11-01）。
+    gw_add_board_assets _msg qoder
+  fi
+  [ -n "$5" ] && tg_add_kv _msg "原因" "$5"
+  gw_add_original_output _msg "$6"
+  # 2026-11-18 档位收紧（规范 · 档位判定）：第 7 参 = 服务就绪态——
+  # 1（🟢 已就绪）→ 普通档；0（❌ 启动失败）→ alert。
+  if [ "${7:-0}" = "1" ]; then
+    if gw_send _msg ""; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
   else
-    echo "⚠️ Telegram secrets missing, skip qoder2api notification."
+    if gw_send _msg alert; then QODER_NOTIFY_OK=1; else echo "::warning::TG 通知发送失败（不影响任务）"; fi
   fi
 }
 

@@ -142,21 +142,24 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 统一规范（规范 · 档位判定）：本域不再「全普通」——⛔ 取消 / ❌ 失败属 alert
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
           case "${{ job.status }}" in
             # 状态语义由标题 emoji 承担即可，kv 值里再带一个就成了重复（规范 · 结果通知）
-            success)   _emoji="✅"; _status="完成" ;;
-            cancelled) _emoji="⛔"; _status="已取消" ;;
-            *)         _emoji="❌"; _status="失败" ;;
+            success)   _emoji="✅"; _status="完成"; _tier="" ;;
+            cancelled) _emoji="⛔"; _status="已取消"; _tier="alert" ;;
+            *)         _emoji="❌"; _status="失败"; _tier="alert" ;;
           esac
           msg=""
           tg_add_title msg "$_emoji iCloud 照片下载"
           tg_add_kv msg "图库" "个人 + 共享 · 增量 · 自动清理"
           tg_add_kv msg "状态" "$_status"
           tg_add_footer msg
-          send_tg "$msg" || echo "::warning::iCloud 通知发送失败（不影响任务）"
+          send_tg "$msg" "$_tier" || echo "::warning::iCloud 通知发送失败（不影响任务）"
 
       # ===== 数据库回传（失败/取消也执行）=====
       # 停容器 → SQLite 干净关闭 → 整目录 sync 镜像回传（db 未变化则跳过）

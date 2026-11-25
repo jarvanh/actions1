@@ -377,7 +377,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh   # 关注 emby.yml
 
 - **凭据通知只在改密时发**（secret 为空随机生成、或库内密码漂移纠正）；密码明文走
   `<code>`（自动转义），**绝不落运行日志**；长期有效密码仍是 secret 本身。
-- 收尾与播放通知的时长都只从收尾区出；播放通知的 `TG_RUN_URL` 由 job 级注入。
+- 收尾与播放通知的时长都只从收尾区出；播放通知的 `TG_RUN_URL` 由各通知 step 级注入（见 `emby.yml` 的 5 处 `TG_RUN_URL`）。
 
 ### 安全边界
 

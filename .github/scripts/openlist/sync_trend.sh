@@ -220,12 +220,14 @@ PYEOF
   local msg=""
   tg_add_title msg "📈 同步趋势"
   tg_add_section msg "📊 本轮"
-  tg_add_kv msg "净传 / 历时" "$(format_bytes "$_this_tr") / $(tg_format_duration "$_this_du")"
+  tg_add_kv msg "净传" "$(format_bytes "$_this_tr")"
+  # 时长走真源三段式（规范 · 时长：已发生时长用 tg_format_duration）
+  tg_add_kv msg "历时" "$(tg_format_duration "$_this_du")"
   # 文件口径（字节口径不可得时唯一的"还差多少"线索）
   tg_add_kv msg "缺失 / 修复成功（文件）" "${_miss_files} / ${_fix_files}"
   if [ "$_rounds" -gt 1 ]; then
     tg_add_section msg "🧮 近 ${_rounds} 轮"
-    tg_add_kv msg "平均净传速率" "$(format_bytes "${_rate%.*}")/h"
+    tg_add_kv msg "平均净传速率" "$(format_bytes "${_rate%.*}") / 小时"
     if [ -n "$_rem" ]; then
       tg_add_kv msg "剩余未传" "$(format_bytes "$_rem")"
       if [ -n "$_eta" ] && [ "$_eta" -ge 0 ] 2>/dev/null; then

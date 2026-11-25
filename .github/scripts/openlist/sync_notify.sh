@@ -283,14 +283,19 @@ _send_sync_result_notification() {
       # 尾部安全截断：裸 tail -c 会切断 UTF-8，<pre> 跨分片破版（规范 · 多行块）
       critical_logs=$(tg_tail_safe "$critical_logs" 1200)
     fi
-    local err_title err_status
+    local err_title err_status _err_tier
     if [ "$is_partial_failure" -eq 1 ]; then
       err_title="⚠️ ${task_name} 部分文件同步失败"
       # 英文 token 中文化（规范 · 失败与异常：退出码 45，而不是 exit=45）
       err_status="部分文件同步失败 · 退出码 ${sync_status}"
+      # ⚠️ 走普通档（规范 · 档位判定「部分失败但已自动降级、服务可用」）：fail_list 只含
+      # 失败文件，其余已正常同步、部分文件已通过其他方式同步（fix_list），无需读者当场动手
+      _err_tier=""
     else
       err_title="❌ ${task_name} 同步失败"
       err_status="同步失败 · 退出码 ${sync_status}"
+      # ❌ 失败 → alert（规范 · 档位判定）
+      _err_tier="alert"
     fi
     local err_msg=""
     _notify_add_header err_msg "$err_title" "$err_status"
@@ -310,7 +315,8 @@ _send_sync_result_notification() {
       tg_add_note err_msg "无明显错误关键字"
     fi
     tg_add_footer err_msg
-    send_telegram_message "$err_msg"
+    # 档位按上面的分支判定（❌ 失败 = alert、⚠️ 部分失败 = 普通），由调用点显式声明
+    send_telegram_message "$err_msg" HTML "$_err_tier"
     # 发送完整日志文件（sendDocument 不走 sendMessage 发送层，媒体上传固有例外；
     # 429 限流仍按 retry_after 重试，不让日志文件静默丢失）
     local err_log_size

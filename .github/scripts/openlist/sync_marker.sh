@@ -1554,7 +1554,7 @@ send_sync_warning() {
   _mstem=$(basename "$(get_marker_path "$task_name" "$dest_path")" .json)
   _mrep=$(_shrink_missing_report "$_mstem" "$source_path" "$dest_path")
   if [ -n "$_mrep" ]; then
-    tg_add_section msg "🔍 少了什么 · 按大小前 $(printf '%s' "$_mrep" | grep -c .)"
+    tg_add_section msg "🔍 少了什么 · $(printf '%s' "$_mrep" | grep -c .)"
     local _mh=""
     while IFS=$'\t' read -r _sz _p _st; do
       [ -z "$_p" ] && continue
@@ -1568,7 +1568,9 @@ send_sync_warning() {
       tg_add_entry_codes _mh "$_p" "$_sz" "$_mk"
     done <<< "$_mrep"
     tg_append msg "$(tree_fold "${_mh%$'\n'}")"$'\n'
-    tg_add_note msg "✅ 备份还在 = 目标端仍有副本，只是源端删了，没丢数据；🚨 备份也没有 = 两端皆无，需人工确认"
+    # 「按大小排序 / 取前 N」是列表口径，不能塞进分节计数位（规范 · 分节：计数位只放数字），
+    # 下沉到紧随列表的说明段（条目本身已带大小）
+    tg_add_note msg "按大小排序，取前 $(printf '%s' "$_mrep" | grep -c .) 条；✅ 备份还在 = 目标端仍有副本，只是源端删了，没丢数据；🚨 备份也没有 = 两端皆无，需人工确认"
   else
     if rclone lsf "$(_listing_snapshot_path "$_mstem")" >/dev/null 2>&1; then
       tg_add_note msg "🔍 已比对文件清单快照：无文件被删、也无字节变化（减少量落在快照未覆盖的层面，如目录项或过滤排除项）"
@@ -1587,7 +1589,9 @@ send_sync_warning() {
 ⏳ 审批卡已推送（见主对话）
 ✅ 强制同步·源端→目标端 → 下轮把源端补到目标端，基线不动
 🛡️ 忽略减小·接受大小差异 → 不传数据，只把基线对齐到新大小"
-  tg_add_section msg "🛠️ 手动触发 · 单任务"
+  # 分节后跟 <pre> 命令块，不带计数（规范 · 分节）；「单任务」由命令里的
+  # force_sync_task 参数体现，不再塞进标题
+  tg_add_section msg "🛠️ 手动触发"
   tg_add_pre msg "gh workflow run openlist.yml -f run_mode=同步 -f force_sync_task=${_task_key}"
   tg_add_footer msg
 

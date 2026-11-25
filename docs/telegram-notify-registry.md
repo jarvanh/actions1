@@ -2,6 +2,7 @@
 
 > 本文件只回答两件事：**哪一类通知从哪个出口发出、默认走什么档位**。
 > 版式规则在 [`telegram-notify.md`](telegram-notify.md)（引用写「规范 · 主题名」）。
+> 种类与结构速查在 [`telegram-notify-catalog.md`](telegram-notify-catalog.md)。
 >
 > **不登记逐条通知**——标题、档位、调用点都会随实现漂移。需要「现在到底有哪些通知」时
 > 现场枚举：
@@ -24,11 +25,11 @@
 | 域 | 发送出口 | 默认档位 |
 |---|---|---|
 | OpenList 同步 | `.github/scripts/openlist/`（`load_all.sh` 注入真源；`telegram.sh` 的 `send_telegram_message` 统一出口） | 普通；失败 / 告警类显式 alert |
-| Telegram 频道内容管线 | `.github/scripts/tg-channel/` | 普通 |
-| 备份与任务 workflow | workflow 内联（`github_backup_all`、`self-hosted_backup`、`notion-backup`、`icloud-photos-downloader`、`pixivutil2`、`ph-dl`、`p`、`upload-video-to-tg` 等） | 成功普通；失败 / 中断 / 崩溃兜底 alert；部分完成（⚠️ 未取全 / 单步失败）维持普通，由独立兜底 step 升级（iCloud 例外：全普通） |
+| Telegram 频道内容管线 | `.github/scripts/tg-channel/` | 主报告普通；❌ 失败 / ⚠️ 部分失败（需人工重试）显式 alert |
+| 备份与任务 workflow | workflow 内联（`github_backup_all`、`self-hosted_backup`、`notion-backup`、`icloud-photos-downloader`、`pixivutil2`、`ph-dl`、`p`、`upload-video-to-tg` 等） | 成功普通；失败 / 中断 / 崩溃兜底 alert；部分完成（⚠️ 未取全 / 单步失败）维持普通；⛔ 中断 / ❌ 失败走 alert（本轮已取消 iCloud 的历史全普通例外，全库统一规范 · 档位判定） |
 | OpenClaw Runner 与 AI 网关 | `.github/workflows/openclaw.yml` + `.github/scripts/openclaw/run-*.sh`；交接进度 `.github/scripts/handoff/handoff-notify.sh` | 起停与播报（就绪 / 停止 / 倍率 / 用量 / 交接进度 / 入口与凭据推送）普通；失败 / 残留 / 风控 / 入口故障 alert；🟡 等即可（额度耗尽 / 账号池冷却 / 通道关闭 / Plan 降级）普通；停机倒计时 alert |
 | Windows 入口 | `.github/workflows/rdp.yml`、`tailscale-windows.yml`（pwsh） | 普通（入口与凭据推送） |
-| Emby | `.github/workflows/emby.yml` | 启动 / 回退 / 停止按结论动态（服务可用 → 普通；失败 / 中断 → alert；直链回退后服务仍可用，普通）；凭据普通；播放普通 |
+| Emby | `.github/workflows/emby.yml` | 停止按结论动态（success → 普通；其余 → alert）；启动 / 直链回退（服务仍可用）/ 凭据 / 播放均普通 |
 | 测速三套 | `.github/scripts/proxy-speedtest/` | 主报告普通；异常退出 / 终止 alert |
 | 保活接力熔断 | `.github/scripts/lib/self_retrigger.sh` | alert |
 | 本机常驻服务 | `.github/scripts/health/system_health.sh`、`services.sh` 生成的 dropbox 挂载守卫（仓库内）；`board.py`、`gateway-watchdog.py`（宿主机，不在仓库） | 故障 alert；恢复普通 |

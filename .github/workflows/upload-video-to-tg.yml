@@ -63,6 +63,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ⚠️ 删除失败需人工重试 → alert 档（规范 · 档位判定）
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           AUTO_DELETE: ${{ github.event.inputs.auto_delete_duplicates == 'true' }}
           WORKFLOW_LABEL: "91-tg"
         run: |
@@ -77,6 +80,9 @@ jobs:
           TG_SESSION_STRING: ${{ secrets.TG_SESSION }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ❌ 清理失败走 alert 档（规范 · 档位判定）
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
         run: |
           bash "${GITHUB_WORKSPACE}/.github/scripts/tg-channel/reset_tg_channel.sh" \
             "${TG_CHANNEL_ID}" \
@@ -88,6 +94,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ⚠️（部分失败需人工重试）/ ❌（全部失败）→ alert；📺 成功走普通
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION }}
@@ -107,6 +116,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 兜底通知：失败 / 中断走 alert（规范 · 档位判定）
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           SYNC_RESULT: ${{ steps.sync.outcome }}
         run: |
           set -uo pipefail
@@ -115,12 +127,14 @@ jobs:
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
           msg=""
           case "${SYNC_RESULT:-unknown}" in
-            cancelled) _emoji="⛔"; _status="已取消" ;;
-            skipped)   _emoji="⚠️"; _status="未执行（前置步骤未通过）" ;;
-            failure)   _emoji="❌"; _status="失败" ;;
-            *)         _emoji="❌"; _status="未知（${SYNC_RESULT:-unknown}）" ;;
+            # ⚠️ skipped 走普通侧：前置未通过=本轮自动降级、服务/链路仍在、无需动手
+            # （规范 · 档位判定）；⛔/❌/unknown 属中断或失败 → alert
+            cancelled) _emoji="⛔"; _status="已取消";                    _tier="alert" ;;
+            skipped)   _emoji="⚠️"; _status="未执行（前置步骤未通过）"; _tier="" ;;
+            failure)   _emoji="❌"; _status="失败";                      _tier="alert" ;;
+            *)         _emoji="❌"; _status="未知（${SYNC_RESULT:-unknown}）"; _tier="alert" ;;
           esac
           tg_add_title msg "${_emoji} 频道同步未完成"
           tg_add_kv msg "结果" "同步脚本未产出汇总通知（退出状态：${_status}）"
           tg_add_footer msg
-          send_tg_chunked "$msg" || echo "::warning::TG 兜底通知发送失败（不影响任务）"
+          send_tg_chunked "$msg" "$_tier" || echo "::warning::TG 兜底通知发送失败（不影响任务）"

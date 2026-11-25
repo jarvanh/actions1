@@ -133,7 +133,16 @@ jobs:
             [ "${TG_READY:-0}" = "1" ] || return 0
             msg=""
             tg_add_title msg "🚨 vaultwarden 数据恢复失败"
-            tg_add_kv msg "现象" "$reason"
+            # 现象句首段是机器值路径 → 等宽（规范 · 取值行口径/机器值）；句子其余部分保持裸文本。
+            # tg_add_kv 对整个值 escape_html（<code> 会被转义吃掉），故路径类 reason 手工拼：
+            # 路径包 <code>、其余段 escape_html；非路径 reason（如兜底的「恢复步骤异常退出…」）
+            # 仍走 tg_add_kv 原路，不被误包。
+            case "$reason" in
+              dropbox:self-hosted/bitwarden*|/dropbox/self-hosted/bitwarden*)
+                tg_append msg "现象：<code>$(escape_html "${reason%% *}")</code> $(escape_html "${reason#* }")"$'\n' ;;
+              *)
+                tg_add_kv msg "现象" "$reason" ;;
+            esac
             tg_add_kv msg "处置" "本轮终止：不启动空库、不回传（防覆盖远端）"
             tg_add_note msg "OneDrive backup/bitwarden_latest.tar.gz 可作恢复素材；修复远端后手动 dispatch"
             tg_add_footer msg

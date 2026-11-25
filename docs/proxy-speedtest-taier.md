@@ -264,7 +264,7 @@ Mbps（2026-11-14 与通知侧统一，节点名前缀"↑xx兆" = 引擎原始 
 主报告**普通**档；❌ / ⛔ 兜底 **alert** 档（见台账）。标题 emoji 随结论降级：
 ✅ 正常完成；⚠️ 0 可用节点、任一节点命中 bypass、或到点收摊（正文补
 `⚠️ 本轮已中止：…`，退出码仍 0）；⛔ 信号终止（handler **先撤 TUN 再发**）；
-❌ 异常退出（标题带原因）。版式见 [`telegram-notify.md`](telegram-notify.md)，发送点用
+❌ 异常退出（标题带阶段名，如「环境准备失败」；原始异常串在正文「原因」行）。版式见 [`telegram-notify.md`](telegram-notify.md)，发送点用
 `list_notify.sh proxy-speedtest` 现场枚举。
 
 示例：`⛔ 泰尔三网测速异常终止`
