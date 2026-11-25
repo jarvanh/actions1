@@ -80,7 +80,23 @@ if [ -n "$eff" ]; then
   else
     bad "解析不出成功/沿用字段"
   fi
-  if [ -n "$miss" ] && [ "$miss" -gt 0 ] && grep -q '^MISSING|' /dev/null 2>/dev/null; then :; fi
+  # 缺失数的可信度（2026-11-25 加）: 996d15e 之前 ROUND_MISSING 取进程内变量，
+  #   并行 worker 子 shell 的值回不到收尾 ⇒ 会报出远小于真实的数（实测「缺失 9」
+  #   而本轮实际修复 1053）。现改为按事件日志 MISSING 行去重计数。
+  #   可观测判据: 若日志里缺失数 < 同轮 MISSING 事件去重数，说明仍在用旧口径。
+  # 判据必须能区分新旧口径（否则是假绿）: 旧代码 ROUND_MISSING 是进程内变量，
+  #   并行下只剩最后一个 worker 的残值 ⇒ 会**明显小于**同轮修复成功数
+  #   （实测旧轮「成功 946 · 缺失 114」，缺失远小于成功在逻辑上不可能）。
+  #   新口径下缺失 = 本轮缺失文件去重数，与成功数无此矛盾。
+  if [ -z "$miss" ]; then
+    bad "解析不出缺失数"
+  elif [ -n "$succ" ] && [ "$miss" -gt 0 ] && [ "$miss" -lt "$succ" ]; then
+    bad "缺失(${miss}) < 成功(${succ}) —— 旧口径残值特征，缺失数不可信"
+  elif [ "$miss" -eq 0 ]; then
+    na "本轮缺失数为 0（无缺口）"
+  else
+    ok "缺失数可信（${miss} 个，与成功 ${succ} 无逻辑矛盾）"
+  fi
 else
   na "本轮无『本轮修复成效』行（预算内未跑到收尾修复统计）"
 fi
