@@ -24,6 +24,7 @@ proxy-speedtest/            测速结果数据
 |---|---|
 | [`docs/telegram-notify.md`](docs/telegram-notify.md) | **Telegram 通知规范**（版式与发送规则的唯一真源：版式模板、收尾区、发送层硬约束、验证基线） |
 | [`docs/telegram-notify-registry.md`](docs/telegram-notify-registry.md) | **Telegram 通知台账**（域级出口与档位路由；不登记逐条通知，清单用 `list_notify.sh` 现场枚举） |
+| [`docs/telegram-notify-catalog.md`](docs/telegram-notify-catalog.md) | **Telegram 通知总览**（域 × 形态 × 档位一页看全；种类与结构，不含逐条清单） |
 | [`docs/emby.md`](docs/emby.md) | Emby 媒体服务器 + 302 直链子系统（架构、凭据体系、通知、排查手册） |
 | [`docs/openclaw.md`](docs/openclaw.md) | OpenClaw Runner：自愈五层机制 + 常驻服务（rss-to-telegram / AI 网关）+ Tailscale 远程入口 |
 | [`docs/migration.md`](docs/migration.md) | **全量迁移说明**：仓库代码 + Actions Secrets + Variables + Dropbox 归档的恢复顺序与验证清单 |
@@ -85,7 +86,7 @@ proxy-speedtest/            测速结果数据
 | | `sync_marker.sh` | 同步标记持久化（跳过、黑名单、修复清单）+ 修复记录生命周期（carry-forward 继承、已对齐收尾清理、父级守卫提取、**游标拒写分支立即持久化修复记录**——防「fold 后拒写丢记录 → 产物被删 → 重 fold」循环）+ **marker 打包外置备份**（`backup_sync_state_to_dropbox`） |
 | | `sync_notify.sh` | 同步结果通知构建（统一 Telegram HTML 排版） |
 | | `sync_trend.sh` | 跨 run 传输趋势（P0 可见化：剩余未传/净传速率/预计清零，收尾发「📈 同步趋势」通知） |
-| | `sync_progress.sh` | 全局进度通知系统（含收尾四态标题、多层级阶段区） |
+| | `sync_progress.sh` | 全局进度通知系统（含收尾五态标题、多层级阶段区） |
 | **file** | `file_split.sh` | 大文件分割（ffmpeg 关键帧 / 7z 分卷） |
 | | `file_fix.sh` | 单文件修复的 4 种方法 + 目录可写性三态预检 + 短哈希目录兜底 + 写入侧根层路径断根（防 `./` 污染进 marker） |
 | | `file_fix_pipeline.sh` | 修复管线编排（方法轮换 + 增量持久化 + 最终 sync 的 filter 保护构建：marker ∪ 本轮累计 ∪ 父级守卫） |
@@ -544,9 +545,13 @@ OpenList 对**新建**目录/文件的列表有缓存延迟（实测首次可见
 `_batch_slice_effective()`（默认预算下 7200s，短轮等比缩放）封到单片上限；到点由 timeout
 收掉后走巩固/修复/优雅收摊，剩余批次交下轮。硬顶放弃在途 worker 时同步对汇总行会显式
 报出被截断的对数；收尾修复成效分母为 0 时打印「无可评估成效」而不再默认 100%。
-⚖️ **单对份额（2026-11-10 补）**：分发每个并行同步对时按「剩余可用预算 ÷ 尚需服务的对数」
-给一份**公平份额**（下限 `OPENLIST_PAIR_MIN_SLICE_SECONDS`=20min，上限=剩余预算，并夹在平台
-硬顶之前）。份额经环境变量 `OPENLIST_PAIR_DEADLINE_EPOCH` 传入 worker（子 shell 才可见），
+⚖️ **单对份额（2026-11-10 补；2026-11-25 起分母按并行度折算）**：分发每个并行同步对时按
+「剩余可用预算 ÷ ceil(尚需服务对数 ÷ OPENLIST_PAIR_PARALLEL)」给一份**公平份额**（下限
+`OPENLIST_PAIR_MIN_SLICE_SECONDS`=25min，上限=剩余预算，并夹在平台硬顶之前）。为什么分母要折算：
+份额公式里的预算口径是**墙钟**，而 par 路并行意味着同一分钟被 par 个对同时用掉 —— 按对数摊薄会把
+整轮压成「每波(份额+宽限) × 波数」，轮末必然剩一段谁都派不出去的预算（run 45473411880 实证：
+320min 预算 / 16 对 / 并行 2，收尾剩 35min 无处可派）。份额经环境变量 `OPENLIST_PAIR_DEADLINE_EPOCH`
+传入 worker（子 shell 才可见），
 由 `budget_deadline_epoch()` 与全局锚点取 min 后统一喂给**所有**预算闸（`sync_budget_stop`
 /批次/子目录/修复管线/409 退避），在途单元的上限也夹到份额终点（`rc=124` 仍按部分成功）。
 到点后该对收敛退出、把槽位交还调度器 ⇒ 一轮内所有同步对都能被服务到。
@@ -609,6 +614,11 @@ API list），读得通但写不进的后端会被整轮放行——run #12616 �
    按**非全拒**放行（`_F5_PROBE_LENIENT=1`，仅 F5 调用点生效），真假成功交修复管线
    的落盘即时校验裁决。曾尝试的"等 120s 再复核一次"已被证明不足（141s 后仍全缺）
    且 15 批 ×120s ≈ 白吃 30min 预算（占 320min 的 9%），故移除。
+   ☑️ **持久化复核三分口径（2026-11-25 补）**：容器重启后的逐文件复核不再把「列举报错」
+   当「文件不存在」。探针输出三分——S=存在（带大小）/ M=确定不存在 / U=观测失败；
+   U 既不算通过也不算失败、**不拉黑方法**（拉黑一个本来好用的方法 = run 45455001510 实证的
+   445 文件批量误判）；复核 ≥5 条、0 通过、0 未定（rc=0 空列表的「成功的空」）整批判观测失真
+   顺延下轮，不置 SYNC_PERSIST_FAIL。确定失败（M）才拉黑换方法。
 2. **目录连续不可写计数**（`file_fix.sh` `_BACKEND_DEAD`）：开跑后才暴露的后端
    （预检偶发放行）由「同一挂载根连续 N 个目录被**重启确认**判不可写」捕获；判定后该后端
    剩余目录一律直接判不可写 —— 不探测、不重启、不跑 4 种方法。只认「已重启确认」的
