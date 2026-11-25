@@ -258,11 +258,19 @@ source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
 
 if [ "$DUP_COUNT" -gt 0 ]; then
   msg=""
-  tg_add_title msg "🔍 ph-dl 重复视频检测与去重"
+  # 标题随结论降级（规范 · 结果通知）：有删除失败 → ⚠️ 部分失败（需人工重试 → alert）；全部成功维持 🔍
+  if [ "${DELETE_FAILED:-0}" -gt 0 ]; then
+    tg_add_title msg "⚠️ ph-dl 重复视频检测与去重 · 部分失败"
+    _tier="alert"
+  else
+    tg_add_title msg "🔍 ph-dl 重复视频检测与去重"
+    _tier=""
+  fi
   tg_add_path msg "目录" "$DIR_LABEL"
   tg_add_kv msg "重复 ID" "${DUP_COUNT}"
   tg_add_kv msg "已删除" "${REMOVED_COUNT}"
   tg_add_kv msg "仅通知" "${NOTIFY_ONLY_COUNT}"
+  [ "${DELETE_FAILED:-0}" -gt 0 ] && tg_add_kv msg "删除失败" "${DELETE_FAILED} 个 · 需人工重试"
   if [ "$DEDUPE_BY_ID_ONLY" = "true" ]; then
     tg_add_kv msg "模式" "仅按 ID 自动删除 · 跳过标题/哈希校验"
   elif [ "$AUTO_DELETE" = "true" ]; then
@@ -279,7 +287,7 @@ if [ "$DUP_COUNT" -gt 0 ]; then
     tg_add_block msg "$DUP_DETAILS"
   fi
   tg_add_footer msg
-  send_tg_chunked "$msg"
+  send_tg_chunked "$msg" "$_tier"
 else
   echo "未发现重复视频 ID"
 fi

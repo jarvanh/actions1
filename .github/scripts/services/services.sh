@@ -529,6 +529,7 @@ dest="/tmp/dropbox-orphan-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$dest" || exit 0
 find "$MOUNT" -mindepth 1 -maxdepth 1 -exec mv -t "$dest" {} + 2>/dev/null || true
 count=$(find "$dest" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+size_kb=$(du -sk "$dest" 2>/dev/null | cut -f1)   # 通知口径走 format_bytes（规范 · 大小），日志沿用可读值
 size=$(du -sh "$dest" 2>/dev/null | cut -f1)
 logger -t rclone-dropbox "挂载点非空，${count} 项/${size} 残留已移至 $dest"
 mkdir -p "$OPENCLAW_DIR/logs" 2>/dev/null || true
@@ -557,6 +558,8 @@ if [ ! -f "$NOTIFY_SRC" ]; then
 fi
 # shellcheck disable=SC1090
 source "$NOTIFY_SRC" 2>/dev/null || { logger -t rclone-dropbox "orphan alert skipped: tg_notify.sh source 失败"; exit 0; }
+# 大小按真源口径（1024 进制三位小数 IEC）：du -h 的 4.0K 不得进通知（规范 · 大小）
+size=$(format_bytes "$(( ${size_kb:-0} * 1024 ))")
 
 msg=""
 tg_add_title msg "🚨 /dropbox 挂载点非空，已隔离残留"

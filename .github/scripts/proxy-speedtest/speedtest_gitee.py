@@ -1884,12 +1884,6 @@ def build_summary_lines(*, started_at, ended_at, duration_text, alive_probe_coun
         # 同一条信息落在不同位置会让读者以为自己看漏了）。放在测速点区块之前，
         # 是因为它修饰的正是上面那行「共 N 个 · 可用 M 个」的读数。
         *([f'⚠️ 本轮已中止：{esc(runtime_abort_reason)}'] if aborted_due_to_runtime else []),
-        # bypass 校验命中分节（与 taier/CDN 同款）：出口 IP == runner 直连出口
-        # = 流量没进节点，结果不可信，必须让读者一眼看到。
-        # 计数上提到标题（规范 · 分节：分节后跟条目必须带计数），条目正文不再重复
-        *([f'⚠️ 疑似未走代理 · {bypass_hits}'] if bypass_hits else []),
-        *([f'<code>  └─ </code>出口 IP 与 runner 直连出口'
-           f'（{tg_entry(direct_ip)}）相同，节点切换可能未生效，结果不可信'] if bypass_hits else []),
         '',
     ]
     # 测速点（Gitee push 目标）的网络归属：域名解析 IP 后查 ISP/ASN/位置
@@ -1927,6 +1921,15 @@ def build_summary_lines(*, started_at, ended_at, duration_text, alive_probe_coun
         # 健康检查结论不再决定放行，所以这里说的是「本轮没有可达节点」，不是「被预筛挡掉了」
         summary_lines.append('⚠️ 没有节点测速成功')
         summary_lines.append('provider 健康检查无节点通过，且逐节点实测也无成功')
+        summary_lines.append('')
+
+    # bypass 校验命中分节（与 taier/CDN 同款同位置：测速点网络与 TOP/结论之后、失败清单之前）：
+    # 出口 IP == runner 直连出口 = 流量没进节点，结果不可信。段前空行由上一段的 '' 提供，
+    # 计数上提到分节标题（规范 · 分节：分节后跟条目必须带计数），条目正文不再重复。
+    if bypass_hits:
+        summary_lines.append(f'⚠️ 疑似未走代理 · {bypass_hits}')
+        summary_lines.append(f'<code>  └─ </code>出口 IP 与 runner 直连出口'
+                             f'（{tg_entry(direct_ip)}）相同，节点切换可能未生效，结果不可信')
         summary_lines.append('')
     # 失败节点明细（与 taier 对齐：原因可见，便于区分拒测/超时/鉴权失败）
     _failed = [r for r in speed_results if not r.get('ok')]
