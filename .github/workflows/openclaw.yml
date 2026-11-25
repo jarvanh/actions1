@@ -6085,10 +6085,6 @@ jobs:
             echo "ℹ️ 归档步骤已主动跳过（${ARCHIVE_SKIP_REASON:-guard 让位取消}），跳过归档结果通知"
             exit 0
           fi
-          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-            echo "⚠️ Telegram secrets missing, skip final archive result notification."
-            exit 0
-          fi
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
 
           RESULTS_FILE="/tmp/openclaw-final-archive-results.tsv"
