@@ -192,7 +192,7 @@ reset_state; reset_notify; mk_resp; use_case ok
 check_openlist_storage_health >/dev/null 2>&1
 chk "T2a 失效 → 发送 1 条" "$(notify_count)" "1"
 ok_or "$(has_substr 'TIER=alert' "$(notify_txt)" && echo yes)" "T2b 走 alert 档（@SaberFuckBot，需人工介入）"
-ok_or "$(has_substr '🚨 存储账号失效 · 2' "$(notify_txt)" && echo yes)" "T2c 标题带失效计数"
+ok_or "$(has_substr '🚨 存储账号失效' "$(notify_txt)" && echo yes)" "T2c 标题不带数（计数下沉结论 kv）"
 ok_or "$(has_substr '/baidupan' "$(notify_txt)" && echo yes)" "T2d 列失效挂载 baidupan"
 ok_or "$(has_substr '/aliyundrive' "$(notify_txt)" && echo yes)" "T2e 列失效挂载 aliyundrive"
 ok_or "$(has_substr 'BaiduPan' "$(notify_txt)" && echo yes)" "T2f 带驱动名"
