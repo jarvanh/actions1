@@ -716,7 +716,7 @@ rebuild_source_from_target() {
     # 1. sync 镜像（排除替代形态 + 修复条目原路径，见函数头注释）
     local exf="${tmp_base}/exclude_${m}.txt"
     : > "$exf"
-    local alt_lines="" line_orig line_alt
+    local alt_lines="" line_orig line_alt need_excl=0
     while IFS=$'\t' read -r line_orig line_alt; do
       [ -z "$line_orig" ] && continue
       [ "$line_alt" = "null" ] || [ -z "$line_alt" ] && continue
@@ -734,11 +734,48 @@ rebuild_source_from_target() {
       # 原路径一并排除: 待还原路径的增删由逐条还原负责
       printf '/%s\n' "$(_escape_exclude_path "$line_orig")" >> "$exf"
       alt_lines+="${line_orig}"$'\t'"${line_alt}"$'\n'
+      # 每条命中写 2 行排除规则（替代形态 + 原路径），供下方护栏②比对完整性
+      need_excl=$((need_excl + 2))
     done < <(echo "$json" | jq -r '(.fixed_files // [])[] | [.original, .alternative] | @tsv' 2>/dev/null)
 
     echo "sync 镜像: ${dst} → ${src} (排除 $(grep -c . "$exf" 2>/dev/null || echo 0) 条, 删除源端多余文件)"
+    # ===== 破坏性 sync 的三道 fail-safe 护栏（2026-11-25 加）=====
+    # 为什么必须有: `rclone sync $dst $src` 会**删除** $src（源端）上「$dst 没有」的文件。
+    #   这是全库唯一会删源端的路径，用户红线是「绝对不能修改源端」。两种已知事故形态:
+    #   ① $dst 列举**成功但为空**（OpenList 驱动重建索引时的"成功的空"，本仓日志多次实证）
+    #      ⇒ rclone 认为源是空的 ⇒ 把 $src 整棵子树删光；
+    #   ② 排除清单不完整（jq/_norm_rel_path 异常）⇒ 修复条目的**源端原文件**被当"目标端没有"删掉
+    #      （它们本就只在目标端以替代名存在，原名不存在是修复的定义，不是多余文件）。
+    #   三者都是"异常时才触发"，正常路径行为不变；宁可跳过该 marker 让人看，也不误删。
+    local _cnt_dst _cnt_src need_excl="${need_excl:-0}" got_excl
+    _cnt_dst=$(rclone size --json "$dst" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)
+    _cnt_src=$(rclone size --json "$src" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)
+    [[ "$_cnt_dst" =~ ^[0-9]+$ ]] || _cnt_dst=0
+    [[ "$_cnt_src" =~ ^[0-9]+$ ]] || _cnt_src=0
+    got_excl=$(grep -c . "$exf" 2>/dev/null || true)
+    [[ "$got_excl" =~ ^[0-9]+$ ]] || got_excl=0
+    # 护栏① 空源禁止镜像（否则整棵子树被删）
+    if [ "$_cnt_dst" -eq 0 ] && [ "$_cnt_src" -gt 0 ]; then
+      echo "⛔ 拒绝镜像该 marker: 目标端 ${dst} 列举为 0 个文件而源端 ${src} 有 ${_cnt_src} 个 —— 空源会让 rclone 删光源端。多半是 OpenList 驱动未就绪（\"成功的空\"）；本 marker 跳过，稍后重跑本模式即可"
+      total_fail=$((total_fail + 1))
+      continue
+    fi
+    # 护栏② 排除清单必须完整（应有 2×条目数：替代形态 + 原路径）
+    if [ "$need_excl" -gt 0 ] && [ "$got_excl" -lt "$need_excl" ]; then
+      echo "⛔ 拒绝镜像该 marker: 排除清单不完整（应有 ${need_excl} 行，实得 ${got_excl} 行）—— 不完整的排除清单会让修复条目的源端原文件被当\"目标端没有\"删掉。本 marker 跳过，请检查 jq/_norm_rel_path 输出"
+      total_fail=$((total_fail + 1))
+      continue
+    fi
+    # 护栏③ 目标端文件数远少于源端时默认拒绝（可能是列举残缺，删下去就是大面积误删）。
+    #   确属"要把源端裁到与目标端一致"的正当场景时，显式置 OPENLIST_REBUILD_ALLOW_SHRINK=1。
+    if [ "${OPENLIST_REBUILD_ALLOW_SHRINK:-0}" != "1" ] \
+       && [ "$_cnt_src" -gt 100 ] && [ "$_cnt_dst" -lt $(( _cnt_src / 2 )) ]; then
+      echo "⛔ 拒绝镜像该 marker: 目标端 ${_cnt_dst} 个文件 < 源端 ${_cnt_src} 个的一半 —— 镜像会删掉源端大部分文件，疑似列举残缺。确认要缩小源端请显式设 OPENLIST_REBUILD_ALLOW_SHRINK=1"
+      total_fail=$((total_fail + 1))
+      continue
+    fi
     local before after sync_rc=0
-    before=$(rclone size --json "$src" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)
+    before=$_cnt_src
     if [ -s "$exf" ]; then
       rclone sync "$dst" "$src" --size-only --exclude-from "$exf" --retries 2 --low-level-retries 3 --timeout 15m 2>&1 | tail -3
       sync_rc=${PIPESTATUS[0]}
@@ -747,6 +784,7 @@ rebuild_source_from_target() {
       sync_rc=${PIPESTATUS[0]}
     fi
     after=$(rclone size --json "$src" 2>/dev/null | jq -r '.count // 0' 2>/dev/null)
+    [[ "$after" =~ ^[0-9]+$ ]] || after="$before"
     echo "源端文件数: ${before} → ${after}"
     [ "$sync_rc" -ne 0 ] && echo "⚠️ sync 退出码 ${sync_rc}（镜像可能不完整，可直接重跑本模式补齐）"
 
