@@ -587,6 +587,33 @@ save_sync_marker() {
   local missing_count=$((source_count - dest_count))
   if [ "$missing_count" -gt 0 ]; then
     echo "⚠️ 拒绝写入同步标记: 目标端文件数 ${dest_count} < 源端 ${source_count}（缺失 ${missing_count} 个）"
+    # ===== 缺口归因（2026-11-25 加）: 台账内已知永久失败 vs 台账外新缺口 =====
+    # 为什么必须打这一行: 顶层 marker 的判据是「目标端文件数 ≥ 源端」的**精确**校验，
+    #   只要还有 1 个修不好的文件，顶层 marker 就永远不写 ⇒ last_success 恒空 ⇒
+    #   --1d-skip 永不生效 ⇒ 每轮全量重列+重传这棵大树。子目录 marker 却能成功
+    #   （实测 478 个 marker 里 419 个有 last_success，而 16 个顶层对里 13 个没有）。
+    #   于是「这棵树到底卡在已知永久失败，还是有新缺口」成了复盘第一个要回答的问题，
+    #   而日志此前只有两个数字（目标端/源端文件数），回答不了。
+    # 口径: EXHAUSTED 台账按 task 分组计数（key=相对路径, value.task=task_name，
+    #   与 marker 文件名前缀同源）。台账读不到就写「未知」，**不猜 0**（写 0 会把
+    #   「没读到」伪装成「没有永久失败」，正是本仓反复踩过的假数陷阱）。
+    local _ex_n="未知" _ex_cache="/tmp/ol_exhausted_ledger.cache"
+    local _ex_task="${marker_path##*/}"; _ex_task="${_ex_task%.json}"
+    if [ ! -f "$_ex_cache" ]; then
+      local _ex_ledger="${SYNC_STATE_DIR:-onedrive:/logs/sync_state}/exhausted_ledger.json"
+      timeout 120 rclone cat "$_ex_ledger" > "$_ex_cache" 2>/dev/null || true
+    fi
+    if [ -s "$_ex_cache" ] && jq -e 'type == "object"' "$_ex_cache" >/dev/null 2>&1; then
+      _ex_n=$(jq -r --arg t "$_ex_task" '[to_entries[] | select(.value.task == $t)] | length' "$_ex_cache" 2>/dev/null || echo "未知")
+      [[ "$_ex_n" =~ ^[0-9]+$ ]] || _ex_n="未知"
+    fi
+    if [ "$_ex_n" = "未知" ]; then
+      echo "  缺口归因: EXHAUSTED 台账未读到（不猜 0）—— 无法区分『已知永久失败』与『新缺口』，下轮重试"
+    elif [ "$_ex_n" -ge "$missing_count" ]; then
+      echo "  缺口归因: 缺失 ${missing_count} 个 ⊆ 台账内永久失败 ${_ex_n} 个 ⇒ **没有台账外的新缺口**，该对已尽最大努力；顶层 marker 因严格校验仍不写（last_success 保持空、1d-skip 不生效，每轮会重列）"
+    else
+      echo "  缺口归因: 缺失 ${missing_count} 个，其中台账内永久失败 ${_ex_n} 个 ⇒ **台账外还有 $((missing_count - _ex_n)) 个待修**（这才是需要继续追的部分）"
+    fi
     echo "  可能原因: OpenList stale 缓存导致 rclone 跳过上传，或部分文件上传失败但未被检测到"
     echo "  本次不写 marker，下次运行将重新同步"
     # 病灶 C 修法（§14.21，2026-09-21 接力轮 35629676323 实证）: 游标拒写 ≠ 修复记录作废。
