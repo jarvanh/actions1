@@ -585,6 +585,23 @@ OpenList 对**新建**目录/文件的列表有缓存延迟（实测首次可见
 ⇒ **半小时内没有新 marker 不代表卡死**；判断是否卡住要看别的信号（如同轮其它 marker 的时间分布、
 `task_rotation.json` 是否推进），不要仅凭「marker 静默」就重启或干预。
 
+📉 **「已传 1.05× 源端总量」不等于「都传过了」—— 两个数字必须一起看（2026-11-25 实测）**:
+`trend.jsonl` 60 轮累计净传 **6.08 TiB**，而 marker 汇总的源端总量是 **5.78 TiB**（1.05×）；
+但同一天按 marker 的 `last_refusal` 统计，仍有 **9 个 marker / 合计 22,196 个文件**处于缺口状态:
+
+| 缺口文件 | 连续轮数 | 子树（dest） |
+|---|---|---|
+| 14,904 | 2 | `openlist:wopan176Crypt/1/1024j/视频` |
+| 3,976 | 11 | `openlist:wopan176Crypt/1/1024j/套图` |
+| 2,298 | 1 | `openlist:wopan176Crypt/4/1024j-视频-pornhub-channel` |
+| 370 | 23 | `openlist:wopan176Crypt/3/1024j-视频-pornhub-channel` |
+| 329 | 1 | `openlist:wopan175/4/1024j-视频-pornhub-channel` |
+| 149 | 9 | `openlist:wopan175/3/1024j-视频-pornhub-channel` |
+
+两者不矛盾: **重复传的是「能传的」，缺的是「传不上的」**。累计量超总量说明重复传输已超 5%，
+而缺口是另一批文件。⇒ 判断「同步完没完」**不能只看累计字节**，必须同时看缺口文件数。
+提速的正确方向也因此不是「提带宽」，而是「降低重复传输比率 + 清缺口」。
+
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
 （`OPENLIST_SYNC_MIN_SLICE_SECONDS`=10min）时不再开新同步对/子目录/最终完整同步，
