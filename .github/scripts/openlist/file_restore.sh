@@ -768,8 +768,11 @@ rebuild_source_from_target() {
     fi
     # 护栏③ 目标端文件数远少于源端时默认拒绝（可能是列举残缺，删下去就是大面积误删）。
     #   确属"要把源端裁到与目标端一致"的正当场景时，显式置 OPENLIST_REBUILD_ALLOW_SHRINK=1。
+    # 阈值取 -ge 100（2026-11-25 修边界）: 原 -gt 100 在源端**恰好 100** 个文件时不生效，
+    #   而 10/100（缺 90%）正是该拦的形态。护栏的意义就是防意外，边界不该留洞；
+    #   下移一格后受影响面极小且方向更严格（多拦一个边界点，少一次误删风险）。
     if [ "${OPENLIST_REBUILD_ALLOW_SHRINK:-0}" != "1" ] \
-       && [ "$_cnt_src" -gt 100 ] && [ "$_cnt_dst" -lt $(( _cnt_src / 2 )) ]; then
+       && [ "$_cnt_src" -ge 100 ] && [ "$_cnt_dst" -lt $(( _cnt_src / 2 )) ]; then
       echo "⛔ 拒绝镜像该 marker: 目标端 ${_cnt_dst} 个文件 < 源端 ${_cnt_src} 个的一半 —— 镜像会删掉源端大部分文件，疑似列举残缺。确认要缩小源端请显式设 OPENLIST_REBUILD_ALLOW_SHRINK=1"
       total_fail=$((total_fail + 1))
       continue
