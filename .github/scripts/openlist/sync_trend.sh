@@ -125,11 +125,22 @@ trend_record_and_notify() {
   # 趋势里只剩"传了多少"看不到"还差多少"。修复管线的 ROUND_MISSING / ROUND_FIXED_OK
   # （/tmp/ol_round_stats.env，收尾 step 已加载）给出文件数口径。非法值归零。
   local _miss_files="${ROUND_MISSING:-0}" _fix_files="${ROUND_FIXED_OK:-0}"
+  # 同步对完成度（2026-11-25 加）: 「传了多少字节」回答不了「同步完没完」——
+  #   真正的完成判据是同步对写成了 marker（目标端文件数已达源端）。该计数由
+  #   task_engine.sh 的并行汇总落 /tmp/ol_pair_stats.env；串行或未产出时写 null，
+  #   读侧（_trend_send_summary 的 python）用 .get() 兜底，历史样本不受影响。
+  local _pairs_total="" _pairs_synced=""
+  if [ -f /tmp/ol_pair_stats.env ]; then
+    _pairs_total=$(sed -n 's/^PAIRS_TOTAL=//p' /tmp/ol_pair_stats.env 2>/dev/null | head -1)
+    _pairs_synced=$(sed -n 's/^PAIRS_SYNCED=//p' /tmp/ol_pair_stats.env 2>/dev/null | head -1)
+  fi
+  [[ "$_pairs_total" =~ ^[0-9]+$ ]] || _pairs_total=""
+  [[ "$_pairs_synced" =~ ^[0-9]+$ ]] || _pairs_synced=""
   [[ "$_miss_files" =~ ^[0-9]+$ ]] || _miss_files=0
   [[ "$_fix_files" =~ ^[0-9]+$ ]] || _fix_files=0
-  printf '{"ts":"%s","run_id":"%s","trigger":"%s","duration_s":%d,"transferred_bytes":%d,"remaining_bytes":%s,"missing_files":%d,"fixed_files":%d}\n' \
+  printf '{"ts":"%s","run_id":"%s","trigger":"%s","duration_s":%d,"transferred_bytes":%d,"remaining_bytes":%s,"missing_files":%d,"fixed_files":%d,"pairs_total":%s,"pairs_synced":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$run_id" "$trigger" "$_duration" "$_transferred" \
-    "${_remaining:-null}" "$_miss_files" "$_fix_files" >> "$_local"
+    "${_remaining:-null}" "$_miss_files" "$_fix_files" "${_pairs_total:-null}" "${_pairs_synced:-null}" >> "$_local"
 
   # 回传保护: 远端存在但读取彻底失败 → 宁可丢弃本次样本，也不让 copyto
   # 用本地残缺内容覆盖远端全部历史（情形 c）
@@ -193,11 +204,13 @@ print("remaining=%s" % (rem if rem is not None else ""))
 print("eta_minutes=%s" % (eta_minutes if eta_minutes is not None else ""))
 print("history=%d" % len(entries))
 print("miss_files=%d" % (cur.get("missing_files") or 0))
+print("pairs_total=%s" % (cur.get("pairs_total") if cur.get("pairs_total") is not None else ""))
+print("pairs_synced=%s" % (cur.get("pairs_synced") if cur.get("pairs_synced") is not None else ""))
 print("fix_files=%d" % (cur.get("fixed_files") or 0))
 PYEOF
 ) || _py_out=""
 
-  local _rounds=0 _this_tr=0 _this_du=0 _rate=0 _rem="" _eta="" _hist=0 _k _v
+  local _rounds=0 _this_tr=0 _this_du=0 _rate=0 _rem="" _eta="" _hist=0 _k _v _pairs_tot="" _pairs_syn=""
   local _miss_files=0 _fix_files=0
   while IFS='=' read -r _k _v; do
     case "$_k" in
@@ -210,6 +223,8 @@ PYEOF
       history)          _hist=$_v ;;
       miss_files)       _miss_files=$_v ;;
       fix_files)        _fix_files=$_v ;;
+      pairs_total)      _pairs_tot=$_v ;;
+      pairs_synced)     _pairs_syn=$_v ;;
     esac
   done <<< "$_py_out"
   [[ "$_rounds" =~ ^[0-9]+$ ]] || _rounds=0
@@ -225,6 +240,11 @@ PYEOF
   tg_add_kv msg "历时" "$(tg_format_duration "$_this_du")"
   # 文件口径（字节口径不可得时唯一的"还差多少"线索）
   tg_add_kv msg "缺失 / 修复成功（文件）" "${_miss_files} / ${_fix_files}"
+  # 同步对完成度（2026-11-25 加）: 「同步完没完」的直接答案 —— 写成 marker 的对数。
+  #   串行模式/旧版本 run 无此数据时整行不出现（不打印未知占位，避免噪声）。
+  if [[ "$_pairs_tot" =~ ^[0-9]+$ ]] && [[ "$_pairs_syn" =~ ^[0-9]+$ ]]; then
+    tg_add_kv msg "同步对完成度" "${_pairs_syn}/${_pairs_tot} 个已同步完成"
+  fi
   if [ "$_rounds" -gt 1 ]; then
     tg_add_section msg "🧮 近 ${_rounds} 轮"
     tg_add_kv msg "平均净传速率" "$(format_bytes "${_rate%.*}") / 小时"

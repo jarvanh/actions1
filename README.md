@@ -535,6 +535,15 @@ OpenList 对**新建**目录/文件的列表有缓存延迟（实测首次可见
 读取失败→放弃回传只发通知（宁丢一条样本，不覆盖历史——同 marker 过期副本防护原则）。
 `skip_preview=true` 的 run 剩余量记为未知，趋势速率不受影响。
 
+**同步对完成度（2026-11-25 补）**: 趋势此前只有「传了多少字节」，答不了「同步完没完」——
+  `skip_preview=true` 轮 `remaining_bytes` 恒 null。现由并行汇总把
+  `PAIRS_TOTAL / PAIRS_SYNCED / PAIRS_TRUNCATED / PAIRS_FAILED / PAIRS_SKIPPED`
+  落 `/tmp/ol_pair_stats.env`（跨 step 只能走文件），收尾写入 trend.jsonl 的
+  `pairs_total / pairs_synced` 两字段，并在趋势通知输出「同步对完成度 X/Y」。
+  「完成」只认**真正写成 marker** 的对（目标端文件数已达源端）；到点交棒、失败、
+  配额跳过分别单列，均不算完成。无数据（串行模式/旧样本）时字段写 null、通知不渲染该行，
+  读侧 `.get()` 兜底，历史样本不受影响。
+
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
 （`OPENLIST_SYNC_MIN_SLICE_SECONDS`=10min）时不再开新同步对/子目录/最终完整同步，

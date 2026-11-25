@@ -240,6 +240,9 @@ _pairs_parallel_reap_one() {
           # 份额/预算到点主动交棒的（2026-11-10 加）: 单列，既不冒充完成也不计入
           #   失败，避免"到点交棒"被读成后端故障。
           truncated) _trunc_n=$((_trunc_n + 1)) ;;
+          # skipped（配额已满等）既不是完成也不是失败，单独计：
+          #   「同步对完成度」只认真正写成 marker 的对数，不能把它算进去。
+          skipped) _skipped_n=$((_skipped_n + 1)) ;;
         esac
         echo "✅ 并行同步对完成: 第 $((_idx + 1))/${_pp_n} 个（后端 ${_be:-?} · ${_st:-?} · $(format_bytes "$_tr")）"
         return 0
@@ -304,7 +307,7 @@ _run_registry_pairs_parallel() {
   declare -A _pp_pid=() _pp_be=() _pp_dst=() _busy_be=() _started=() _quota_logged=() _pp_pd=()
   # 这几个是"调用方局部": _pairs_parallel_reap_one 靠 bash 动态作用域改它们，
   # 因此既不能声明在 reap 内部（改了看不见），也不能不声明（会污染全局）
-  local _pp_n="$n" _done_n=0 _failed_n=0 _trunc_n=0 _killed_n=0 total_transferred=0
+  local _pp_n="$n" _done_n=0 _failed_n=0 _trunc_n=0 _killed_n=0 _skipped_n=0 total_transferred=0
   local _k idx _e _dst _be _pick _pick_be _running=0
   echo "🔀 并行同步对: 上限 ${_par} 个（同一后端不并行），本轮候选 ${n} 个"
   while :; do
@@ -515,6 +518,15 @@ _run_registry_pairs_parallel() {
     local _trunc_note=""
     [ "${_trunc_n:-0}" -gt 0 ] && _trunc_note=" · 到点交棒 ${_trunc_n}"
     echo "并行同步对完成: 本轮 ${_done_n} 个（失败 ${_failed_n}${_trunc_note}）· 传输 $(format_bytes "$total_transferred") · 下轮游标 → 第 $((_resume + 1))/${n} 个"
+    # 同步对完成度落盘（2026-11-25 加）: trend 里一直只有「传了多少字节」，没有
+    #   「16 个同步对里几个真正同步完成」—— 而后者才是「同步是否完成」的直接答案
+    #   （写成 marker = 目标端文件数已达源端，判据见 sync_marker.sh 的拒写分支）。
+    #   收尾是独立 shell，只能经 /tmp 文件传递（与 ol_round_stats.env 同法）。
+    _sync_pairs=$(( _done_n - _failed_n - _trunc_n - _skipped_n ))
+    [ "$_sync_pairs" -lt 0 ] && _sync_pairs=0
+    { printf 'PAIRS_TOTAL=%s\nPAIRS_SYNCED=%s\nPAIRS_TRUNCATED=%s\nPAIRS_FAILED=%s\nPAIRS_SKIPPED=%s\n' \
+        "$_pp_n" "$_sync_pairs" "${_trunc_n:-0}" "${_failed_n:-0}" "${_skipped_n:-0}" > /tmp/ol_pair_stats.env; } 2>/dev/null || true
+    echo "同步对完成度: ${_sync_pairs}/${_pp_n} 个真正同步完成（到点交棒 ${_trunc_n:-0} · 失败 ${_failed_n:-0} · 跳过 ${_skipped_n:-0}）"
     # 到点交棒（2026-11-10）: 有 truncated 就必须说清"没跑完但没失败"，否则
     #   「本轮 N 个（失败 0）」会被读成全部同步完成 —— 与硬顶放弃同源的误读。
     if [ "${_trunc_n:-0}" -gt 0 ]; then
