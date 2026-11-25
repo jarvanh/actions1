@@ -561,14 +561,20 @@ _try_fix_split_archive() {
       _cmd_log "${mid}·传${total_parts}" "$fix_log"
     part_rc=${PIPESTATUS[0]}
     part_expected=$(stat -c%s "$part_file" 2>/dev/null || stat -f%z "$part_file" 2>/dev/null || echo 0)
+    # 日志里的 size 要能看出「没传上去」还是「读不到」（2026-11-25）: 旧代码两种情况
+    #   都写空串，日志 `size=` 后一片空白无从分辨。实测 run 45542724284 的 6 次分卷
+    #   失败全部伴随 rc=1（后端 500 拒收）⇒ 属「没传上去」。
+    #   只加显示变量，不动判据: part_dst_size 仍保持原值（空串 ≠ expected ⇒ 判失败，
+    #   保守方向不变；若把它改成中文「未知」会让下面的 -gt 整数比较报错）。
     part_dst_size=$(rclone size --json "$dst_part" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
+    local part_size_disp="${part_dst_size:-读不到}"
     if [ "$part_rc" -eq 0 ] && [ "$part_dst_size" = "$part_expected" ] && [ "$part_dst_size" -gt 0 ]; then
       uploaded_count=$((uploaded_count + 1))
       alt_rel="${dst_part#${dest_path}/}"
       alt_files+=("$alt_rel")
       log_fix "$fix_log" "  ${mid} 分卷 ${total_parts} 上传成功 (${part_bname}, ${part_expected} bytes)"
     else
-      log_fix "$fix_log" "  ${mid} 分卷 ${total_parts} 上传失败 (rc=$part_rc, size=$part_dst_size, expected=$part_expected)"
+      log_fix "$fix_log" "  ${mid} 分卷 ${total_parts} 上传失败 (rc=$part_rc, size=$part_size_disp, expected=$part_expected)"
       all_uploaded=0
       for clean in "${alt_files[@]}"; do
         rclone deletefile "${dest_path}/${clean}" 2>/dev/null || true
