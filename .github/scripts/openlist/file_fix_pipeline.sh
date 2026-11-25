@@ -1189,6 +1189,13 @@ _sync_fix_missing_files() {
     # run #12616 报 success 而实际 0 成功/394 失败，全靠事后翻日志才发现）
     if [ -s "$missing_list" ]; then
       SYNC_MISSING_TOTAL_RUN=$(( ${SYNC_MISSING_TOTAL_RUN:-0} + $(wc -l < "$missing_list" | tr -d ' ') ))
+      # 缺失事件日志（2026-11-25 加）: 上面那个变量是**进程内**累计，而每个并行同步对跑在
+      #   worker 子 shell 里 ⇒ 收尾只能读到最后一个 worker 的值（run 45473411880 实测只报
+      #   「缺失 9」而同轮修复成功 1053，口径明显不对称）。事件日志是 append 到 /tmp 的，
+      #   父子进程共见，收尾按文件名去重计数即得本轮真值（与 REUSED 同源同法）。
+      while IFS= read -r _mf_ev; do
+        [ -n "$_mf_ev" ] && printf 'MISSING|%s|' "$_mf_ev" >> "$_FIX_EVENT_LOG"
+      done < "$missing_list"
     fi
 
     # ===== B: 失败记忆 — 比对上一轮修复记录（marker fixed_files）=====
@@ -1874,6 +1881,8 @@ _ol_round_stats_bump() {
   [[ "$reused_total" =~ ^[0-9]+$ ]] || reused_total=0
   printf 'ROUND_FIXED_OK=%s\nROUND_MISSING=%s\nROUND_REUSED=%s\n' \
     "$((cur_ok + add_ok))" "$missing_total" "$reused_total" > "$f"
+  # MISSING 事件同框记录（2026-11-25）: missing_total 是进程内累计，并行下会残缺；
+  #   与 ok/reused 一样以事件日志为真源 —— 收尾按文件名去重读 MISSING 行数。
 }
 
 # 累计到全局变量（供 auto-split 拆分模式下顶级 save_sync_marker 收集所有子目录的修复）

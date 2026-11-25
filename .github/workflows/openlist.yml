@@ -919,6 +919,16 @@ jobs:
           #   改为按文件名（第二列）去重后再减。
           ROUND_FIXED_NEW=$(( ROUND_FIXED_OK - ROUND_REUSED ))
           [ "$ROUND_FIXED_NEW" -lt 0 ] && ROUND_FIXED_NEW=0
+          # 缺失数同口径换真源（2026-11-25，run 45473411880 实证「缺失 9」vs 同轮
+          # 修复 1053）: SYNC_MISSING_TOTAL_RUN 是进程内累计，并行 worker 子 shell 的
+          #   值回不到收尾 ⇒ 以事件日志 MISSING 行数（按文件名去重）为准，变量值兜底。
+          if [ -f /tmp/ol_fix_events.log ]; then
+            _round_missing_ev=$(grep '^MISSING|' /tmp/ol_fix_events.log 2>/dev/null               | cut -d'|' -f2 | sort -u | wc -l | tr -d ' ')
+            [[ "$_round_missing_ev" =~ ^[0-9]+$ ]] || _round_missing_ev=0
+            if [ "$_round_missing_ev" -gt 0 ]; then
+              ROUND_MISSING=$_round_missing_ev
+            fi
+          fi
           ROUND_FAILED=$(( ROUND_MISSING - ROUND_FIXED_OK ))
           [ "$ROUND_FAILED" -lt 0 ] && ROUND_FAILED=0
           echo "本轮修复成效: 成功 ${ROUND_FIXED_OK}（新落盘 ${ROUND_FIXED_NEW} · 沿用上轮 ${ROUND_REUSED}） · 缺失 ${ROUND_MISSING} · 未修复 ${ROUND_FAILED}"
