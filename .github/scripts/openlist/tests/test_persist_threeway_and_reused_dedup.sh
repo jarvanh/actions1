@@ -107,5 +107,19 @@ _okv=$(sed -n 's/^ROUND_FIXED_OK=//p' /tmp/ol_round_stats.env 2>/dev/null)
 _rv=$(sed -n 's/^ROUND_REUSED=//p' /tmp/ol_round_stats.env 2>/dev/null)
 [ "${_rv:-}" = "1" ] && ok "D2 沿用计数取事件日志去重口径" || bad "D2 ROUND_REUSED=${_rv:-空}（期望 1）"
 
+# ===== E. 无用快照段不得复活 =====
+#   2026-11-25 删除: PERSIST_BEFORE 只写不读，却是每条修复文件一次远端列举（上限 400/任务）。
+PIPE="$_REPO_ROOT/.github/scripts/openlist/file_fix_pipeline.sh"
+if grep -q '重启前大小检查' "$PIPE"; then
+  bad "E1 重启前大小检查循环又出现了（该段只写不读，纯浪费远端列举）"
+else
+  ok "E1 无用的重启前快照循环已移除"
+fi
+if grep -q 'PERSIST_BEFORE=' "$PIPE"; then
+  bad "E2 PERSIST_BEFORE 又被声明（无读取方）"
+else
+  ok "E2 PERSIST_BEFORE 变量已清除"
+fi
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

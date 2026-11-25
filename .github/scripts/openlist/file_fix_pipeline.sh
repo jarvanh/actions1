@@ -1614,21 +1614,15 @@ _sync_persist_verify_and_retry() {
         sleep 10
       fi
 
-      # 3. 保存重启前的大小快照（用于对比）
-      # 单次 lsf 列举顺带取大小（2026-11-25 提速）: 旧代码每条 rclone size + rclone lsf
-      # 两次列举/文件；这里复用 _persist_probe_file 的 S/M/U 口径，一次列举同时拿到大小，
-      # 并避免列举失败时把空输出当 0（同 _persist_verify_entries 的三分口径）。
-      local PERSIST_BEFORE="/tmp/${task_name}_persist_before_${BASHPID:-$$}.txt"
-      : > "$PERSIST_BEFORE"
-      while IFS="$OL_FIELD_SEP" read -r alt_path bytes orig_path f_method f_mid; do
-        [ -z "$alt_path" ] && continue
-        local full_alt="${dest_path}/${alt_path}"
-        local _pb _sz="未定"
-        _pb=$(_persist_probe_file "$(dirname "$full_alt")" "$(basename "$full_alt")" "${OPENLIST_PERSIST_PROBE_TRIES:-2}")
-        case "$_pb" in S:*) _sz="${_pb#S:}" ;; M) _sz=0 ;; esac
-        echo "${alt_path}${OL_FIELD_SEP}${bytes}${OL_FIELD_SEP}${_sz}" >> "$PERSIST_BEFORE"
-        echo "  重启前大小检查: $alt_path (expected=$bytes, actual=$_sz)" | tee -a "$LOG_FILENAME"
-      done < "$PERSIST_VERIFY_LIST"
+      # 3. （已删除）重启前大小快照
+      # 为什么删（2026-11-25，以代码为准）: 该段把每条修复文件的 actual 大小写进
+      #   PERSIST_BEFORE，但该文件**从未被任何代码读取**（全仓只有写入、:> 与 rm），
+      #   唯一产物是日志行。代价却是**每条修复文件一次远端列举**，上限
+      #   OPENLIST_MISSING_FIX_MAX(400)/任务 —— 而且发生在容器重启**之前**、
+      #   OpenList 缓存本就不可信的时刻，读到的 actual 常常是空/0（见 run 45455001510
+      #   的「actual=」空值行），既不可信也不影响任何判据。
+      #   同样的信息由第 5 步复核给出（✅通过/❌未持久化 + 期望/实际），且那一步是
+      #   重启后真值口径。故整段移除：省下每轮最多数百次列举。
 
       # 4. 重启 OpenList 容器并等待驱动就绪 + 刷新缓存
       echo "  重启 OpenList 容器..." | tee -a "$LOG_FILENAME"
@@ -1821,7 +1815,7 @@ _sync_persist_verify_and_retry() {
       else
         echo "  ⚠️ OpenList 容器重启后 HTTP 60s 内未就绪，跳过持久化验证" | tee -a "$LOG_FILENAME"
       fi
-      rm -f "$PERSIST_VERIFY_LIST" "$PERSIST_BEFORE"
+      rm -f "$PERSIST_VERIFY_LIST"
     else
       echo "  跳过持久化验证（无修复成功条目或 openlist 容器不存在）" | tee -a "$LOG_FILENAME"
     fi
