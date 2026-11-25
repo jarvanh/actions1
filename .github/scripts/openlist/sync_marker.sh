@@ -1117,7 +1117,25 @@ check_sync_marker() {
   last_success=$(echo "$marker_json" | jq -r '.last_success // ""')
 
   if [ -z "$last_success" ]; then
-    echo "标记无时间戳，继续同步"
+    # 为什么要把这句写清楚（2026-11-25）: 顶层同步对的 marker 判据是「目标端文件数 ≥
+    #   源端」的精确校验，只要还有 1 个修不好的文件就永远不写 last_success ⇒ 本分支
+    #   恒走 ⇒ --1d-skip 永不生效 ⇒ 该对每轮都全量重列+重传。实测 478 个 marker 里
+    #   419 个有 last_success（子目录级），而 16 个顶层对里 13 个没有。
+    #   原日志只说「标记无时间戳，继续同步」，读的人无法区分三种情况:
+    #     ① 从未同步过（新对）② 上轮被拒写（有缺口）③ marker 被作废过（skip 依据失效）
+    #   这里补上判据来源，让「为什么又要重传这棵大树」在日志里一眼可读。
+    local _nk_hint="" _nk_sig
+    _nk_sig=$(echo "$marker_json" | jq -r '.last_refusal.sig // ""' 2>/dev/null || true)
+    if [ -n "$_nk_sig" ]; then
+      _nk_hint="；上次拒写缺口 ${_nk_sig}（目标端/源端文件数）"
+    elif [ -n "$(echo "$marker_json" | jq -r '.skip_basis_invalidated_at // ""' 2>/dev/null || true)" ]; then
+      _nk_hint="；跳过依据已作废（$(echo "$marker_json" | jq -r '.skip_basis_invalidated_reason // "缺口未补齐"' 2>/dev/null || true)）"
+    elif [ "${MARKER_FIXED_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+      _nk_hint="；但有修复条目 ${MARKER_FIXED_COUNT} 个（说明跑过修复、只是未通过顶层精确校验）"
+    else
+      _nk_hint="；且无修复记录（可能是首次同步或一直被跳过窗口挡住）"
+    fi
+    echo "标记无时间戳（last_success 为空）${_nk_hint} → 本对不适用 1d-skip，继续同步（精确校验口径: 目标端文件数 ≥ 源端才写时间戳）"
     return 0
   fi
 
