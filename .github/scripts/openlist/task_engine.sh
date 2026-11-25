@@ -526,7 +526,21 @@ _run_registry_pairs_parallel() {
     #   实测该轮 16 对里 10 对是被强杀的，日志只报 6 对的 105.878 GiB；
     #   不做说明会让人把"下界"当"全量"，进而把提速幅度算错（我此前就踩过）。
     if [ "${_killed_n:-0}" -gt 0 ]; then
+      # 强杀对已结算字节（2026-11-25 加，run 45541260698 实证）: 该轮 14 对被强杀、
+      #   集中传输量恒为 0 B，收尾却打「传输 0 B」—— 与心跳里 83.422 GiB 的实时记账
+      #   直接矛盾，读日志的人会误判「整轮零产出」。实时记账文件与心跳同源，可给出**下界**。
+      local _killed_settled=0 _ks_line _ks_tf="${TREND_TRANSFERRED_LOG:-/tmp/ol_trend_transferred.log}"
+      if [ -f "$_ks_tf" ]; then
+        while IFS= read -r _ks_line; do
+          [[ "$_ks_line" =~ ^[0-9]+$ ]] && _killed_settled=$((_killed_settled + _ks_line))
+        done < "$_ks_tf"
+        _killed_settled=$((_killed_settled - total_transferred))
+        [ "$_killed_settled" -lt 0 ] && _killed_settled=0
+      fi
       echo "   ↳ 注意: 另有 ${_killed_n} 对被强杀，其在途字节未计入上面的传输量 ⇒ 该数是**下界**（真实传输只会更多；下界也足够判断趋势，但不要拿它做精确工期换算）"
+      if [ "$_killed_settled" -gt 0 ]; then
+        echo "     其中被强杀对已结算 $(format_bytes "$_killed_settled")（取实时记账之和减去已完成对，仅作下界参考）"
+      fi
     fi
   fi
   return 0
