@@ -1608,15 +1608,19 @@ _sync_persist_verify_and_retry() {
       fi
 
       # 3. 保存重启前的大小快照（用于对比）
+      # 单次 lsf 列举顺带取大小（2026-11-25 提速）: 旧代码每条 rclone size + rclone lsf
+      # 两次列举/文件；这里复用 _persist_probe_file 的 S/M/U 口径，一次列举同时拿到大小，
+      # 并避免列举失败时把空输出当 0（同 _persist_verify_entries 的三分口径）。
       local PERSIST_BEFORE="/tmp/${task_name}_persist_before_${BASHPID:-$$}.txt"
       : > "$PERSIST_BEFORE"
       while IFS="$OL_FIELD_SEP" read -r alt_path bytes orig_path f_method f_mid; do
         [ -z "$alt_path" ] && continue
         local full_alt="${dest_path}/${alt_path}"
-        local sz
-        sz=$(rclone size --json "$full_alt" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
-        echo "${alt_path}${OL_FIELD_SEP}${bytes}${OL_FIELD_SEP}${sz}" >> "$PERSIST_BEFORE"
-        echo "  重启前大小检查: $alt_path (expected=$bytes, actual=$sz)" | tee -a "$LOG_FILENAME"
+        local _pb _sz="未定"
+        _pb=$(_persist_probe_file "$(dirname "$full_alt")" "$(basename "$full_alt")" "${OPENLIST_PERSIST_PROBE_TRIES:-2}")
+        case "$_pb" in S:*) _sz="${_pb#S:}" ;; M) _sz=0 ;; esac
+        echo "${alt_path}${OL_FIELD_SEP}${bytes}${OL_FIELD_SEP}${_sz}" >> "$PERSIST_BEFORE"
+        echo "  重启前大小检查: $alt_path (expected=$bytes, actual=$_sz)" | tee -a "$LOG_FILENAME"
       done < "$PERSIST_VERIFY_LIST"
 
       # 4. 重启 OpenList 容器并等待驱动就绪 + 刷新缓存
