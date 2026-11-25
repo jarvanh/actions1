@@ -379,7 +379,12 @@ _run_registry_pairs_parallel() {
         [ -z "${_started[$_k2]:-}" ] && _unstarted=$((_unstarted + 1))
       done
       _need=$(( 1 + _running + _unstarted ))
-      _share=$(_pair_share_seconds "$_need")
+      # 分母按并行度折算（2026-11-25）: 份额公式的“可用预算”是墙钟，而 par 路并行
+      #   意味着同一段墙钟能被 par 个对同时用掉 —— 不折算就按对数把预算摊薄，
+      #   轮末必剩一段谁也派不出去的预算（run 45473411880 实测剩 35min）。
+      local _need_eff
+      _need_eff=$(_pair_share_need_eff "$_need" "$_par")
+      _share=$(_pair_share_seconds "$_need_eff")
       # ===== 份额不足可用下限 ⇒ 本轮不分发（2026-11-12 加，run 43125112722 实证）=====
       # 现场: 轮末算出「份额 1min（需服务 2 个）」的对仍被分发出去 —— 而
       #   sync_budget_stop 要求「剩余 ≥ OPENLIST_SYNC_MIN_SLICE_SECONDS(600s) 才开新单元」
@@ -911,6 +916,25 @@ _subdir_sizes_from_snapshot() {
     | gunzip -c 2>/dev/null \
     | awk -F'\t' 'NF>=2 && $2 ~ /^[0-9]+$/ { n=split($1,p,"/"); if (n>1) s[p[1]]+=$2 } END { for (k in s) printf "%s\t%s\n", s[k], k }'
   return 0
+}
+
+# ===== 公平份额的“容量折算”（2026-11-25 加）=====
+# 病灶: 份额公式用的是「可用预算 / 尚需服务对数」，分母数的是**对数**，而实际
+#   同时在跑 OPENLIST_PAIR_PARALLEL 个对 —— 每个对各自吃一份墙钟预算，两者相乘
+#   才是本轮真正可用的“对·分钟”。少乘这个并行度，就把一轮的可用预算按对数摊薄了。
+# 实证（actions1 run 45473411880）: 预算 320min、16 对、并行 2 ⇒ 份额被 1500s 下限
+#   兜住（25min）+ 超份额宽限 600s ⇒ 每波 35min × 8 波 = 280min，收尾时仍剩 35min
+#   预算无处可派（所有对都已启动过），本轮传输 125.7GiB / 283min。
+# 折算: need_eff = ceil(need / par) —— 并行 par 路时，一轮能服务的“对·分钟”是
+#   预算 × par，故每对可拿到的 = 预算×par/need = 预算/ceil(need/par)。
+# 约束不变: 份额仍夹到可用预算以内（_pair_share_seconds 已做），且到点仍由
+#   份额闸+宽限硬收 —— 只是不再在轮末留出用不掉的空档。
+# 用法: ne=$(_pair_share_need_eff <尚需服务对数> <并行度>)
+_pair_share_need_eff() {
+  local _n="${1:-1}" _p="${2:-1}"
+  { [[ "$_n" =~ ^[0-9]+$ ]] && [ "$_n" -gt 0 ]; } || _n=1
+  { [[ "$_p" =~ ^[0-9]+$ ]] && [ "$_p" -gt 0 ]; } || _p=1
+  echo $(( ( _n + _p - 1 ) / _p ))
 }
 
 # ===== 单同步对的公平份额（2026-11-10 加，动因见 OPENLIST_PAIR_MIN_SLICE_SECONDS）=====

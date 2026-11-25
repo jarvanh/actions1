@@ -85,6 +85,28 @@ _u=$(_budget_slice_seconds)
   && ok "A7 40 对: 份额(${_v}s) ≤ 可用预算(${_u}s)" \
   || bad "A7 份额 ${_v} 超过可用预算 ${_u}"
 
+# ================= A8. 并行度折算（2026-11-25 加）=================
+# 生产实证（run 45473411880）: 320min 预算 / 16 对 / 并行 2，份额被 1500s 下限兜住，
+#   每波 35min（份额 25 + 宽限 10）× 8 波 = 280min，收尾仍剩 35min 预算派不出去。
+# 折算口径: need_eff = ceil(need / par)，即一轮可服务的“对·分钟” = 预算 × par。
+_e=$(_pair_share_need_eff 16 2)
+[ "$_e" = "8" ] && ok "A8a 16 对 / 并行 2 → 折算 8 份（预算按并行容量摊，不按对数摊）" || bad "A8a 折算=$_e（期望 8）"
+_e=$(_pair_share_need_eff 16 3)
+[ "$_e" = "6" ] && ok "A8b 16 对 / 并行 3 → 折算 6 份（向上取整，不放过零头）" || bad "A8b 折算=$_e（期望 6）"
+_e=$(_pair_share_need_eff 1 4)
+[ "$_e" = "1" ] && ok "A8c 只剩 1 对 → 1 份（不会因为并行度放大份额）" || bad "A8c 折算=$_e（期望 1）"
+for _bad_e in "0 2" "abc 2" "16 0" "16 abc"; do
+  set -- $_bad_e
+  _e=$(_pair_share_need_eff "$1" "$2")
+  [ -n "$_e" ] && [ "$_e" -ge 1 ]     && ok "A8d 非法入参 '$1/$2' → 折算 $_e（不倒挂/不除零）"     || bad "A8d 非法入参 '$1/$2' → [${_e:-空}]"
+done
+# 关键对比: 折算后的份额必须**大于**旧口径（否则这条改动没有意义）
+OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 17040 ))
+OPENLIST_PAIR_MIN_SLICE_SECONDS=1500
+_old=$(_pair_share_seconds 16)
+_new=$(_pair_share_seconds "$(_pair_share_need_eff 16 2)")
+[ "$_new" -gt "$_old" ]   && ok "A8e 16 对并行 2: 新份额 ${_new}s > 旧份额 ${_old}s（轮末不再空转）"   || bad "A8e 新 ${_new}s 未大于旧 ${_old}s"
+
 # ================= B. 份额到期 = 立即不再开新工作片 =================
 OPENLIST_SYNC_DEADLINE_EPOCH=$(( $(date +%s) + 19000 ))   # 全局预算很充足
 unset OPENLIST_PAIR_DEADLINE_EPOCH
