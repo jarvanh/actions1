@@ -4,6 +4,8 @@
 # 职责边界:
 #   - 修复条目的增量持久化与状态维护（中断可续：每成功一个立即写 marker）
 #   - 缺失文件收集 → 4 种修复方法轮换 → 落盘即时校验 → 重启容器复核
+#     （复核结论三分: 通过 / 确定失败 / 观测失败；观测失败既不拉黑也不计失败，
+#      见 _persist_probe_file 头注释的 run 45455001510 实证）
 #   - 最终完整同步的 filter 保护构建（三来源: 本任务 marker ∪ 本轮累计 ∪ 父级守卫，
 #     排除 = 不传输 + 不删除，防修复产物被 sync 当多余文件清掉）
 #   - 修复结果序列化与累计（供 save_sync_marker 与结果通知使用）
@@ -181,23 +183,88 @@ _remove_fix_entry_from_state() {
   fi
 }
 
+# ===== 落盘探针: 区分「确定不存在」与「列举失败」（2026-11-25 修）=====
+# 病灶实证（actions1 run 45455001510，21:07–21:12）: 容器重启后后端驱动尚未
+#   重建索引，rclone size <file> 对**真实已落盘**的文件全部失败（rc≠0、无输出），
+#   旧代码把空输出当 bytes=0 ⇒ 445 个文件被判「未持久化」并逐个 _blacklist_add
+#   拉黑「方法2·短名直传」⇒ 同批 pixiv 文件此后「方法耗尽」永久失败、还被从
+#   marker 移除。整轮修复统计也随之失真（沿用数 > 成功数）。
+# 语义（必须三分）:
+#   S:<bytes>  列举成功且该名字存在 → 可以按大小判定
+#   M          列举成功且该名字不在（或目录确定性不存在）→ **确定不存在**
+#   U          列举命令本身失败（超时/5xx/驱动未就绪）→ **观测失败，不是落盘事实**
+# 为什么 U 不能当 M: 后端重建索引期间列表会短暂为空/报错，此时下任何结论都只是
+#   把「看不见」说成「不存在」，代价是拉黑一个本来好用的方法、并把已落盘文件
+#   从 marker 里删掉。
+# 用法: _persist_probe_file <parent_dir_path> <basename> [tries] → stdout 上述标记
+_persist_probe_file() {
+  local parent="$1" base="$2" tries="${3:-3}"
+  [[ "$tries" =~ ^[0-9]+$ ]] && [ "$tries" -gt 0 ] || tries=3
+  local _sleep="${OPENLIST_PERSIST_PROBE_RETRY_SLEEP:-5}"
+  [[ "$_sleep" =~ ^[0-9]+$ ]] || _sleep=5
+  local i out rc sz _errf="/tmp/ol_probe_err_${BASHPID:-$$}.txt"
+  for ((i = 1; i <= tries; i++)); do
+    out=$(rclone lsf "$parent" --files-only --format "ps" --separator ";" 2>"$_errf")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      sz=$(echo "$out" | awk -v FS=';' -v bn="$base" '$1==bn{print $2; exit}')
+      # 名字命中但大小为空的极少数格式异常也按未知处理，绝不当 0
+      if [ -n "$sz" ]; then echo "S:$sz"; else echo "M"; fi
+      return 0
+    fi
+    # "directory not found" 是 rclone 的**确定性**答复 ⇒ 落点目录根本不存在（=M）
+    if grep -qiE 'directory not found|not found|couldn.t find|does not exist' "$_errf" 2>/dev/null; then
+      echo "M"; return 0
+    fi
+    [ "$i" -lt "$tries" ] && sleep "$_sleep"
+  done
+  rm -f "$_errf" 2>/dev/null || true
+  echo "U"
+  return 0
+}
+
+# 目录列举（分卷复核用）: 成功输出清单并返回 0；确定性不存在返回 3；观测失败返回 2
+_persist_list_dir() {
+  local dir="$1" tries="${2:-2}"
+  [[ "$tries" =~ ^[0-9]+$ ]] && [ "$tries" -gt 0 ] || tries=2
+  local i out rc _errf="/tmp/ol_probe_dir_${BASHPID:-$$}.txt"
+  for ((i = 1; i <= tries; i++)); do
+    out=$(rclone lsf "$dir" --files-only 2>"$_errf")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then printf '%s' "$out"; return 0; fi
+    if grep -qiE 'directory not found|not found|couldn.t find|does not exist' "$_errf" 2>/dev/null; then
+      return 3
+    fi
+    [ "$i" -lt "$tries" ] && sleep "${OPENLIST_PERSIST_PROBE_RETRY_SLEEP:-5}"
+  done
+  rm -f "$_errf" 2>/dev/null || true
+  return 2
+}
+
 # 持久化验证单轮复核（在 OpenList 容器重启、缓存刷新之后调用）
-# 逐条检查修复条目是否被后端真正持久化；失败条目当场加入方法黑名单，
+# 逐条检查修复条目是否被后端真正持久化；**确定失败**的条目当场加入方法黑名单，
 # 供本轮"立即换方法重试"直接跳过失效方法（不再等下一轮）
 # 输入清单格式: <alt_path>␟<bytes>␟<orig_path>␟<method>␟<method_id> 每行一条
 #   分隔符是真源 utils.sh 的 OL_FIELD_SEP（0x1F），不用 `|` —— 文件名可合法
 #   含 `|`，会让字段整体右移（见 utils.sh 该常量注释的 run 40623856341 实证）
 # max_sample: 0 = 复核全部条目（默认语义，修复条目本来就有限，
 #             OPENLIST_MISSING_FIX_MAX 封顶）；>0 = 仅复核前 N 条（限流逃生阀）
-# 结果写入全局: PERSIST_OK / PERSIST_FAIL / PERSIST_IDX /
-#               PERSIST_FAILED_ORIGS（失败条目 original 数组）
+# 结果写入全局: PERSIST_OK / PERSIST_FAIL / PERSIST_IDX / PERSIST_UNKNOWN /
+#               PERSIST_FAILED_ORIGS（失败条目 original 数组）/
+#               PERSIST_UNKNOWN_ORIGS（观测失败条目 original 数组）
+# 为什么把「观测失败」单列（2026-11-25）: 它既不进失败数组（不触发换方法重试，
+#   方法本身可能完全正常），也不进成功数组（没有证据）；由调用方顺延到下一轮，
+#   并把本轮复核结论标成「不可信」。见 _persist_probe_file 头注释的实证。
 # 用法: _persist_verify_entries <dest_path> <list_file> <max_sample> <log_file>
 _persist_verify_entries() {
   local dest_path="$1" list_file="$2" max_sample="$3" log_file="$4"
   PERSIST_OK=0
   PERSIST_FAIL=0
+  PERSIST_UNKNOWN=0
   PERSIST_IDX=0
   PERSIST_FAILED_ORIGS=()
+  PERSIST_UNKNOWN_ORIGS=()
+  local _pv_fail_orig=() _pv_fail_mid=()
   local alt_path bytes orig_path f_method f_mid
   while IFS="$OL_FIELD_SEP" read -r alt_path bytes orig_path f_method f_mid; do
     [ -z "$alt_path" ] && continue
@@ -208,10 +275,17 @@ _persist_verify_entries() {
     [ "$max_sample" -gt 0 ] && [ "$PERSIST_IDX" -gt "$max_sample" ] && break
 
     local full_alt="${dest_path}/${alt_path}"
-    local after_sz after_lsf_sz
-    after_sz=$(rclone size --json "$full_alt" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
-    after_lsf_sz=$(rclone lsf "$(dirname "$full_alt")" --files-only --format "ps" --separator ";" 2>/dev/null | awk -v FS=';' -v bn="$(basename "$full_alt")" '$1==bn{print $2; exit}')
-    [ -z "$after_lsf_sz" ] && after_lsf_sz=0
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+    # 单次 lsf 列举即得大小，并三分「存在/不存在/观测失败」（见 _persist_probe_file）
+    # 旧实现同时发 rclone size 与 rclone lsf 两次列举/文件 —— 慢一倍，且 size 失败
+    # 时被 jq 兜成 0，直接制造假失败。
+    local after_sz="" probe="" probe_state=""
+    probe=$(_persist_probe_file "$(dirname "$full_alt")" "$(basename "$full_alt")" "${OPENLIST_PERSIST_PROBE_TRIES:-3}")
+    case "$probe" in
+      S:*) probe_state=ok;     after_sz="${probe#S:}" ;;
+      M)   probe_state=missing ;;
+      *)   probe_state=unknown ;;
+    esac
 
     # 判断方法类型
     local is_transformed=0
@@ -225,7 +299,10 @@ _persist_verify_entries() {
     fi
 
     local verified=0
-    if [ "$is_split" -eq 1 ]; then
+    if [ "$probe_state" = "unknown" ]; then
+      # 观测失败: 不算通过、不算失败、不拉黑 —— 顺延下轮真值复核
+      echo "  ⏸ 复核未定 · $(_fix_method_short "$f_mid") · 后端列举失败（非落盘结论） · $(_short_path "$orig_path")" | tee -a "$log_file"
+    elif [ "$is_split" -eq 1 ]; then
       # 分卷：检查同目录下所有编号分卷
       local alt_dir_alt
       alt_dir_alt="$(dirname -- "$alt_path")"
@@ -234,9 +311,14 @@ _persist_verify_entries() {
       alt_prefix="${alt_prefix%.*}"        # strip ".001"
       alt_prefix="${alt_prefix%.zip}"      # also strip ".zip" if leftover
       # 列当前存在的所有同前缀编号分卷
-      local existing_parts
+      local existing_parts parts_raw="" lrc=0
       # pipefail 下 grep 无匹配(rc=1)会传染赋值语句终止 step; 空结果由下方 part_count=0 分支处理
-      existing_parts=$(rclone lsf "${dest_path}/${alt_dir_alt}" --files-only 2>/dev/null | { grep -E "${alt_prefix}\.zip\.[0-9]{3}" || true; } | sort)
+      parts_raw=$(_persist_list_dir "${dest_path}/${alt_dir_alt}" 2) || lrc=$?
+      if [ "$lrc" -eq 2 ]; then
+        # 列举失败（驱动未就绪/超时）→ 观测失败，不下结论（与上方 U 同义）
+        probe_state=unknown
+      fi
+      existing_parts=$(printf '%s\n' "$parts_raw" | { grep -E "${alt_prefix}\.zip\.[0-9]{3}" || true; } | sort)
       # grep -c 无匹配时已输出 0（退出码 1），用 || true 防止追加第二行 0
       local part_count
       part_count=$(printf '%s' "$existing_parts" | grep -c . || true)
@@ -246,15 +328,18 @@ _persist_verify_entries() {
         parts_ok=1
         while IFS= read -r pn; do
           [ -z "$pn" ] && continue
-          local p_sz
-          p_sz=$(rclone lsf "${dest_path}/${alt_dir_alt}" --files-only --format "ps" --separator ";" 2>/dev/null | awk -v FS=';' -v bn="$pn" '$1==bn{print $2; exit}')
-          if [ -z "$p_sz" ] || ! [ "$p_sz" -gt 0 ] 2>/dev/null; then
-            parts_ok=0
-            break
-          fi
+          local p_probe
+          p_probe=$(_persist_probe_file "${dest_path}/${alt_dir_alt}" "$pn" 2)
+          case "$p_probe" in
+            S:*) if ! [ "${p_probe#S:}" -gt 0 ] 2>/dev/null; then parts_ok=0; break; fi ;;
+            M) parts_ok=0; break ;;
+            *) parts_ok=0; probe_state=unknown; break ;;
+          esac
         done <<< "$existing_parts"
       fi
-      if [ "$parts_ok" -eq 1 ]; then
+      if [ "$probe_state" = "unknown" ]; then
+        echo "  ⏸ 复核未定 · $(_fix_method_short "$f_mid") · 分卷列举失败（非落盘结论） · $(_short_path "$orig_path")" | tee -a "$log_file"
+      elif [ "$parts_ok" -eq 1 ]; then
         verified=1
         echo "  ✅ 通过 · $(_fix_method_short "$f_mid") · 分卷${part_count} · $(_short_path "$orig_path")" | tee -a "$log_file"
       else
@@ -262,33 +347,61 @@ _persist_verify_entries() {
       fi
     elif [ "$is_transformed" -eq 1 ]; then
       # 压缩/编码类：只检查 size > 0（压缩包大小与原文件不同）
-      if [ "$after_sz" -gt 0 ] 2>/dev/null && [ "$after_lsf_sz" -gt 0 ] 2>/dev/null; then
+      if [[ "$after_sz" =~ ^[0-9]+$ ]] && [ "$after_sz" -gt 0 ]; then
         verified=1
         echo "  ✅ 通过 · $(_fix_method_short "$f_mid") · $(_short_path "$orig_path") · ${after_sz}B" | tee -a "$log_file"
       else
-        echo "  ❌ 未持久化 · $(_fix_method_short "$f_mid") · 空或不存在 sz=${after_sz} · $(_short_path "$orig_path")" | tee -a "$log_file"
+        echo "  ❌ 未持久化 · $(_fix_method_short "$f_mid") · 空或不存在 sz=${after_sz:-缺失} · $(_short_path "$orig_path")" | tee -a "$log_file"
       fi
     else
       # 原样 copy / rename 类：精确匹配大小
-      if [ "$after_sz" = "$bytes" ] && [ "$after_lsf_sz" = "$bytes" ] && [ "$after_sz" -gt 0 ]; then
+      if [[ "$after_sz" =~ ^[0-9]+$ ]] && [ "$after_sz" = "$bytes" ] && [ "$after_sz" -gt 0 ]; then
         verified=1
         echo "  ✅ 通过 · $(_fix_method_short "$f_mid") · $(_short_path "$orig_path") · ${bytes}B" | tee -a "$log_file"
       else
-        echo "  ❌ 未持久化 · $(_fix_method_short "$f_mid") · 期望${bytes} 实际${after_sz} · $(_short_path "$orig_path")" | tee -a "$log_file"
+        echo "  ❌ 未持久化 · $(_fix_method_short "$f_mid") · 期望${bytes} 实际${after_sz:-缺失} · $(_short_path "$orig_path")" | tee -a "$log_file"
       fi
     fi
-    if [ "$verified" -eq 1 ]; then
+    if [ "$probe_state" = "unknown" ]; then
+      PERSIST_UNKNOWN=$((PERSIST_UNKNOWN + 1))
+      PERSIST_UNKNOWN_ORIGS+=("$orig_path")
+    elif [ "$verified" -eq 1 ]; then
       PERSIST_OK=$((PERSIST_OK + 1))
     else
       PERSIST_FAIL=$((PERSIST_FAIL + 1))
-      # B: 复核失败 = 修复方法假成功 → 当场拉黑，本轮立即换方法重试
-      if [ -n "$f_mid" ]; then
-        _blacklist_add "$orig_path" "$f_mid"
-        echo "  ⛔ 拉黑 $(_fix_method_short "$f_mid")，本轮换方法: $(_short_path "$orig_path")" | tee -a "$log_file"
-      fi
+      # 失败先**收集**，不立刻拉黑: 需要先看整体失败形态再决定（见循环后的全灭判定）
+      _pv_fail_orig+=("$orig_path")
+      _pv_fail_mid+=("${f_mid:-}")
       PERSIST_FAILED_ORIGS+=("$orig_path")
     fi
   done < "$list_file"
+
+  # ===== 全灭可疑判定（2026-11-25 加）=====
+  # 为什么需要: 三分口径只能挡住「列举报错」，挡不住「列举成功但返回空列表」——
+  #   OpenList 驱动重建索引期间实测会出现 rc=0 的空列表（见 _rebuild_raw_baseline
+  #   头注释: rclone size 计数=0 但 rc=0 的"成功的空"）。此时每条都是「M 确定不存在」
+  #   ⇒ 会把一整批真实落盘的文件判死并逐个拉黑方法。
+  # 判据: 复核了 ≥5 条、0 通过、0 未定（即所有条目都"查得到目录、查不到文件"）。
+  #   此前刚上传成功的文件整体消失是不可能的真实事件，只可能是观测失真；
+  #   宁可全部顺延下轮（用重启后的真值复核），也不批量拉黑/改 marker。
+  local _pv_checked=$(( PERSIST_OK + PERSIST_FAIL + PERSIST_UNKNOWN ))
+  if [ "$PERSIST_FAIL" -gt 0 ] && [ "$PERSIST_OK" -eq 0 ] && [ "$PERSIST_UNKNOWN" -eq 0 ]      && [ "$_pv_checked" -ge 5 ]; then
+    echo "  ⚠️ 复核全灭（${_pv_checked} 条全部查不到）→ 判定为观测失真，不拉黑、不计失败，整批顺延下轮真值复核" | tee -a "$log_file"
+    PERSIST_UNKNOWN=$_pv_checked
+    PERSIST_UNKNOWN_ORIGS=("${PERSIST_FAILED_ORIGS[@]}")
+    PERSIST_FAIL=0
+    PERSIST_FAILED_ORIGS=()
+    # 失败候选一并清空，否则下方拉黑循环仍会把整批方法写进黑名单
+    _pv_fail_orig=(); _pv_fail_mid=()
+  fi
+
+  # B: 复核失败 = 修复方法假成功 → 拉黑，本轮立即换方法重试
+  local _i
+  for _i in "${!_pv_fail_orig[@]}"; do
+    [ "${_pv_fail_mid[$_i]:-}" ] || continue
+    _blacklist_add "${_pv_fail_orig[$_i]}" "${_pv_fail_mid[$_i]}"
+    echo "  ⛔ 拉黑 $(_fix_method_short "${_pv_fail_mid[$_i]}")，本轮换方法: $(_short_path "${_pv_fail_orig[$_i]}")" | tee -a "$log_file"
+  done
 }
 
 # 重建落盘即时校验（_confirm_persist_by_count）的 raw 计数基准
@@ -1521,14 +1634,22 @@ _sync_persist_verify_and_retry() {
         local persist_ok=$PERSIST_OK
         local persist_fail=$PERSIST_FAIL
         local persist_idx=$PERSIST_IDX
-        echo "  持久化验证汇总: 复核 ${persist_idx}/${verify_total} / 通过 ${persist_ok} / 失败 ${persist_fail}" | tee -a "$LOG_FILENAME"
-        if [ "$persist_fail" -gt 0 ] && [ "$persist_ok" -eq 0 ]; then
+        local persist_unknown=${PERSIST_UNKNOWN:-0}
+        echo "  持久化验证汇总: 复核 ${persist_idx}/${verify_total} / 通过 ${persist_ok} / 失败 ${persist_fail} / 未定 ${persist_unknown}" | tee -a "$LOG_FILENAME"
+        # 复核结论可信度（2026-11-25 加）: 未定条目 >0 说明后端列举没跟上，
+        #   此时「全量失败」只是看不见，不是丢了 —— 不许据此改 marker/拉黑。
+        if [ "$persist_unknown" -gt 0 ]; then
+          echo "  ⚠️ 复核不可信: ${persist_unknown} 条因后端列举失败无法判定（未拉黑、未计入失败，留待下轮真值复核）" | tee -a "$LOG_FILENAME"
+        fi
+        if [ "$persist_fail" -gt 0 ] && [ "$persist_ok" -eq 0 ] && [ "$persist_unknown" -eq 0 ]; then
           echo "  [持久化失败] 容器重启后复核未通过，全量修复文件已丢失（PUT 成功但后端未刷盘）。" | tee -a "$LOG_FILENAME"
           # 标记为持久化失败（影响通知但不阻止后续 task）
           SYNC_PERSIST_FAIL=1
         elif [ "$persist_fail" -gt 0 ]; then
           echo "  [持久化异常] 容器重启后复核部分未通过，存在间歇性持久化失败。" | tee -a "$LOG_FILENAME"
           SYNC_PERSIST_FAIL=1
+        elif [ "$persist_unknown" -gt 0 ]; then
+          echo "  [持久化未定] 无确定失败，但 ${persist_unknown} 条无法判定 —— 不置失败标记，下轮复核" | tee -a "$LOG_FILENAME"
         else
           echo "  [持久化成功] 全部复核的修复文件均已被后端持久化（重启后仍然存在）。" | tee -a "$LOG_FILENAME"
         fi
@@ -1643,7 +1764,12 @@ _sync_persist_verify_and_retry() {
               break
             fi
             _persist_verify_entries "$dest_path" "$round_list" 0 "$LOG_FILENAME"
-            echo "  第 ${retry_round} 轮复核汇总: 复核 ${PERSIST_IDX}/${retry_fixed} / 通过 ${PERSIST_OK} / 失败 ${PERSIST_FAIL}" | tee -a "$LOG_FILENAME"
+            echo "  第 ${retry_round} 轮复核汇总: 复核 ${PERSIST_IDX}/${retry_fixed} / 通过 ${PERSIST_OK} / 失败 ${PERSIST_FAIL} / 未定 ${PERSIST_UNKNOWN:-0}" | tee -a "$LOG_FILENAME"
+            # 未定 ≠ 失败（2026-11-25）: 后端列举失败时没有证据，既不拉黑也不进
+            # 重试队列；本轮按「沿用上轮」留在 fix_list，下轮 truth-check 用真值复核。
+            if [ "${PERSIST_UNKNOWN:-0}" -gt 0 ]; then
+              echo "  ⚠️ 本轮 ${PERSIST_UNKNOWN} 条复核未定（后端列举失败）: 不计失败、不拉黑、不换方法，留待下轮真值复核" | tee -a "$LOG_FILENAME"
+            fi
 
             # 仍未通过的条目进入下一轮（其条目在下轮重试前统一清理）；
             # 通过的条目已真实持久化，就此出局
@@ -1783,5 +1909,26 @@ _sync_accumulate_fixed_results() {
   fi
 
   # 本轮修复成效累计（收尾告警口径，见 _ol_round_stats_bump 注释）
-  _ol_round_stats_bump "${LAST_SYNC_FIXED_FILES_JSON:-[]}" "${SYNC_MISSING_TOTAL_RUN:-0}" "${ROUND_REUSED_TOTAL:-0}"
+  # ⚠️ add_ok 口径是 fix_list，其中混着「♻ 沿用上轮」条目（同条件写入），必须剔除
+  #   后再入账 —— 否则收尾「沿用 968 > 成功 870」自相矛盾（2026-11-25 修，
+  #   run 45455001510 / 45473411880 连续两轮实证）。沿用条目的 authoritative 计数
+  #   是事件日志 REUSED（并行下变量会丢，收尾已按事件日志为准）。这里按 original
+  #   逐条剔除沿用条目（不做“减数量”: 本函数每个子任务调用一次，而事件日志是本轮
+  #   累计的，减法会在后续调用里重复扣）。事件日志缺失时退回旧行为（只是虚高）。
+  local _reused_ev=0 _new_json="${LAST_SYNC_FIXED_FILES_JSON:-[]}"
+  if [ -f "$_FIX_EVENT_LOG" ]; then
+    local _rnames="/tmp/ol_reused_names_${BASHPID:-$$}.txt"
+    grep '^REUSED|' "$_FIX_EVENT_LOG" 2>/dev/null | cut -d'|' -f2 | sort -u > "$_rnames" || true
+    _reused_ev=$(grep -c . "$_rnames" 2>/dev/null || true)
+    [[ "$_reused_ev" =~ ^[0-9]+$ ]] || _reused_ev=0
+    if [ -s "$_rnames" ]; then
+      # 按 original 精确剔除沿用条目：不能改成“减数量”——本函数每个子任务调用一次，
+      #   而事件日志是本轮**累计**的，减法会在后续调用里重复扣（2026-11-25 自证）。
+      local _rjson
+      _rjson=$(jq -R -s 'split("\n") | map(select(length>0))' "$_rnames" 2>/dev/null || echo '[]')
+      _new_json=$(printf '%s' "$_new_json" | jq -c --argjson r "$_rjson"         '[.[] | select(.original as $o | ($r | index($o)) | (. == null))]' 2>/dev/null || printf '%s' "$_new_json")
+    fi
+    rm -f "$_rnames" 2>/dev/null || true
+  fi
+  _ol_round_stats_bump "$_new_json" "${SYNC_MISSING_TOTAL_RUN:-0}" "${_reused_ev}"
 }
