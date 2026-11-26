@@ -123,15 +123,16 @@ def main():
         print("ERROR: filename 为空", file=sys.stderr)
         sys.exit(2)
 
-    # 若未显式传 size_bytes，尝试基于文件名在同目录下找同名本地文件读取 stat
-    if size_bytes is None:
+    # 任一字段缺失都尝试在同目录下找同名本地文件补齐：文档承诺 size 与时间戳
+    # 都是可选的，不能因为调用方显式传了 size 就跳过时间戳推断。
+    if size_bytes is None or source_modified_at is None or source_created_at is None:
         candidates = [
             os.path.join(os.path.dirname(json_path) or ".", filename),
         ]
         for cand in candidates:
             if os.path.isfile(cand):
-                size_bytes = os.path.getsize(cand)
-                # 如果没传 source_modified_at / source_created_at，也从本地文件推断
+                if size_bytes is None:
+                    size_bytes = os.path.getsize(cand)
                 if source_modified_at is None:
                     source_modified_at = local_file_to_iso(cand, "mtime")
                 if source_created_at is None:

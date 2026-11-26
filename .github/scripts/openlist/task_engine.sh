@@ -119,7 +119,7 @@ OPENLIST_PAIR_PARALLEL="${OPENLIST_PAIR_PARALLEL:-2}"   # 1=串行；>=2=按后�
 #   —— 这才是"同步完不成"的根因（**不是**修复重试: 该轮修复只占 7 次进入 /
 #   22 次方法尝试 ≈ 20-30min，我最初归因到这里是错的，以日志为准更正）。
 # 方案: 分发时给每个对算一份**公平份额** = 剩余可用预算 / 尚需服务的对数，
-#   下限 OPENLIST_PAIR_MIN_SLICE_SECONDS（默认 20min: 够跑完预览差值再实传一段），
+#   下限 OPENLIST_PAIR_MIN_SLICE_SECONDS（默认 1500s=25min: 够跑完预览差值再实传一段），
 #   上限 = 剩余可用预算，并夹到平台硬顶之前。份额到期后:
 #     · sync_budget_stop 返回真 ⇒ 该对不再开新批次/子目录，收敛后正常退出交棒
 #     · _budget_slice_seconds 被夹到份额终点 ⇒ 在途单元到点被 timeout 截断
@@ -976,8 +976,8 @@ _pair_share_seconds() {
   local _usable
   _usable=$(_budget_slice_seconds)
   { [[ "$_usable" =~ ^[0-9]+$ ]] && [ "$_usable" -gt 0 ]; } || { echo ""; return 0; }
-  local _min="${OPENLIST_PAIR_MIN_SLICE_SECONDS:-1200}"
-  [[ "$_min" =~ ^[0-9]+$ ]] || _min=1200
+  local _min="${OPENLIST_PAIR_MIN_SLICE_SECONDS:-1500}"
+  [[ "$_min" =~ ^[0-9]+$ ]] || _min=1500
   local _share=$(( _usable / _need ))
   [ "$_share" -lt "$_min" ] && _share="$_min"
   [ "$_share" -gt "$_usable" ] && _share="$_usable"

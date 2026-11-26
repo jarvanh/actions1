@@ -69,10 +69,11 @@ for _i in $(seq 1 $(( wait_sec / 5 ))); do
         : > "$PASS_FILE"; exit 0
       fi
       # 2026-11-11 生产实测追加的兜底：ai.json 可能因身份闸拒跑/写入失败而缺失，
-      # 但 old.json 的 archives_done 同样证明 AI 数据已上 Dropbox（归档结果 tsv 实证）
-      if [ -s /tmp/openclaw-prefetch/OmniRoute.tar.gz ]; then
-        : > "$PASS_FILE"; exit 0
-      fi
+      # 但 old.json 的 archives_done 同样证明 AI 数据已上 Dropbox（归档结果 tsv 实证）。
+      # 2026-11-26 审查：原此处重复粘贴了上一段的 OmniRoute.tar.gz 判断，兜底从未生效。
+      case "$(handoff_old_archives_done "${HANDOFF_OF}")" in
+        true) : > "$PASS_FILE"; exit 0 ;;
+      esac
       # 2026-11-15：旧轮明确说快路径没戏（dump.rc≠0 / 包坏 / 半包残骸），
       # 继续等 ai.json 只会白耗 → 立即放行。
       # ai-fetch 会在 Dropbox 回退路径照常拿 OmniRoute.tar.gz（阶段A已上传），

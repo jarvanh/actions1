@@ -40,8 +40,11 @@ _pre_webdav_health_check() { return 0; }
 _openlist_api_health_check() { return 0; }
 _get_openlist_token() { printf 'dummy-token'; }
 rclone() { return 1; }
+# 本文件故意在「先调用、后重定义 stub」的顺序里验证入口预检：第 2 段起才把
+# _check_openlist_backend_connectivity 重定义成失败 stub（真定义来自上面 source）。
 declare -A _BACKEND_WRITE_PROBE_CACHE=()
 
+# shellcheck disable=SC2218
 _check_openlist_backend_connectivity "$DEST" /dev/null
 rc=$?
 [ "$rc" -ne 0 ] && ok "1a 写探针失败 → 连通性预检返回非 0" || bad "1a: rc=$rc"

@@ -8,7 +8,8 @@
 # 用法：
 #   system_health.sh            # 检查一次，状态变化才发 TG（定时器调用）
 #   system_health.sh --force    # 无论是否变化都发（人工验证用）
-#   system_health.sh --quiet    # 只打印，不发 TG（本机调试）
+#   system_health.sh --quiet    # 只打印探测摘要，不发 TG、不落状态（本机调试）
+#   system_health.sh --print    # 打印完整 TG 消息后退出（版式预览，不发 TG/不落状态）
 #
 # 判定项（任一 FAIL 即异常）：
 #   - /dropbox 是否挂载（持久化真源，缺了凭据/看板/配置全丢）

@@ -110,12 +110,16 @@ _SENSITIVE_EXACT_KEYS = frozenset({
 # 带 userinfo 凭据的 URL（如 https://owner:TOKEN@gitee.com/...），
 # 常出现在 git 报错回显中，统一替换为 https://***@
 _CRED_URL_RE = re.compile(r'https?://[^/@\s:]+:[^/@\s]+@')
+# API 报错还会回显 query token（?access_token=... / ?token=...），
+# 公开日志里留它和留密码等价，必须一并清掉。
+_TOKEN_QUERY_RE = re.compile(r'([?&](?:api_key|access_token|token)=)[^&\s"\']+', re.I)
 
 _REDACTED = '***'
 
 
 def _scrub_cred_urls(text: str) -> str:
-    """清除字符串中带凭据的 URL（git 报错会回显 remote_with_token）。"""
+    """清除 URL 里的两类凭据：userinfo（git remote）与 query token（API 报错）。"""
+    text = _TOKEN_QUERY_RE.sub(r'\1[redacted]', text)
     return _CRED_URL_RE.sub('https://***@', text)
 
 
@@ -563,7 +567,7 @@ def direct_egress_ip(timeout=8):
 # ---------------------------------------------------------------------------
 # 测速点 IP 归属查询与「📍 测速点网络」统一分节
 # ---------------------------------------------------------------------------
-def resolve_host_ipv4(target, timeout=5):
+def resolve_host_ipv4(target):
     """域名或 IP → IPv4 字符串；解析失败返回 ''。
 
     直连 DNS（不经代理、不经 mihomo）：测速点是固定的国内站点，直连解析结果
@@ -887,7 +891,7 @@ def tg_footer_line():
          github.run_started_at 表达式上下文，workflow 注入恒为空串；
       ② /proc/1 启动时刻兜底（hosted runner PID 1 随 job 启动，误差秒级，
          与 job 硬上限 6h 同口径）；
-      ③ 仍取不到 → 不显示时长；无 TG_RUN_URL → 整行跳过
+      ③ 仍取不到 → 不显示时长；无 TG_RUN_URL → 只省链接（两者皆无才整行跳过）
     ① 取到非正数（空值 / 解析失败 / 未来时间）都继续往 ② 走——两边口径必须一致，
     不得出现「有值但解析失败就把时长丢掉」。
     时长 = run 已运行时长，非测速耗时

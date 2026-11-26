@@ -1336,7 +1336,7 @@ def _provider_ready_timeout(loaded: int) -> float:
     return min(60.0 + max(0, int(loaded)) * 0.3, 300.0)
 
 
-def wait_provider_ready(names, timeout=None, total_loaded=None, provider_names=None):
+def wait_provider_ready(names, timeout=None, total_loaded=None):
     """等 mihomo 把 provider 里的节点**真正装进组**，返回 `(ready, waited, probed)`。
 
     **四套共用**（CDN / Gitee / taier 都调它；taier 另有自己的测活层，靠它开测前兜底）。

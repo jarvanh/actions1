@@ -396,7 +396,8 @@ if [ "$E1A_OK" -eq 1 ]; then
 fi
 # ⚠️ 用 `set -u` 安全展开: 数组为空时 "${arr[@]}" 在旧 bash 会报未绑定变量。
 #    E2 被跳过时 E2_DIRS 从未赋值 ⇒ 必须用 ${E2_DIRS[@]:-} 形态。
-for _d in ${E1B_DIRS[@]:-} ${E2_DIRS[@]:-}; do
+# 引号 + :- ：既过 shellcheck（SC2068），又保留 set -u 下「数组未赋值」的安全展开
+for _d in "${E1B_DIRS[@]:-}" "${E2_DIRS[@]:-}"; do
   [ -n "$_d" ] || continue
   rclone purge "$_d" --retries 1 --timeout "$PROBE_TIMEOUT" >/dev/null 2>&1 \
     && _cleaned=$(( _cleaned + 1 )) || _left=$(( _left + 1 ))

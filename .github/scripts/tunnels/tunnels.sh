@@ -142,7 +142,7 @@ cmd_status() {
     case "$name" in ''|\#*) continue ;; esac
     local unit="$(unit_name "$name")" st
     if sudo systemctl is-active --quiet "$unit" 2>/dev/null; then st="✅ 运行"
-    elif port_ready "$port"; then st="⚠️ 源站在但未起"
+    elif [ -n "$port" ] && port_ready "$port"; then st="⚠️ 源站在但未起"
     else st="— 源站未起"; fi
     printf '%-14s %-16s %s\n' "$name" "$st" "$unit"
   done < "$CONF"

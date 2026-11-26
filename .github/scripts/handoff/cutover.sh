@@ -6,7 +6,7 @@
 #   2. 停本机 cloudflared 隧道          —— 公网入口与网关同步死亡，继任者接管后自起
 #   3. 起 rsync 只读 daemon             —— 绑 tailscale IP（公网不可达），绕开
 #                                          Dropbox 单流 13MB/s 的上传天花板
-#   4. old.json=handing_over → 等 new.json=serving（≤15min）
+#   4. old.json=handing_over → 等 new.json=serving（≤${HANDOFF_SERVING_WAIT_SEC}s，默认 600s/10min）
 # 成功 → handoff_done：调用方跳过「Trigger next」（继任者已在跑），最终归档降级为
 #        纯灾备备份、彻底移出关键路径（此时继任者已在服务，旧轮慢慢传）。
 # 失败 → handoff_aborted：调用方走传统收尾（含归档+Trigger next）；继任者读到
@@ -178,17 +178,21 @@ echo "✅ [cutover] 全部服务与入口已停（切换空窗期不留半活实
 # 从归档恢复的目录（如 workspace/MinOrder 的 node_modules/.bin）会留下 root-600 / 000
 # 的文件，sender open 失败 → rc=23 → 继任者 takeover 把「部分失败」当致命并自我取消
 #（run 44685554069：165,507 个文件里仅 2 个 .bin 不可读，8.2GB 已落盘后整轮交接
-# 回退，下线 8.5min）。源树本来就要整体交给继任者，单租户 runner 不存在「对本机
-# 其他用户保密」的需求；这里只补权限位、不动内容。find -perm 是元数据检查，
-# 165k 文件约 1-2s，对交接窗口可忽略。
+# 回退，下线 8.5min）。这里只补「runner 可读」所需的最小 ACL（u:<runner>:rX），
+# 不改 other 位、不动内容：root 属主的 .env / 私钥不会因此变成全机可读。
+# find -perm 是元数据检查，165k 文件约 1-2s，对交接窗口可忽略。
 _perm_sudo=""
 sudo -n true 2>/dev/null && _perm_sudo=1
 _perm_run() { if [ -n "$_perm_sudo" ]; then sudo -n "$@"; else "$@"; fi; }
-# 只针对「非 runner 属主」的条目：runner 自己拥有的 600 文件 daemon 照样能读，
-# 不动它们（避免把 ~/.openclaw/.env 这类本就收紧的权限白放宽）。
+# 扫描 runner 当前读不到的条目，按下属主分别判 u/o 位（runner 属主 600 已可读，不动）。
 _perm_scan() {
-  _perm_run find "$1" -not -user "$(id -un)" \
-    \( -type d ! -perm -o+x -o -type f ! -perm -o+r \) -print0 2>/dev/null
+  # 只列「runner 读不到」的条目：runner 属主看 u 位，非 runner 属主看 o 位；
+  # 后续用 ACL 只授权 runner 本人（不改原 mode 的 other 位）。
+  local me; me="$(id -un)"
+  _perm_run find "$1" \
+    \( -type f \( \( -user "$me" -a ! -perm -u+r \) -o \( ! -user "$me" -a ! -perm -o+r \) \) \
+       -o -type d \( \( -user "$me" -a ! -perm -u+x \) -o \( ! -user "$me" -a ! -perm -o+x \) \) \) \
+    -print0 2>/dev/null
 }
 _perm_fixed=0
 for _root in "$HOME/.openclaw" "$HOME/.zcode"; do
@@ -196,9 +200,14 @@ for _root in "$HOME/.openclaw" "$HOME/.zcode"; do
   _perm_scan "$_root" > /tmp/handoff-perm-fix.list 2>/dev/null || true
   _n=$(tr -cd '\000' < /tmp/handoff-perm-fix.list 2>/dev/null | wc -c)
   if [ "${_n:-0}" -gt 0 ]; then
-    _perm_run xargs -0 -r -n 200 chmod o+rX < /tmp/handoff-perm-fix.list 2>/dev/null || true
+    if command -v setfacl >/dev/null 2>&1; then
+      # 最小授权：只给 runner 用户加 rX ACL，保持文件原 mode / other 权限不变。
+      _perm_run xargs -0 -r -n 200 setfacl -m "u:$(id -un):rX" < /tmp/handoff-perm-fix.list 2>/dev/null || true
+    else
+      echo "::warning::[cutover] setfacl 缺失，跳过 ${_root} 权限放宽（rsync 可能 rc=23）"
+    fi
     _perm_fixed=$((_perm_fixed + _n))
-    echo "ℹ️ [cutover] ${_root}: ${_n} 个非 runner 属主条目补 o+r/o+x（rsync rc=23 防复发）"
+    echo "ℹ️ [cutover] ${_root}: ${_n} 个 runner 不可读条目补最小 ACL（仅 u:$(id -un):rX）"
   fi
   rm -f /tmp/handoff-perm-fix.list 2>/dev/null || true
 done
@@ -263,7 +272,7 @@ fi
 # 背景：旧 VM 占着 Tailscale 名 `openclaw` 会让继任者顶着 openclaw-1，
 # 客户端域名一直指向已停服的本机（2026-11-11 实测 12 分钟连不上）。
 # ⚠️ 2026-11-14 事故：这里曾**独立**再等一轮 serving（≤20min），
-# 与下面主循环的 15min 叠加成 35min，超出 job 剩余预算 →
+# 与当时主循环的 15min 叠加成 35min（现主循环默认 10min），超出 job 剩余预算 →
 # 旧 job 在硬上限被强杀，既没写 handoff_aborted 也没写 archives_done，
 # 继任者又白等闸门 25min，最终 52 分钟才 serving。
 # 现在只保留**一个**等待窗口（下面主循环），命中 serving 时顺手改名 + 写 handoff_done。
@@ -310,7 +319,7 @@ for _i in $(seq 1 $(( HANDOFF_SERVING_WAIT_SEC / 5 ))); do
       exit 0
       ;;
     aborted)
-      # 继任者主动放弃（rsync 失败/校验失败）：立刻回退，不必等 run 状态或 15min 超时。
+      # 继任者主动放弃（rsync 失败/校验失败）：立刻回退，不必等 run 状态或 serving 等待超时。
       # 每 5s 轮询一次，最坏 5s 就知道，把暂停的服务尽快拉回传统收尾。
       abort_handoff "继任者自我放弃（state=aborted）"
       ;;

@@ -14,8 +14,8 @@
 # 演变成 401 "token is invalidated" 潜伏故障（run 33048121562: wopan175
 # 数据面健康却被误判驱动失效）。现改为每次现场 POST /api/auth/login 换取
 # 新鲜 JWT；密码取环境变量 OPENLIST_ADMIN_PASSWORD（不在任何文件落盘），
-# 用户名可用 OPENLIST_ADMIN_USER 覆盖（默认 admin）。静默重试一次；
-# 失败不回显响应体，防账密痕迹入日志。
+# 用户名可用 OPENLIST_ADMIN_USER 覆盖（默认 admin）。无响应按 OPENLIST_LOGIN_WAIT_SECONDS
+# （默认 120s，每 3s 一次）耐心重试；明确拒绝则 fail fast。失败不回显响应体，防账密痕迹入日志。
 # 返回: 0 且 stdout 为 token 字符串；失败返回非零（stdout 空）
 _get_openlist_token() {
   local user pass body resp tok code i
@@ -28,7 +28,8 @@ _get_openlist_token() {
   # 失败短路（2026-11-09）: 本函数在热路径被反复调用（每次 _refresh_openlist_cache、
   #   每次取存储配置），而下面"无响应"的等待窗是 120s 量级 —— 管理面真的挂了时，
   #   一轮里几十次调用会累积成数十分钟纯等待。故一旦判定"管理面未就绪"，
-  #   5 分钟内直接快速失败，只付一次等待（到期后自动重试，不长期压制恢复）。
+  #   2 分钟（OPENLIST_LOGIN_DOWN_TTL，默认 120s；非法值回退 300s）内直接快速失败，
+#   只付一次等待（到期后自动重试，不长期压制恢复）。
   # ⚠️ 状态必须落**文件**而不是全局变量: 绝大多数调用点是
   #   `ol_token=$(_get_openlist_token)` / `... | ...`，命令替换与管道都会让函数
   #   在子 shell 里跑，函数内赋的全局变量当场丢失（实测: 短路完全不生效）。

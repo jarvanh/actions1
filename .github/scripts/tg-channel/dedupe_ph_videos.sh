@@ -1,4 +1,6 @@
 #!/bin/bash
+# shellcheck disable=SC2218  # tree_lines/tg_entry/escape_html 来自运行时 source 的 tg_notify.sh；
+#                            批量分析时 shellcheck 看不到跨文件定义，误报「函数稍后定义」。
 # Pornhub 收藏视频去重脚本
 #
 # 按 ph ID 分组检测重复视频，并按以下规则处理：

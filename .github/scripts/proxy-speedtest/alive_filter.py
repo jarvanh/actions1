@@ -351,7 +351,7 @@ def _trial_reload_config(timeout=15):
         return False
 
 
-def _trial_provider_counts(opener, timeout=10):
+def _trial_provider_counts(timeout=10):
     """读一次 `/providers/proxies`，返回 `{provider 名: 实际装到的节点数}`。读不到返回 None。
 
     **这是试装层的「正面证据」**，不是可有可无的锦上添花：光看「日志里有没有 provider
@@ -863,9 +863,9 @@ def _trial_judge(items, names, written, opener, starts):
                      biggest=max(written.values()) if written else 0,
                      note='本批试装文件超体积上限，mihomo 会静默归零，归因不可信')
 
-    counts = _trial_provider_counts(opener) if opener is not None else None
-    if counts is None and opener is None:
-        counts = _trial_provider_counts(_no_proxy_opener())
+    # 2026-11-26 清理：opener 参数传入后函数体内一直用 _no_proxy_opener()，属死参数。
+    # 试装查询必须直连 mihomo API（本地 127.0.0.1），不需要调用方的代理 opener。
+    counts = _trial_provider_counts()
     if counts is None:
         log_progress('trial_load_counts_unavailable',
                      note='读不到 provider 实到节点数，缺正证 ⇒ 本批归因不可信')

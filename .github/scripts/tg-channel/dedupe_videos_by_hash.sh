@@ -1,4 +1,6 @@
 #!/bin/bash
+# shellcheck disable=SC2218  # tree_lines/tg_entry/escape_html 来自运行时 source 的 tg_notify.sh；
+#                            批量分析时 shellcheck 看不到跨文件定义，误报「函数稍后定义」。
 # 视频按哈希去重脚本（适用于无统一 ID 的视频集合，如 91-tg 工作流）
 #
 # 按服务端哈希分组检测重复视频，并按以下规则处理：

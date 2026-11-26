@@ -30,16 +30,17 @@ if session_string[0] != '1':
           f"Length={len(session_string)}")
     sys.exit(1)
 
-# 预先校验 base64 可解码且长度足够（telethon 1.44 期望 275 字节解码缓冲）
+# 预先校验 base64 可解码且长度足够：StringSession v1 解码后 IPv4 为 263 字节
+# （DC/IP/端口 7 + auth_key 256），IPv6 为 275；263 是能落地的下限。
 try:
     _decoded = base64.urlsafe_b64decode(session_string[1:].encode('ascii'))
 except Exception as e:
     print(f"Error: TG_SESSION_STRING is not valid base64: {e}")
     sys.exit(1)
 
-if len(_decoded) < 261:
+if len(_decoded) < 263:
     print(f"Error: TG_SESSION_STRING appears truncated or corrupted "
-          f"(decoded length {len(_decoded)} bytes, expected at least 261). "
+          f"(decoded length {len(_decoded)} bytes, expected at least 263 for IPv4 sessions). "
           f"Re-generate it with Telethon's StringSession.save().")
     sys.exit(1)
 

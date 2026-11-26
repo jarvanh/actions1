@@ -4,9 +4,14 @@
 （Egern 要求 port 为 integer）会整条节点 decode 失败，并报出「位于第 2 行第 3 列」
 这类指向节点首键的假 YAML 错误。导出端统一转 int 后，Egern 可直接加载。
 """
+import pathlib
+import sys
+
 import yaml
 
-from speedtest_common import normalize_proxy_scalars
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from speedtest_common import normalize_proxy_scalars  # noqa: E402
 
 
 def test_string_port_becomes_int():
@@ -42,3 +47,17 @@ def test_yaml_dump_emits_unquoted_port():
     text = yaml.safe_dump({'proxies': [proxy]}, allow_unicode=True, sort_keys=False)
     assert "port: 443" in text
     assert "port: '443'" not in text
+
+
+if __name__ == '__main__':
+    failures = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith('test_') and callable(fn):
+            try:
+                fn()
+            except Exception as exc:
+                failures += 1
+                print(f'FAIL {name}: {exc}')
+            else:
+                print(f'PASS {name}')
+    raise SystemExit(1 if failures else 0)
