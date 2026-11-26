@@ -63,7 +63,7 @@
     #   原始输出 → <pre>，恒为正文最后一块（其后只跟收尾区）。空值整行跳过、空分节整段跳过。
     #   鉴权写实际形态：serve 以 -addr 0.0.0.0 监听（对 Tailscale/局域网开放），
     #   故显式传 -api-key 做客户端 Bearer 校验，取 AI_GATEWAY_API_KEY（workbuddy 专属，
-    #   与 zcode2api 的 ZCODE_GATEWAY_API_KEY 已分家，见 zcode2api 步骤 env 注释）。
+    #   与 zcode2api 的 ZCODE_GATEWAY_KEY 已分家，见 zcode2api 步骤 env 注释）。
     #   （此前注释写「仅回环监听，无需密钥」，与 -addr 0.0.0.0 的实际启动参数不符，已订正）
     #   绝不编造密钥值，也不在通知里回显 key 本身。凭据段只列 workbuddy*.json 的文件名，绝不回显内容（真实 Token）。
     #   账号池取自 workbuddy-status.json（键名由上游 Go 结构体固定，见采集处注释）；

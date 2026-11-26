@@ -836,7 +836,7 @@ services.sh stop workbuddy（systemctl --user；Restart=always 下必须走 syst
 - 失败态**不给**「接口 / 鉴权 / 模型」三行（服务已不在，指向已停进程会误导）。
 - 账号池条目 `名称 · 通道 · 状态`，子行额度 / 有效期（东八区）/ 套餐 / 最近错误；
   数据源 admin API 脱敏视图，采集失败只少一节、不改结论。
-- API Key 用独立 secret `ZCODE_GATEWAY_API_KEY`（与 workbuddy 分家）；取不到写「未取到」。
+- API Key 用独立 secret `ZCODE_GATEWAY_KEY`（与 workbuddy 分家）；取不到写「未取到」。
 
 ### 9.4 资产段（口径真源在看板）
 

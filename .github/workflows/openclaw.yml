@@ -1385,7 +1385,7 @@ jobs:
           # workbuddy
           WB_GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # zcode2api
-          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_API_KEY }}
+          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
           # qingyan
           QINGYAN_REFRESH_TOKEN: ${{ secrets.GLM_REFRESH_TOKEN }}
           QINGYAN_GATEWAY_KEY: ${{ secrets.GLM2API_GATEWAY_KEY }}
@@ -1684,7 +1684,7 @@ jobs:
           TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WB_GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_API_KEY }}
+          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
           QINGYAN_REFRESH_TOKEN: ${{ secrets.GLM_REFRESH_TOKEN }}
           QINGYAN_GATEWAY_KEY: ${{ secrets.GLM2API_GATEWAY_KEY }}
           QINGYAN_PORT: "8320"
@@ -1910,7 +1910,7 @@ jobs:
           # DB meta 优先级高于 env，env 注错不影响服务，但自检会拿它报「API Key 无效」
           # （2026-09-25 误报实录）。环境变量优先于 .env（python-dotenv 默认不覆盖
           # 已存在的环境变量），无需改数据快照里的 .env 即与仓库 Secrets 对齐。
-          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_API_KEY }}
+          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
         # 2026-10-30 减重外置：脚本本体在 .github/scripts/openclaw/run-zcode2api.sh
         #（原样搬移，唯 Bun 安装器由 curl|bash 改两步式——下载落盘再执行，安全扫描
         # 高危整改，语义等价）。P5b 契约与背景同 workbuddy 注。
@@ -2457,7 +2457,7 @@ jobs:
           TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WB_GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_API_KEY }}
+          ZCODE_GATEWAY_KEY: ${{ secrets.ZCODE_GATEWAY_KEY }}
           QINGYAN_REFRESH_TOKEN: ${{ secrets.GLM_REFRESH_TOKEN }}
           QINGYAN_GATEWAY_KEY: ${{ secrets.GLM2API_GATEWAY_KEY }}
           QINGYAN_PORT: "8320"
