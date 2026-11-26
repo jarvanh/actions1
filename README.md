@@ -534,6 +534,20 @@ OpenList 对**新建**目录/文件的列表有缓存延迟（实测首次可见
 剩余 + 预计清零）。`trend.jsonl` 读改写三情形：远端不存在→创建 / 存在→追加 /
 读取失败→放弃回传只发通知（宁丢一条样本，不覆盖历史——同 marker 过期副本防护原则）。
 `skip_preview=true` 的 run 剩余量记为未知，趋势速率不受影响。
+📊 **`trend.jsonl` 各字段的口径（读之前先看这段，否则极易误读）**:
+
+| 字段 | 真实含义 | 容易误读成 |
+|---|---|---|
+| `transferred_bytes` | 本轮经 rclone 的**净传输**字节 | 「已同步数据总量」——实际含重复传输 |
+| `missing_files` | 本轮缺失文件**去重**数（事件日志 `MISSING\|` 口径） | 「还差多少文件」——只是本轮观测到的缺失 |
+| `fixed_files` | 本轮 **fix_list 去重条目数**，**含「沿用上轮」** | 「本轮修好了几个文件」——实际的「真新落盘」要看收尾日志里的「新落盘」 |
+| `pairs_total` / `pairs_synced` | 本轮注册对数 / **真正跑完**的对数 | 「跑了多少对」——`pairs_synced` 只算写成 marker 的 |
+| `remaining_bytes` | 剩余字节；`skip_preview` 轮恒 `null` | ——（跳过了预览就拿不到，不是 0）|
+
+`fixed_files` 的坑最实际: 它取自 `/tmp/ol_round_stats.env` 的 `ROUND_FIXED_OK`（**原始累计值**），
+而收尾日志里「新落盘」是另一路计算（`_sync_accumulate_fixed_results` 已剔除沿用条目）。
+所以 `fixed_files:13` 配「新落盘 0 · 沿用 568」是对的 —— 13 是去重条目数，不是新落盘数。
+要判断「这轮真的修好了多少」必须看收尾日志的「新落盘」，不能只看 trend 的 `fixed_files`。
 
 **同步对完成度（2026-11-25 补）**: 趋势此前只有「传了多少字节」，答不了「同步完没完」——
   `skip_preview=true` 轮 `remaining_bytes` 恒 null。现由并行汇总把
