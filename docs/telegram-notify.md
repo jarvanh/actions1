@@ -220,7 +220,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openlist # 只看某个
 - 必须用 `tg_add_footer` / `Get-TgFooter` / `tg_footer_line`，不要手拼；附加链接用
   `tg_add_footer <var> "标签" "URL"` 追加。
 - 语义是 **run 已运行时长**，不是步骤自身耗时。降级链：`TG_RUN_STARTED_AT`（仅本地
-  测试覆写）→ 本次 job 生命周期起点兜底 → 取不到则不显示时长；`TG_RUN_URL` 缺失则整行跳过。
+  测试覆写）→ 本次 job 生命周期起点兜底 → 取不到则不显示时长。`TG_RUN_URL` 缺失只省略
+  「🔗 运行日志」链接，不省略时长；时长与链接都取不到时才跳过整行。
 - 兜底来源按平台取「本次 job 生命周期起点」：bash / python 用 `/proc/1`（hosted runner
   的 PID 1 随 job 启动），pwsh 用首次 dot-source 时刻记录的 `$TG_T0`（晚于 job 启动、
   时长略低估）。**不要**改用机器整机开机时长——持久化 / self-hosted runner 上会把
@@ -500,7 +501,7 @@ parse_mode**；429 按 `retry_after` 重试（最多 5 次），**400 解析失�
 - 阶段推进用不同 emoji，同一条通知内不复用。
 - 「服务是否可用」必须写清楚：可用 / 下线窗口 / 已恢复。
 - 预计时间用「约 N 分钟后」；已发生时长的三段式用 `tg_format_duration`，
-  正文单条耗时用 `tg_format_ms`；不要混用，也不要拿毫秒口径渲染几分钟的时长。
+  正文单条耗时用 `tg_format_seconds`；不要混用，也不要拿毫秒口径渲染几分钟的时长。
 
 ### 3.11 常驻服务报告
 
@@ -548,7 +549,7 @@ parse_mode**；429 按 `retry_after` 重试（最多 5 次），**400 解析失�
 | 5 | `⏱mm:ss`（定宽） | 面板批次行 | `⏱01:15` |
 
 - 第 1–3 层由三套收尾区实现，逐字一致；已发生时长（交接、下线、准备耗时）同样走这三层。
-- 正文单条耗时（毫秒 / 秒双档）用 `tg_format_ms`；三段式用 `tg_format_duration`（bash）/
+- 正文单条耗时（毫秒 / 秒双档）用 `tg_format_seconds`；三段式用 `tg_format_duration`（bash）/
   `tg_format_elapsed`（python），不要自造同义实现。
 - 第 3 层固定两位小数（整数秒写 `12.00 秒`）；第 4 层专用于 < 1 秒，避免退化成
   `0.00 秒`；第 5 层只用于面板对齐。
@@ -717,7 +718,8 @@ wb_notify() {                    # 函数体只用助手，不再 source
   `html.escape`，或经 `tg_*` 助手）。没有「值是脚本自造」的豁免。
 - **HTML 解析失败（400 can't parse entities）不重发**，直接报错并带响应体前 200 字符。
   媒体上传（caption）同样适用：坏 caption 重试多少次都是同一条坏消息。
-- **429 按 `retry_after` 等待重试（最多 5 次）**；长消息自动分片，断在换行处、不切
+- **429 按 `retry_after` 等待重试（最多 5 次；缺失/非法值按 5s，等待值钳到 60s 上限；
+  bash / pwsh 同口径）**；长消息自动分片，断在换行处、不切
   UTF-8 多字节。分片口径三套有意不同：
   - bash：>3900 UTF-16 码元触发，按 3800 UTF-16 码元切，边界自动闭合 / 重开 HTML 标签；
     5xx / 网络错误也退避重试。

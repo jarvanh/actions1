@@ -2356,7 +2356,7 @@ jobs:
           if [ "$install_outcome" != "success" ] && [ -z "$fail_stage_label" ]; then
             fail_stage_label="安装/恢复"
           fi
-          # 耗时显示走真源 tg_format_ms（规范 · 时长 第 3/4 层）：≥1 秒两位小数秒、
+          # 耗时显示走真源 tg_format_seconds（规范 · 时长 第 3/4 层）：≥1 秒两位小数秒、
           # 不足 1 秒整数毫秒 —— 上游写入的是整数秒，恒按 %.2f 输出时 0 会显示成
           # "0.00 秒"：看不出快慢，也让人怀疑没测到。真源唯一实现，不再内联副本。
           msg=""
@@ -2381,10 +2381,10 @@ jobs:
             tg_add_kv msg "回退来源" "$_fvs"
           fi
           [ -n "$recorded_successful_version" ] && tg_add_path msg "成功版本记录" "$recorded_successful_version"
-          # 耗时走 tg_format_ms（规范 · 时长第 3/4 层），不再一律按秒两位小数
-          [ -n "$initial_start_duration_sec" ] && tg_add_kv msg "首次启动耗时" "$(tg_format_ms "$initial_start_duration_sec")"
-          [ -n "$preflight_doctor_duration_sec" ] && tg_add_kv msg "预检修复耗时" "$(tg_format_ms "$preflight_doctor_duration_sec")"
-          [ -n "$fallback_reinstall_duration_sec" ] && tg_add_kv msg "回退重装耗时" "$(tg_format_ms "$fallback_reinstall_duration_sec")"
+          # 耗时走 tg_format_seconds（规范 · 时长第 3/4 层），不再一律按秒两位小数
+          [ -n "$initial_start_duration_sec" ] && tg_add_kv msg "首次启动耗时" "$(tg_format_seconds "$initial_start_duration_sec")"
+          [ -n "$preflight_doctor_duration_sec" ] && tg_add_kv msg "预检修复耗时" "$(tg_format_seconds "$preflight_doctor_duration_sec")"
+          [ -n "$fallback_reinstall_duration_sec" ] && tg_add_kv msg "回退重装耗时" "$(tg_format_seconds "$fallback_reinstall_duration_sec")"
           # 可执行命令才等宽；「暂不可用」是自然语言，走裸文本（规范 · 取值行口径）
           if [ -n "$ssh_entry" ]; then
             case "$ssh_entry" in

@@ -126,12 +126,17 @@ jobs:
             sleep 2
           done
       - name: run icloud-photos-downloader
+        # 凭据一律经 env + 引号传入：表达式直接展开进 run 脚本时，含空格/元字符的密码会
+        # 改变 shell 词法（拆词甚至注入），且明文留在脚本正文里（2026-11-26 审查修）。
+        env:
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEPASSWORD }}
         run: |
           sudo apt-get update
           pip install icloudpd
-          icloudpd --list-libraries --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username ${{ secrets.APPLEID }} --password ${{ secrets.APPLEPASSWORD }} --auto-delete
-          icloudpd --library SharedSync-6D80D39D-BDF2-49D1-9E6C-1EE9B681177F --directory /openlist/123panCrypt1/iCloudPhotosShared --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username ${{ secrets.APPLEID }} --password ${{ secrets.APPLEPASSWORD }} --auto-delete
-          icloudpd --library PrimarySync --directory /openlist/123panCrypt1/iCloudPhotosPersonal --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username ${{ secrets.APPLEID }} --password ${{ secrets.APPLEPASSWORD }} --auto-delete
+          icloudpd --list-libraries --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username "$APPLE_ID" --password "$APPLE_PASSWORD" --auto-delete
+          icloudpd --library SharedSync-6D80D39D-BDF2-49D1-9E6C-1EE9B681177F --directory /openlist/123panCrypt1/iCloudPhotosShared --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username "$APPLE_ID" --password "$APPLE_PASSWORD" --auto-delete
+          icloudpd --library PrimarySync --directory /openlist/123panCrypt1/iCloudPhotosPersonal --cookie-directory /dropbox/self-hosted/iCloudPhotosCookie --username "$APPLE_ID" --password "$APPLE_PASSWORD" --auto-delete
           echo "github icloud-photos-downloader 任务执行结束"
 
       # ===== 通知（失败/取消也发布）=====

@@ -160,6 +160,9 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION_STRING: ${{ secrets.TG_SESSION }}
+          # 频道用户名同样走 env + 引号：直接展开进 URL 会让含 / ? & 等字符的值改变路径，
+          # 且原文会留在脚本正文/报错里（2026-11-26 审查修）。
+          PH_USERNAME: ${{ secrets.PORNHUBNAME }}
         run: |
           # 同上前置校验（本步也会用到 TG 凭据）
           missing=""
@@ -222,7 +225,7 @@ jobs:
           # 收藏夹总条数（远端 favorites 列表的实际长度，与本地库存是两回事）：
           # --flat-playlist 只列条目不下载；取不到就留空，通知里降级为「未知」
           PH_FAV_TOTAL=$(yt-dlp --flat-playlist --simulate -i \
-            "https://www.pornhub.com/users/${{ secrets.PORNHUBNAME }}/videos/favorites" \
+            "https://www.pornhub.com/users/${PH_USERNAME}/videos/favorites" \
             --print id 2>/dev/null | grep -c . || true)
           echo "收藏夹总条数: ${PH_FAV_TOTAL:-未知}"
 
@@ -253,7 +256,7 @@ jobs:
             --download-archive "$YT_DLP_ARCHIVE" --playlist-end 50 \
             -o "$DOWNLOAD_TMP/%(title)s-%(id)s.%(ext)s" \
             --exec "bash ${GITHUB_WORKSPACE}/.github/scripts/tg-channel/process_ph_download.sh {} %(webpage_url)q" \
-            -i "https://www.pornhub.com/users/${{ secrets.PORNHUBNAME }}/videos/favorites" \
+            -i "https://www.pornhub.com/users/${PH_USERNAME}/videos/favorites" \
             || { DOWNLOAD_FAILED=1; echo "url不存在"; }
           rm -f "$YT_DLP_ARCHIVE"
 

@@ -10,12 +10,15 @@
 #   不再依赖 workspace 副本，runner 重置也冲不掉。
 #
 # 动作（幂等，重复执行无害）：
-#   1) @openclaw_sb_bot    → web_app 按钮「📊 看板」→ https://qb.<VD>.eu.org/p/<QUOTA_BOARD_TOKEN>
+#   1) @openclaw_sb_bot → 设 chat 级 web_app 按钮「📊 看板」→ {QB_URL_BASE}/p/<QUOTA_BOARD_TOKEN>
 #   2) @sbsbsbsbsb_openclaw_bot（旧入口 bot）→ 清成 type=commands，避免双入口
+#   3) @openclaw_sb_bot → 读回校验；若 chat 级未生效则清掉该 chat 的菜单覆盖（回到默认按钮）
 #
 # 凭据来源：~/.openclaw/.env（随 openclaw.tar.gz 归档每轮恢复）
 #   TELEGRAM_BOT_TOKEN_OPENCLAW_SB_BOT / TELEGRAM_BOT_TOKEN_SBSBSBSBSB_OPENCLAW_BOT / QUOTA_BOARD_TOKEN
-# 允许环境变量覆盖：QB_URL_BASE（默认 https://qb.<VD>.eu.org）
+#   TELEGRAM_CHAT_ID（决定按钮挂在哪个会话；缺失时 Telegram 会写到默认 chat，行为不可控）
+# 环境变量：
+#   QB_URL_BASE  — 必填，看板的公网基址（workflow 用 secrets.VD 拼）；未设置时打印原因并退出 0（跳过重建）
 
 set -euo pipefail
 

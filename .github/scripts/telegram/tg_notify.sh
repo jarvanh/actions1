@@ -43,7 +43,7 @@
 #   escape_html / tg_append / tg_add_title / tg_add_kv / tg_add_path / tg_add_link /
 #   tg_add_section / tg_add_note / tg_add_block / tg_add_pre / tg_add_footer
 #   tg_entry / tg_entry_text / tg_entry_pair / tg_entry_codes（及对应 tg_add_* 累积版）
-#   format_bytes / tg_format_ms / tg_format_duration（大小与时长口径）
+#   format_bytes / tg_format_seconds / tg_format_duration（大小与时长口径）
 #   tg_tail_safe / tg_tail_file_safe（UTF-8 安全的尾部截断）
 #   tree_conn / tree_sub / tree_lines / tree_code_fold / tree_fold（树形条目与折叠；
 #     tree_code_fold 收裸文本、tree_fold 收已构建条目流，勿互换）
@@ -67,7 +67,9 @@ escape_html() {
   s="${s//&/&amp;}"
   s="${s//</&lt;}"
   s="${s//>/&gt;}"
-  echo "$s"
+  # 用 printf 而非 echo：echo 把恰好等于 -n / -e / -E 的值当选项、静默输出空串
+  # （密码、文件名、状态值都可能中招，2026-11-26 实测）。这是动态内容的唯一转义出口。
+  printf %s "$s"
 }
 
 # 统一分隔线（18 个全角横线）
@@ -92,12 +94,13 @@ tg_append() {
   printf -v "$1" '%s%s' "${!1}" "$2"
 }
 
-# 正文单条耗时（规范 · 时长 第 3/4 层）：≥1 秒 → 两位小数秒（"1.40 秒"），
+# 正文单条耗时（规范 · 时长 第 3/4 层）：入参单位是**秒**（老名 tg_format_ms 易被误读
+# 成毫秒，2026-11-26 全库更名）；≥1 秒 → 两位小数秒（"1.40 秒"），
 # 不足 1 秒 → 整数毫秒（"27 毫秒"）——一律按秒两位小数会把 20~30ms 的实测
 # 显示成 "0.00 秒"，看不出快慢还让人怀疑没测到；空或非法输入返回空，
 # 调用方据此整行跳过。收尾区三段式（X 小时 Y 分 / X 分钟 / X.XX 秒）在
 # tg_add_footer 内实现，两者互补、不互相替代。
-tg_format_ms() {
+tg_format_seconds() {
   case "$1" in ''|*[!0-9.]*) return 0 ;; esac
   awk -v x="$1" 'BEGIN { if (x < 1) printf "%d 毫秒", x * 1000 + 0.5; else printf "%.2f 秒", x }'
 }
@@ -223,7 +226,7 @@ tg_format_duration() {
 #      hosted runner 的 PID 1 随 job 启动，误差秒级，与 job 硬上限 6h 同口径
 #   取到 0（空值 / 解析失败 / 不可读）都继续往下一档走——「有值但解析失败」不得
 # pin 死 elapsed=0 而丢掉兜底（此前 elif 写法即此 bug，与 python 侧口径不一致）
-# 降级链: 两档都拿不到 → 不显示时长；无 TG_RUN_URL → 整行跳过
+# 降级链: 两档都拿不到 → 不显示时长；无 TG_RUN_URL → 只省链接；两者皆无 → 整行跳过
 # 附加链接: tg_add_footer <var> ["标签" "URL"]... → 追加 " · 🔗 <a>标签</a>"
 # 注意: <var> 必须是已积累正文的消息变量（原地追加）。勿用"中间空变量接 footer 再拼到
 # 正文"的两步写法——补尾换行检查的是 <var> 自身，空变量会跳过补换行，空行丢失。
@@ -467,12 +470,22 @@ _tg_send_once() {
       return 0
     fi
     # 429 限流: 按 retry_after 等待后重试
-    retry_after=$(echo "$resp" | grep -oE '"retry_after":[0-9]+' | head -1 | cut -d: -f2)
-    if [ -n "$retry_after" ]; then
-      echo "⚠️ Telegram 限流 (429)，等待 ${retry_after}s 后重试 (尝试 $attempt/$max_attempts)..." >&2
-      sleep "$retry_after"
-      continue
+    # 正则容忍冒号两侧空白（"retry_after": 5）：带空格的 JSON 在旧写法下匹配不到，
+    # 会落到通用失败分支直接 return 1 —— 限流一次都不重试、通知丢失（2026-11-26 实测）。
+    # 等待钳到 60s 上限，防异常值拖死 step（与 tg_notify.ps1 同口径）。
+    if [ "$http_code" = "429" ]; then
+      retry_after=$(printf '%s' "$resp" | grep -oE '"retry_after"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
+      [ -z "$retry_after" ] && retry_after=5
+      [ "$retry_after" -gt 60 ] && retry_after=60
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        echo "⚠️ Telegram 限流 (429)，等待 ${retry_after}s 后重试 (尝试 $attempt/$max_attempts)..." >&2
+        sleep "$retry_after"
+        continue
+      fi
+      echo "⚠️ Telegram 限流 (429)，重试 $max_attempts 次仍被限流: $(printf '%s' "$resp" | head -c 200)" >&2
+      return 1
     fi
+    # 429 已在上方分支处理（含钳位与重试耗尽），这里只剩其余失败形态。
     # HTML 解析失败: 不退化重发（消息本就没发出去，退化只会把版式 bug 藏起来），
     # 直接报错暴露——动态内容一律经 tg_add_* 助手转义即可避免
     if echo "$resp" | grep -q "can't parse entities"; then
@@ -515,15 +528,21 @@ send_tg() {
 
 # 按 3800 UTF-16 码元分片，断在换行处，并在分片边界闭合/重开 HTML 标签。
 # 旧实现按 4000 Python 字符切，既可能超 UTF-16 上限，也可能把 <pre>/<code> 拆断。
+# 分片正文先落临时文件再逐片发送：旧写法用进程替换，python3 缺失/报错时输出为空、
+# while 循环零次、rc 仍为 0 —— 整条长通知静默消失且无 stderr 留痕（2026-11-26 实测）。
+# 现在生成失败或结果为空一律 return 1 并报错，调用方的告警/重试才能生效。
 send_tg_chunked() {
   local text="$1" tier="${2:-}"
   [ -z "$text" ] && return 0
   tg_route "$tier"
   local delay="${TG_CHUNK_DELAY:-2}" rc=0
-  while IFS= read -r -d "" chunk; do
-    _tg_send_once "$chunk" "HTML" || rc=1
-    sleep "$delay"
-  done < <(printf '%s' "$text" | python3 -c '
+  local chunks_file
+  chunks_file=$(mktemp "${TMPDIR:-/tmp}/tg-chunks.XXXXXX") || {
+    echo "❌ Telegram 分片失败：无法创建临时文件，消息未发送" >&2
+    return 1
+  }
+  if ! printf '%s' "$text" | python3 -c '
+
 import sys, re
 data = sys.stdin.buffer.read().decode("utf-8", "replace")
 LIMIT = 3800
@@ -576,7 +595,21 @@ def split_html(data):
 
 for c in split_html(data):
     sys.stdout.write(c + "\0")
-')
+' > "$chunks_file" 2>/dev/null; then
+    rm -f "$chunks_file"
+    echo "❌ Telegram 分片失败：python3 不可用或分片脚本报错，消息未发送" >&2
+    return 1
+  fi
+  if [ ! -s "$chunks_file" ]; then
+    rm -f "$chunks_file"
+    echo "❌ Telegram 分片失败：分片结果为空，消息未发送" >&2
+    return 1
+  fi
+  while IFS= read -r -d "" chunk; do
+    _tg_send_once "$chunk" "HTML" || rc=1
+    sleep "$delay"
+  done < "$chunks_file"
+  rm -f "$chunks_file"
   return "$rc"
 }
 

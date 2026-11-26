@@ -16,7 +16,7 @@ grep -nE '^(函数名)\(\)|^def 函数名|^function 函数名|\$?TG_SEP *=' 真�
 |---|---|---|---|
 | 适用 | Linux / macOS runner | Windows runner | python 脚本 |
 | 排版助手 | 全套 `tg_add_*` / `tg_entry*` / `tree_*` | 无，全部手拼 | 返回字符串的镜像函数，自己 `join` |
-| 大小 / 耗时 | `format_bytes` / `tg_format_ms` / `tg_format_duration` | `Format-TgDuration` | `tg_format_elapsed`；**无大小助手** |
+| 大小 / 耗时 | `format_bytes` / `tg_format_seconds` / `tg_format_duration` | `Format-TgDuration` | `tg_format_elapsed`；**无大小助手** |
 | 发送 | `send_tg` / `send_tg_chunked`（可选 `tier`） | `Send-TgMessage <text> [tier]`，无分片 | `send_telegram` / `send_telegram_chunked`（可选 `tier`） |
 | 分隔线 | `TG_SEP` | `$TG_SEP` | `TG_SEP` |
 | 转义 | `escape_html` | `Esc-Html` | `html.escape` |
@@ -55,7 +55,7 @@ tree_code_fold    <多行裸文本> [上限=8]         # 转义 + <code> + 截�
 
 # 格式化 / 收尾
 format_bytes        <字节数>                   # 1.150 GiB（1024 进制 + 三位小数）
-tg_format_ms        <秒>                       # "27 毫秒" / "1.40 秒"
+tg_format_seconds        <秒>                       # "27 毫秒" / "1.40 秒"
 tg_format_duration  <秒>                       # "X 小时 Y 分" / "X 分钟" / "X.XX 秒"
 tg_tail_safe        <文本> [字节=1200]         # UTF-8 安全的尾部截断
 tg_tail_file_safe   <文件> [字节=1200]
