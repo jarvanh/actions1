@@ -52,7 +52,7 @@ job 的时长**线性取决于订阅里有多少节点**，而 `proxy-speedtest-
 ⚠️ **不设 ≠ 没有上限**，默认 360 分钟。所以脚本自己有墙钟预算 `TAIER_BUDGET_SECONDS`
 （默认 `18000` = 5 小时）：**从进程启动起算**，到点就不再开下一个节点，拿已测节点照常出订阅、
 发通知（正文补一行 `⚠️ 本轮已中止：…`、标题降 ⚠️），**退出码仍是 0——到点收摊不是失败**。
-留 1 小时余量给前置准备（mihomo 下载 / TUN）与收尾（通知 / Gist 上传），所以
+留 1 小时余量给前置准备（mihomo 下载 / mixed-port 规则代理）与收尾（通知 / Gist 上传），所以
 **5 小时 < 360 分钟这个关系不能破：改 job 的 `timeout-minutes` 就要回头看这个预算**
 （同 `proxy-speedtest-gistnodes` 那三段预算的规矩）。
 
@@ -124,7 +124,7 @@ if CONFIG['TAIER_INCLUDE_REGEX']:
 每节点比对「测速 stdout 的出口 IP」与 runner 直连出口 IP（`api.ipify.org` 等）：
 
 - **不同** → 流量确实走了节点 ✓
-- **相同** → TUN 未生效 / 进程规则未命中 → 通知里 `⚠️ 疑似未走代理` 告警；
+- **相同** → 代理未生效 / AUTO 组未切到该节点（默认 mixed-port 路径；仅 `TAIER_USE_TUN=1` 时才看 TUN/进程规则） → 通知里 `⚠️ 疑似未走代理` 告警；
   全部节点命中时 job 返回 1（否则会**静默直连**、整轮数据失真）
 
 ## 环境变量
@@ -161,7 +161,7 @@ if CONFIG['TAIER_INCLUDE_REGEX']:
 | `TAIER_TIMEOUT` | `120` | 单节点子进程超时秒 |
 | `TAIER_SWITCH_SETTLE_SECONDS` | `1.5` | 切节点后等待 |
 | `TAIER_IMAGE` | `0` | 每节点出结果图（上传图床），默认关避免刷图 |
-| `TAIER_NO_IPV6` | `1` | TUN 下客户端易误判 v6 可用导致耗时翻倍，默认关 |
+| `TAIER_NO_IPV6` | `1` | 传给引擎的 `--no-ipv6`：客户端易误判 v6 可用导致耗时翻倍，默认关闭 IPv6（旧 TUN 逃生门下同样适用） |
 | `TAIER_REPO` | `MiaM1ku/taierspeedtest` | 引擎仓库 |
 | `PROXY_SPEEDTEST_MIN_MEGABIT` | 10 | 达标阈值（兆），三套共用 |
 | `PROXY_SPEEDTEST_SPEED_METRIC` | upload | 判定指标 `upload`/`download`；主指标凑不够一份订阅且另一指标能凑够时自动改用另一指标 |
@@ -263,7 +263,7 @@ Mbps（2026-11-14 与通知侧统一，节点名前缀"↑xx兆" = 引擎原始 
 
 主报告**普通**档；❌ / ⛔ 兜底 **alert** 档（见台账）。标题 emoji 随结论降级：
 ✅ 正常完成；⚠️ 0 可用节点、任一节点命中 bypass、或到点收摊（正文补
-`⚠️ 本轮已中止：…`，退出码仍 0）；⛔ 信号终止（handler **先撤 TUN 再发**）；
+`⚠️ 本轮已中止：…`，退出码仍 0）；⛔ 信号终止（handler **先幂等关闭 mihomo 再发**；默认无 TUN）；
 ❌ 异常退出（标题带阶段名，如「环境准备失败」；原始异常串在正文「原因」行）。版式见 [`telegram-notify.md`](telegram-notify.md)，发送点用
 `list_notify.sh proxy-speedtest` 现场枚举。
 
@@ -278,10 +278,10 @@ Mbps（2026-11-14 与通知侧统一，节点名前缀"↑xx兆" = 引擎原始 
 |---|---|
 | `nodes_collected: 0` 但 `source_mapping_built` 有值 | 2026-09-15 run 34969408908 的形态：收集层曾只收 provider 里 `alive` 为真的节点，而 `wait_mihomo` 不等健康检查出结论。现已改为全量收集，见 [gitee 文档 · 为什么节点收集不等健康检查](proxy-speedtest-gitee.md#为什么节点收集不等健康检查)；先看 `provider_snapshot_collected` 的 `total` / `collected` 是否相等。⚠️ `source_mapping_built entries` 是**可导出配置条数**、不是节点数 |
 | **订阅能生成、客户端（Egern 等）加载报错** | 2026-09-26 事故形态：写出去的是空壳（只有 `name`/`type`/`udp`，没有 `server`/`port`）。根因是 `source_mapping` 漏掉整份 YAML 订阅 ⇒ `source_entry` 为空 ⇒ 退回 mihomo 运行时对象，见 [gistnodes 文档](proxy-speedtest-gistnodes.md#为什么-source_mapping-会漏掉整份-yaml-订阅)；出口已由 `is_exportable_proxy` 设防 |
-| 通知出现 `⚠️ 疑似未走代理` | TUN 没起来或 `PROCESS-NAME` 规则未命中；查 `mihomo.log` 与 `/dev/net/tun`；结果不可信，整轮判失败 |
+| 通知出现 `⚠️ 疑似未走代理` | 默认 mixed-port 代理是否注入（`HTTP(S)_PROXY` / `TAIER_SOCKS5`）、mihomo mixed-port 是否就绪；仅设 `TAIER_USE_TUN=1` 时再查 TUN 与 `/dev/net/tun`；结果不可信，整轮判失败 |
 | 节点全部「连不上测速点」 | 控制面 `*.cnspeedtest.cn` 经该节点不可达；换节点或检查 mihomo DNS 配置 |
-| **run 卡在 in_progress、取消也无效** | TUN 未撤（历史事故）：脚本退出前必须 `stop_mihomo_tun()`；workflow 里有 `always()` 兜底步骤 `pkill "mihomo -d"` |
-| 延迟 1 秒以上 | ICMP 经 TUN 不通，回落 TCP tcping（真实握手往返），属预期 |
+| **run 卡在 in_progress、取消也无效** | mihomo 未撤/端口残留（历史 TUN 事故）：脚本退出前必须 `stop_mihomo_tun()`；workflow 里另有 `always()` 兜底步骤 `pkill "mihomo -d"` |
+| 延迟 1 秒以上 | 仅 `TAIER_USE_TUN=1` 的旧路径：ICMP 经 TUN 不通，回落 TCP tcping（真实握手往返），属预期 |
 | 验证 handler | 运行中途 `gh run cancel`：日志应出现两次 `mihomo_tun_stopped`（handler + finally），TG 收到 ⛔ |
 
 上游 duration 钳制 5-13 秒（`main.go`），需要更长测速只能改上游或自编译。

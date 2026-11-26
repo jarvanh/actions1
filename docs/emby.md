@@ -30,7 +30,7 @@
 
 1. **恢复并启动 Emby** —— 从云端备份拉回媒体库元数据（用户、海报、播放进度），校验通过后才允许启动
 2. **建立 302 直链链路** —— 让播放器直接向 OneDrive 拉流，视频流不经过 runner
-3. **运行约 5.7 小时后收尾** —— 优雅停机、打包回传备份、发送汇总通知
+3. **运行约 5 小时 20 分后收尾** —— 优雅停机、打包回传备份、发送汇总通知
 
 ### 触发方式
 
@@ -258,7 +258,7 @@ ge2o 据此发出 302。
 
 - **失效钩子**：解析失败 / 取直链失败立刻删掉该条目并失效同名直链缓存——跨轮
   缓存最大的风险是网盘里改名/移动后仍命中老坐标，宁可多花一次冷解析
-- **上限 5 万条**（`ODLINK_DIR_CACHE_MAX`）：超出按插入顺序丢最旧的，防止膨胀
+- **上限 20 万条**（`ODLINK_DIR_CACHE_MAX` 默认 200000）：超出按插入顺序丢最旧的，防止膨胀
 - **严格降级**：文件不存在 / 损坏 / schema 不符 / 条目格式不对 = 现状冷启动，
   落盘失败只记日志。装载路径只读、落盘路径可写，两边都不影响服务可用性
 - **落盘前置守卫**（2026-09-14 加）：`dump_dir_cache()` 在 `_dir_loaded` 为假时
@@ -426,7 +426,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh   # 关注 emby.yml
 - **起播等待**：访问链树，顺序即点播放后的先后；两行 warmup 探测标「（预估值）」，
   不是本次播放实测；「取直链」后的括号（缓存命中 / 冷解析）表示本次是否真花了这段时间；
   取不到的项整行省略，全都没有则整段不出现。耗时 <1 秒用整数毫秒、≥1 秒两位小数秒
-  （`tg_format_ms`）。
+  （`tg_format_seconds`）。
 - **直链行**只在 3 分钟内才视为本次播放所用；`<a>` 折叠为「▶ 打开直链」，段前空一行。
 - 收尾区走 `tg_add_footer`：读 `TG_RUN_URL`，时长走 runner 开机时刻兜底，缺席时降级跳过。
 
@@ -696,8 +696,10 @@ sudo EMBY_USER="$EMBY_USER" python3 emby_guard.py <emby-data-root>   # 例：/va
 
 ### 9.4 `lib.sh`
 
-被 `install emby` / `backup emby data` / `run cloudflared` / `send telegram notification`
-四个 workflow 步骤、以及 `warmup.sh`（`warmup images` 步骤生成的脚本）source。
+被 `rclone-run` / `install emby` / `run cloudflared` / `warmup images` /
+`start link prefetcher` / `archive diagnostics` / `backup emby data` /
+`send telegram notification` / `自续触发（下轮接力）` 等步骤 source（当前 9 处，
+以 `emby.yml` 中的 `source "$EMBY302_DIR/lib.sh"` 行为准）。
 只定义函数、不设 shell 选项，避免污染调用方的 `set -euo pipefail`。
 
 | 函数 | 用途 |
@@ -722,7 +724,7 @@ sudo EMBY_USER="$EMBY_USER" python3 emby_guard.py <emby-data-root>   # 例：/va
 
 | 日志 | 看什么 |
 |---|---|
-| `/opt/logs/odlink.log` | 直链解析：段数、是否跨盘、Graph 码、是否取到直链。⚠️ watchdog 每 5 分钟打一次目录探针，纯 tail 会被它淹没——归档侧按 `段数=`/`解析失败`/`回退 OpenList` 等关键行筛 |
+| `/opt/logs/odlink.log` | 直链解析：段数、是否跨盘、Graph 码、是否取到直链。⚠️ watchdog 每分钟打一次目录探针，纯 tail 会被它淹没——归档侧按 `段数=`/`解析失败`/`回退 OpenList` 等关键行筛 |
 | `/opt/logs/ge2o.log` | 播放走直链还是中转、路径换算是否命中 |
 | 收尾归档的「ge2o 请求耗时统计」 | 按类型（起播准备 / 视频流 / 字幕 / 图片）汇总的均值与最大耗时——一次看清"点播放"的等待落哪类请求 |
 | `/opt/logs/seek.log` | 拖动进度条 / 续播的重新取链耗时（同一条目的第 2 次起 stream 请求），收尾归档带均值与最大值 |
@@ -746,8 +748,8 @@ sudo EMBY_USER="$EMBY_USER" python3 emby_guard.py <emby-data-root>   # 例：/va
 > 已有排队运行”三个分支里直接 `exit 0`，而“跳过接力”恰恰是健康接力链里的常态 ——
 > 实测多数轮次根本没归档过 `playlog.log`。
 
-> `rclone-mount.log` 用 `grep` 筛关键行而非纯 `tail`：缓存清理类输出每 15s 一条，
-> 5.7 小时上千行，纯 tail 只会被它们占满、看不到真正的异常。
+> `rclone-mount.log` 用 `grep` 筛关键行而非纯 `tail`：缓存清理类输出每 60s 一条，
+> 约 5 小时 20 分的运行会积累上千行，纯 tail 只会被它们占满、看不到真正的异常。
 
 ### 症状 → 排查
 

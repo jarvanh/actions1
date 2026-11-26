@@ -605,7 +605,7 @@ job output」），被调工作流据此从自己的 secrets 取 id。开关不�
 | `GIST_NODES_TARGET_SUBS` | `100` | 目标：凑够多少个「像订阅」的文件（`0` = 不限） |
 | `GIST_NODES_MAX_PAGES` | `40` | 每个关键词最多翻几页（安全上限） |
 | `GIST_NODES_PAGES_PER_ROUND` | `2` | 每轮每个关键词翻几页 |
-| `GIST_NODES_BUDGET_SECONDS` | `900` | 抓取阶段的**墙钟预算**（秒，`0` = 不限）。到点收摊、拿已抓到的文件继续产出。**与 job 的 `timeout-minutes`（30 分钟）成对**，改一个要回头看另一个 |
+| `GIST_NODES_BUDGET_SECONDS` | `900` | 抓取阶段的**墙钟预算**（秒，`0` = 不限）。到点收摊、拿已抓到的文件继续产出。**与 job 的 `timeout-minutes`（70 分钟）成对**，改一个要回头看另一个 |
 | `GIST_NODES_NO_PROGRESS_ROUNDS` | `4` | 连续多少轮订阅文件数零增长就收摊（`0` = 不限） |
 | `GIST_NODES_MAX_CONSECUTIVE_LIMITED` | `3` | 同一批连续多少页被限流就熔断本批、并跳过「补一轮」（`0` = 不限） |
 | `GIST_NODES_SORT` | `updated` | 搜索排序 |
@@ -629,7 +629,7 @@ job output」），被调工作流据此从自己的 secrets 取 id。开关不�
 | `GIST_NODES_ALIVE_FILTER` | `1` | 发布前是否先做健康检查、只发布活节点（见「为什么发布前必须自己先测活」） |
 | `GIST_NODES_ALIVE_BUDGET_SECONDS` | `600` | 健康检查阶段的**墙钟预算**（秒，`0` = 不限）。到点未跑完 → 原样发布全部 |
 | `GIST_NODES_ALIVE_TIMEOUT` | `120` | 单次读 `/providers/proxies` 的超时（秒）。上界由上面的预算兜 |
-| `GIST_NODES_DRY_RUN` | `0` | `1` = 只抓取不发布（本地验证用）。**dry-run 会同时关掉健康检查**（那要另下几十 MB 的 mihomo 再占 10 分钟，与「本地快速验证」相悖）；想单独验过滤用 `GIST_NODES_ALIVE_FILTER=1` |
+| `GIST_NODES_DRY_RUN` | `0` | `1` = 只抓取不发布（本地验证用）。**dry-run 会同时关掉健康检查与试装**（那要另下几十 MB 的 mihomo 再占 10 分钟，与「本地快速验证」相悖）；想单独验过滤/试装必须用正常发布模式（`GIST_NODES_DRY_RUN=0`）并显式设 `GIST_NODES_ALIVE_FILTER=1` / `GIST_NODES_TRIAL_LOAD=1` |
 
 dispatch 入参 `queries` / `max_nodes` / `test_nodes` / `target_subs` / `max_age_hours`
 分别覆盖对应项。

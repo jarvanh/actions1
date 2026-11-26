@@ -40,7 +40,7 @@
 
 ```bash
 # 全量回归（干净 worktree）
-bash .github/scripts/openlist/tests/test_*.sh     # 67 套全绿
+bash .github/scripts/openlist/tests/test_*.sh     # 69 个测试脚本（当前数量）
 
 # 新代码轮的生产验证（一条命令给 8 项结论）
 bash .github/scripts/openlist/verify_new_code_round.sh <run_id>

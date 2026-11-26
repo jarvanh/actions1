@@ -7,7 +7,7 @@
 
 ```
 .github/
-├── workflows/              24 个工作流定义
+├── workflows/              34 个工作流定义
 └── scripts/
     ├── openlist/           OpenList 同步工具 —— 最复杂的子系统，详见下文
     ├── emby302/            Emby 302 直链服务 —— 详见 docs/emby.md
@@ -25,9 +25,9 @@ proxy-speedtest/            测速结果数据
 | [`docs/telegram-notify.md`](docs/telegram-notify.md) | **Telegram 通知规范**（版式与发送规则的唯一真源：版式模板、收尾区、发送层硬约束、验证基线） |
 | [`docs/telegram-notify-registry.md`](docs/telegram-notify-registry.md) | **Telegram 通知台账**（域级出口与档位路由；不登记逐条通知，清单用 `list_notify.sh` 现场枚举） |
 | [`docs/telegram-notify-catalog.md`](docs/telegram-notify-catalog.md) | **Telegram 通知总览**（域 × 形态 × 档位一页看全；种类与结构，不含逐条清单） |
-| [`docs/telegram-notify-catalog.md`](docs/telegram-notify-catalog.md) | **Telegram 通知总览**（域 × 形态 × 档位一页看全；种类与结构，不含逐条清单） |
+| [`docs/socks-exit-pool.md`](docs/socks-exit-pool.md) | 出口节点池：SOCKS5 出口测活/判区 + subs-check 基座组合，发布独立 Gist |
 | [`docs/emby.md`](docs/emby.md) | Emby 媒体服务器 + 302 直链子系统（架构、凭据体系、通知、排查手册） |
-| [`docs/openclaw.md`](docs/openclaw.md) | OpenClaw Runner：自愈五层机制 + 常驻服务（rss-to-telegram / AI 网关）+ Tailscale 远程入口 |
+| [`docs/openclaw.md`](docs/openclaw.md) | OpenClaw Runner：自愈机制（四层 + 已退役机制⑤）+ 常驻服务（rss-to-telegram / AI 网关）+ Tailscale 远程入口 |
 | [`docs/migration.md`](docs/migration.md) | **全量迁移说明**：仓库代码 + Actions Secrets + Variables + Dropbox 归档的恢复顺序与验证清单 |
 | [`docs/proxy-speedtest-gitee.md`](docs/proxy-speedtest-gitee.md) / [`-cdn.md`](docs/proxy-speedtest-cdn.md) / [`-taier.md`](docs/proxy-speedtest-taier.md) | 代理测速三套（按测速点命名）：Gitee 上行/下行/延迟 / 国内 CDN 延迟+下载 / 泰尔三网 |
 | [`docs/proxy-speedtest-gistnodes.md`](docs/proxy-speedtest-gistnodes.md) | 从 gist 搜索抓节点 → Sub-Store 去重出 mihomo YAML → 选一套测速（引擎由环境变量切换） |
@@ -51,7 +51,10 @@ proxy-speedtest/            测速结果数据
 | `icloud-photos-downloader.yml` / `ph-dl.yml` / `pixivutil2.yml` | 媒体抓取下载 |
 | `proxy-speedtest-gitee.yml` / `proxy-speedtest-cdn.yml` / `proxy-speedtest-taier.yml` | 代理测速三套（按测速点命名）：Gitee 上行/下行/延迟 / 国内 CDN 延迟+下载 / 泰尔三网 |
 | `proxy-speedtest-gistnodes.yml` | 抓 gist 公开节点 → Sub-Store 去重 → 交给上面三套之一测速（选哪套由 Variable `PROXY_SPEEDTEST_ENGINE` 决定）—— 详见 [`docs/proxy-speedtest-gistnodes.md`](docs/proxy-speedtest-gistnodes.md) |
-| `upload-video-to-tg.yml` / `p.yml` / `eshop.yml` / `teslamate.yml` | 杂项 |
+| `upload-video-to-tg.yml` / `p.yml` / `teslamate.yml` / `notion-backup.yml` | 视频上传、Vaultwarden/TeslaMate 等杂项、Notion 每日备份 |
+| `actions-archive.yml` / `cfip-pool.yml` / `tests.yml` | 手动仓库全量归档、CF 优选 IP 池重建、测试载体 |
+| `openlist-debug.yml` / `openlist-preview.yml` / `openlist-fix-check.yml` / `openlist-marker-cleanup.yml` | OpenList 只读目录探针 / 独立剩余量预览 / 修复能力定点验证 / 旧 marker 清理 |
+| `tailscale-windows.yml` | Windows 常驻远程入口（自续触发） |
 | `delete-workflow-runs.yml` | 清理历史运行记录 |
 
 ---
@@ -64,7 +67,7 @@ proxy-speedtest/            测速结果数据
 `openlist.yml` 工作流的脚本实现：把 OneDrive 源端同步到 OpenList 挂载的多个网盘（crypt 加密后端），
 并处理网盘侧的各种故障（假成功、405/8005、名长超限、423 锁等）。
 
-全部为 bash 函数库，由 `load_all.sh` 统一加载；不含可执行入口，入口是 workflow 的 `run_mode`。
+主体为 bash 函数库，另有 `.py` / `.jq` 辅助程序；由 `load_all.sh` 统一加载。脚本层不含可执行入口，运行入口是 workflow 的 `run_mode`。
 
 > 注：脚本注释中的「§N.N」引用一律指归档计划文档
 > `docs/archive/openlist-remediation-plan-2026-09-13.md` 的章节编号
@@ -145,18 +148,19 @@ source "$GITHUB_WORKSPACE/.github/scripts/openlist/load_all.sh"
 ```
 L0 通知真源 telegram/tg_notify.sh（跨目录 source，全库唯一实现）
 L1 基础     rclone_flags · utils · telegram(进度面板)
-L2 适配     rclone_query[utils] · openlist_api
-L3 能力     file_fix · file_split · sync_marker · sync_progress
+L2 适配     rclone_query[utils] · openlist_api · openlist_storage_check[openlist_api,telegram]
+L3 能力     file_fix · file_split · sync_marker · sync_progress · sync_trend
 L4 编排     openlist_driver[openlist_api,file_fix] · file_fix_pipeline · sync_notify
 L5 引擎     sync_engine
-L6 任务     file_restore · task_preview · task_engine
+L6 任务     file_restore · restore_tryrun[file_restore] · task_preview · task_engine
 ```
 
 > bash 函数在**调用时**才解析，所以顺序不影响正确性；保持分层纯粹为了可读性。
 > 但注意：**不要在模块顶层写函数调用**，各文件顶层只允许变量/数组定义。
 
 workflow 会把 `*.sh` `*.py` `*.jq` 拷到 `/tmp` 再 `source /tmp/load_all.sh`
-（每个 step 是独立 shell），所以**新增模块文件无需改 workflow**——通配符自动纳入。
+（每个 step 是独立 shell）。新增模块文件**无需改 workflow**（通配符自动拷入），
+但仍须在 `load_all.sh` 对应层加一行 `source`，否则不会被加载。
 
 ---
 
@@ -383,7 +387,7 @@ been exceeded`（run 43267803971，gd:backup 自 20:08:01 起连续 403），配
 
 **时间预算（优雅到站）**：`OPENLIST_SYNC_BUDGET_SECONDS`(19200=320min，同步 step 启动锚点) ·
 `OPENLIST_SYNC_MIN_SLICE_SECONDS`(600=10min，剩余预算低于此不再开新工作) ·
-`OPENLIST_PAIR_MIN_SLICE_SECONDS`(1200=20min，单个并行同步对的公平份额下限，见「单对份额」) ·
+`OPENLIST_PAIR_MIN_SLICE_SECONDS`(1500=25min，单个并行同步对的公平份额下限，见「单对份额」) ·
 `OPENLIST_REPAIR_RESERVE_PCT`(25，上限 60；子目录循环预留"预算×此比例"给修复管线尾段——不预留则修复被饿死、长尾不收敛，见计划文档 §12.9) ·
 `OPENLIST_SYNC_DEADLINE_EPOCH`（由 workflow 计算，调试/还原模式不设置=不干预）
 
@@ -707,7 +711,7 @@ trend 里同源字段为 `pairs_total:16 / pairs_synced:1`。拆开看:
 方法尝试≈20-30min，不是主因）。份额到点交棒的对状态记为 `truncated`：既不算完成（不写
 成功 marker），也不冒充后端失败。
 ⚠️ 尺度陷阱（已锁进单测 F 组）：批次闸要"够 2h 片长"、子目录闸要"够 25% 全局修复预留"
-——若直接套用 20min 的份额终点，两闸恒真 ⇒ 连一个批次/子目录都开不起来、同步彻底停死。
+——若直接套用 25min 的份额终点，两闸恒真 ⇒ 连一个批次/子目录都开不起来、同步彻底停死。
 故份额生效时各闸一律退到最小片(600s)当预留。
 
 **自续触发（P2 接力）**：GitHub 对高频 cron 限流严重（*/5 实测曾 4.5h 零触发），
@@ -891,13 +895,13 @@ cd .github/scripts/openlist
 for t in tests/*.sh; do bash "$t"; done
 ```
 
-25 个测试，覆盖轮转、批次巩固、修复管线优化、修复日志区段头提取、写探针判死信号键口径
+69 个测试脚本（当前 `tests/*.sh` 数量），覆盖轮转、批次巩固、修复管线优化、修复日志区段头提取、写探针判死信号键口径
 与周期性重探（F22：到期/未到期/关闭/脏值）、405 快速失败（F10：阈值边界/409 不误计）、
 8005 重试前的写探针短路、
 目录可写性预检（含假成功目录）与短哈希目录兜底、预览 diff、跳过窗口的预览
 预判与跳过通知"本次未传"（含现场估算与宁缺毋滥分支）、truth-check、
 token 登录、marker、marker 打包备份（拒上传空包 / 只增不删 / 保留期 / 隔离性）、
-收尾标题四态、进度阶段区排版（子目录树/文件批次的层级
+收尾标题五态、进度阶段区排版（子目录树/文件批次的层级
 与缩进）等。均为纯 bash + stub（mock 掉 rclone/curl/docker），无需真实网盘。
 
 **注意两点**：

@@ -9,7 +9,7 @@
 |---|---|
 | 触发 | 定时 `cron: "*/5 * * * *"` + `workflow_dispatch`（手动） |
 | 并发 | 动态并发组（2026-11-10 Phase 1）：serving 主轮独占 `openclaw-serve`；交接继任轮用 `openclaw-handoff-<run_id>` 专属键与旧轮**合法并存**；cron 兜底轮启动时经 `handoff/guard.sh` 自检，发现并存 run 即自我取消让位（落 `/tmp/openclaw-guard-declined` 标记；带该标记的轮不推 SSH 入口/入口失败通知、不回存证书缓存、不做最终归档） |
-| 单轮时长 | `Keep alive` 死线 = 360 − 收尾预算 26 − 安全余量 8 = **326 分钟**（job 起点起算）；结束前 15 分钟推送「即将进入最终归档」预警、前 2 分钟推送停机倒计时 |
+| 单轮时长 | `Keep alive` 死线 = 360 − 收尾预算 26 − 安全余量 8 = **326 分钟**（job 起点起算）；T-2 停机倒计时保留；T-15「即将进入最终归档」预告默认关闭（2026-11-17 降噪，`OPENCLAW_NOTIFY_T15=1` 可开） |
 | 自我接力 | 双通道（2026-11-10 Phase 1）：主路径 = 死线前 T-12min 由 `handoff/tick.sh` 触发**交接继任者**（warm standby），继任者接管成功后旧轮 `Trigger next` 跳过；兜底 = 继任者未就绪/交接失败时沿用末尾 `Trigger next OpenClaw run` 传统接力 |
 | 权限 | `contents: read` + `actions: write`（自我触发需要） |
 
@@ -20,14 +20,14 @@
 
 ```
 旧轮(serving)                          继任轮(openclaw-next, T-12min 被触发)
-  │ Keep alive T-12min: tick.sh 触发  ──→  启动段照常：基座恢复(≤20min 前周期包)
+  │ Keep alive T-12min: tick.sh 触发  ──→  启动段照常：基座恢复(≤60min 前周期包；2026-11-19 起主包 60min 周期)
   │ T-4min: 看门狗，未 ready 则取消继任者      → new.json=ready
   │ 死线 T0: 停网关 → sqlite checkpoint
   │          → 停本机隧道 → rsync 只读源
   │          → old.json=handing_over   ──→  等到交出：rsync 增量直传(~/.openclaw ∥ ~/.zcode)
   │                                        → 主 state 库 quick_check → rsync_done
   │                                        → 起网关 → new.json=serving
-  │ 等 serving(≤15min) ←──────────────────┘
+  │ 等 serving(≤10min，HANDOFF_SERVING_WAIT_SEC=600s) ←─────┘
   ├─ 成功: old.json=handoff_done → 最终归档降级为纯备份(移出关键路径) → 跳过 Trigger next
   └─ 失败: old.json=handoff_aborted → 传统收尾(归档+Trigger next)，继任者自我取消
 ```
@@ -120,7 +120,7 @@ ssh runner@openclaw 'touch /tmp/openclaw-restart-request'
 ```
 
 不派发继任者，直接进入收尾（停服 → 归档 → Trigger next）。最终归档完整，
-但恢复要靠下一轮冷启动（约 9-10 分钟）。最坏丢 ≤20min 增量；主包因
+但恢复要靠下一轮冷启动（约 9-10 分钟）。最坏丢 ≤60min 周期包之间的增量；主包因
 「临时对象 + 尺寸校验 + 原子改名」不会被半截包覆盖。
 
 #### ③ 启动方式（`startup_mode`）
@@ -153,7 +153,7 @@ ssh runner@openclaw 'touch /tmp/openclaw-restart-request'
 
 | 方式 | 服务停 → 聊天 | 服务停 → 8/8 | 最终归档 | 数据风险 |
 |---|---|---|---|---|
-| 网页 Cancel | **8.9min** | 9.8min | 大概率不执行 | 最坏丢 ≤20min |
+| 网页 Cancel | **8.9min** | 9.8min | 大概率不执行 | 最坏丢 ≤60min |
 | 立即交接 | **3.5min** | 4.2min | 完整 | 零丢失 |
 | 传统提前收尾 | 8.9min | 9.8min | 完整 | 零丢失 |
 
@@ -201,7 +201,7 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
 | Run AI API gateway | OmniRoute 单后端（回退链：CliRelay → CLIProxyAPI） | 20128 → 隧道 `ai-api` |
 | Run workbuddy-gateway | 先查 GitHub Releases 决定是否更新二进制，再 `serve`（见第八节） | 8318（仅本机） |
 | Run OpenClaw | 自愈主流程（本文第三、四章） | 18789 |
-| Start background archive loop | 每 20 分钟归档 `~/.openclaw` + AI 网关数据（`flock` 防重入） | Dropbox |
+| Start background archive loop | 主包每 60 分钟、小包（AI 网关 / zcode / rsstt / zcode2api-data）每 20 分钟归档，`flock` 防重入（2026-11-19 主包降频） | Dropbox |
 | Keep alive → Stop OpenClaw and Final Archive → Notify OpenClaw final archive result → Trigger next OpenClaw run | 收尾与自我接力 | — |
 
 > rss-to-telegram 带一层自愈：登录被 `AuthKeyDuplicatedError` 判废时删掉 `bot.session*` 重启一次并立即归档。
@@ -249,7 +249,7 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
               └─ 健康检查仍失败 → 失败通知（含诊断）+ 触发下一轮
 ```
 
-## 三、五层机制
+## 三、自愈机制（四层 + 已退役机制⑤）
 
 ### 机制①：预检门（config validate）
 
@@ -424,8 +424,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openclaw
 版式见 [`telegram-notify.md`](telegram-notify.md)，档位见台账「OpenClaw Runner」行。
 只记几条非显然、写错会出事的约定：
 
-- **端口**：workbuddy-gateway 通知里的 `8318` 是实际绑定端口（上游默认 8317，与本仓库
-  AI 网关撞车，启动显式 `-port 8318` 覆盖），不要写成上游默认值。
+- **端口**：workbuddy-gateway 通知里的 `8318` 是实际绑定端口（上游默认 8317；自 2026-09 起固定 8318 以避免客户端配置漂移，启动显式 `-port 8318` 覆盖），不要写成上游默认值。
 - **API Key**：等宽回显 `AI_GATEWAY_API_KEY`，取不到写「未取到」；`workbuddy*.json`
   的**内容**（真实 Access / Refresh Token）绝不上通知，`workbuddy-status.json` 是状态
   快照、不算凭据。
@@ -541,7 +540,7 @@ OmniRoute 有熔断器（CliRelay 没有），所以对齐策略 = **总超时�
 |---|---|---|---|
 | 总读取/请求超时 | `main-api-read-timeout-seconds: 1800` | `REQUEST_TIMEOUT_MS` / `FETCH_TIMEOUT_MS` / `STREAM_IDLE_TIMEOUT_MS` / `STREAM_ACTIVE_TIMEOUT_MS` **四者均 1800s** | ✅ |
 | 等响应头 | 同 read（1800） | `OMNIROUTE_DIRECT_HEADERS_TIMEOUT_MS=150s` | ✅（覆盖实测 85s） |
-| SSE readiness | 同 read（1800） | 150s / 自适应 420s | ✅（覆盖实测 61s、85s） |
+| SSE readiness | 同 read（1800） | 600s / 自适应 900s | ✅（覆盖实测 61s、85s） |
 | 流式静默 | keep-alive 15s 主动续命 | `STREAM_IDLE_TIMEOUT_MS=1800s` | ✅ 已对齐（被动等待，够宽） |
 | 流式总寿命 | 同 read（1800） | `STREAM_ACTIVE_TIMEOUT_MS=1800s` | ✅（原默认 1260000=21min，短 9min 会砍长任务 → 已补） |
 | 首字节前重试 | `bootstrap-retries: 1` | 等价位 `OMNIROUTE_DIRECT_RESPONSE_RETRY_TIMEOUT_MS=600000` | ✅ 语义一致（30s 响应头超时→换新 socket 重试），无需额外开关 |
@@ -563,7 +562,7 @@ OmniRoute 有熔断器（CliRelay 没有），所以对齐策略 = **总超时�
 
 > ⚠️ 2026-10-12 补记：改动只落在 (1)(2) 时，(3) 还是默认阈值——归档一失效就退回旧行为。
 > 本轮已补齐。**验证口径**：DR 恢复后 `docker exec omniroute env | grep STREAM_READINESS`
-> 应看到 `150000`，bootstrap 路径同理。
+> 应看到 `STREAM_READINESS_TIMEOUT_MS=600000`、`STREAM_READINESS_MAX_TIMEOUT_MS=900000`，bootstrap 路径同理。
 
 **归档同步**：`create-omniroute-archive.sh` 从 `/home/runner/omniroute` 直接取 compose，
 所以重打归档即带新阈值；归档校验要看**包内** compose 参数条数（11 条），只看上传成功不算数。
@@ -597,7 +596,7 @@ restore_omniroute_data()   ← Dropbox OmniRoute.tar.gz（缺失/无效 → boot
 ### 归档（按生效后端三选一）
 
 「生效后端的数据才进对应归档」—— 防止降级态把 OmniRoute 空库刷进好包。
-20 分钟后台归档循环与最终归档（Stop OpenClaw and Final Archive）均按 `ACTIVE_BACKEND` 分支。
+后台归档循环（主包 60min / 小包 20min）与最终归档（Stop OpenClaw and Final Archive）均按 `ACTIVE_BACKEND` 分支。
 
 - **OmniRoute（`/tmp/create-omniroute-archive.sh`）**：
   1. **SQLite 在线一致性快照**：容器在跑时 `docker exec omniroute` 调 better-sqlite3
@@ -700,123 +699,59 @@ runner 以 `tailscale set --ssh --hostname=openclaw --advertise-exit-node` 广�
 
 ### 数据落点
 
-**运行整体落本地盘，Dropbox 只做持久化存放**（与 OpenClaw / OmniRoute 同口径）：
+**二进制落本地盘，数据/凭据/日志直写 Dropbox 运行目录**（2026-10-06 起；不再有 `/tmp/local_workbuddy/data` 运行副本）：
 
 | 路径 | 内容 |
 |---|---|
-| `/tmp/local_workbuddy/workbuddy-gateway` | 二进制（**本地盘**，每轮按 GitHub Releases 的 `latest` 按需下载） |
-| `/dropbox/self-hosted/workbuddy-gateway/` | **运行目录**（`serve` 的 cwd）。2026-10-06 起**数据直写 Dropbox**，不再有 `/tmp/local_workbuddy/data/` 运行副本（该目录已废弃、每轮不再创建） |
-| `/dropbox/self-hosted/workbuddy-gateway/workbuddy*.json` | 凭据文件（**需人工 `login` 扫码生成**，见下）——Dropbox 侧为唯一真源，**运行期每 5 分钟同步进运行目录（带删除）** |
+| `/tmp/local_workbuddy/workbuddy-gateway` | 二进制（本地盘；每轮按 GitHub Releases 的 `latest` 按需下载并校验 SHA256） |
+| `/dropbox/self-hosted/workbuddy-gateway/` | 运行目录（`serve` 的 cwd，systemd `WorkingDirectory`）。凭据、config、usage、`workbuddy-status.json`、`logs/serve.log` 都直写这里 |
+| `/dropbox/self-hosted/workbuddy-gateway/workbuddy*.json` | 凭据文件（需人工 `login` 扫码生成）；serve 直接扫描 cwd，增删改后约 5 秒生效 |
 | `/dropbox/self-hosted/workbuddy-gateway/.installed-version` | 已安装版本号（用于比对是否需要更新） |
-| `/dropbox/self-hosted/workbuddy-gateway/workbuddy-status.json` | 账号池状态快照（serve 写进运行目录，停止时回推） |
-| `/dropbox/self-hosted/workbuddy-gateway/logs/` | 历轮 serve 日志留档（**只回推本轮新写的 `serve.log`**） |
+| `/dropbox/self-hosted/workbuddy-gateway/logs/` | serve 日志（systemd `StandardOutput` 直写 `serve.log`） |
 
-> **两处刻意分离，各修一次线上故障**：
-> 1. **二进制不能放 Dropbox**：`/dropbox` 是 rclone FUSE 挂载点，文件权限由
->    `--file-perms` 合成（默认 `0644`），`chmod +x` 在挂载点上是空操作 —— 从挂载点执行
->    一律 `nohup: failed to run command ...: Permission denied`（run 35177995322）。
-> 2. **工作目录也不能直接用 Dropbox**：`serve` 会在 cwd 下高频读写 `logs/` 与
->    `workbuddy-status.json`，在 `--vfs-cache-mode full` 的挂载点上会卡住/被 runner 清理，
->    表现为「进程 2 秒内退出且 `serve.log` 为空」（run 35185511971）。
+> **二进制不能放 Dropbox**：`/dropbox` 是 rclone FUSE 挂载点，文件权限由 `--file-perms` 合成（默认 `0644`），`chmod +x` 在挂载点上是空操作 —— 从挂载点执行一律 `Permission denied`（run 35177995322）。数据目录本身则**直接使用 Dropbox**：2026-10-06 起 `serve` 的 cwd 就是 `/dropbox/self-hosted/workbuddy-gateway`，凭据/状态/日志由它直写；旧的 `/tmp` 运行副本、启动拉取、收尾回推和每 5 分钟 `workbuddy-cred-sync` 循环均已移除（`services.sh` 有同名注释）。
 >
-> 因此把整个运行目录挪到本地盘，靠 `rclone` 在 run 边界搬运数据（启动第 0 步拉、收尾 3b-1 推），
-> 另有一个每 5 分钟的循环把 Dropbox 上的凭据同步进运行目录（见下文「凭据的周期同步」）。
+> 代价是 Dropbox FUSE 上的高频小文件写入；这是为「凭据唯一真源在 Dropbox」做的显式取舍，排障时先确认 `/dropbox` 挂载正常。
 
 ### 启动链路
 
 ```
-0. rclone copy dropbox:self-hosted/workbuddy-gateway → 本地运行目录（排除 logs/**、*.new；拉不到按空账号池启动）
-查 GitHub Releases latest tag（匿名 API，每轮一次；失败则按现有二进制运行）
+0. 直接以 /dropbox/self-hosted/workbuddy-gateway 为 cwd（不再从 Dropbox 拉取到本地）
+查 GitHub Releases latest tag（带 WB_GH_TOKEN；失败则按现有二进制运行）
     ├─ 版本一致且二进制可执行 → 跳过下载
-    └─ 否则下载 workbuddy-gateway-linux-amd64 到本地盘临时文件 → chmod 755 → 原子 mv 替换
-→ pkill 掉上一轮可能残留的 serve → cd 到本地运行目录后 nohup 执行本地盘二进制 serve -addr 127.0.0.1 -port 8318
+    └─ 否则下载 workbuddy-gateway-linux-amd64 + checksums.txt 校验 SHA256 → chmod 755 → 原子 mv 替换
+→ services.sh ensure workbuddy（systemd --user，Restart=always）
+   ExecStart=/tmp/local_workbuddy/workbuddy-gateway serve -addr 0.0.0.0 -port 8318 -webui
 → /health 探活（60×2s）
-    ├─ 就绪且日志里账号池非空 → 🟢 已就绪
+    ├─ 就绪且账号池非空 → 🟢 已就绪
     ├─ 就绪但账号池为空       → ⚠️ 已启动 · 无可用账号（需人工扫码登录）
     ├─ 进程已退出             → ❌ 启动失败（提前结束等待，不空等满 120 秒）
     └─ 120 秒未监听           → ❌ 启动失败（附日志尾部 1200 字节）
 → 【仅首轮】逐凭据 GET {Base}/v2/enterprises/personal/models 取免费模型名 → 🟢/⚠️/❌ 通知
 ```
 
-- **免费模型名取自上游「模型目录」接口，不靠探测**：`GET {Base}/v2/enterprises/personal/models`
-  一次性返回全量模型的 `credits` 与促销，**只读、不耗额度、无回环限制**。
-  国内站 Base `https://copilot.tencent.com`、国际站 Base `https://www.workbuddy.ai`，
-  站点由凭据文件的 `edition` 决定，故**逐账号**各请求一次。
-  免费判据照上游 `siteKnownFree`：倍率能解析出、且生效倍率为 0、且促销未过期。
-  **只在首轮取**（结果不写回快照，纯展示）。
-  任一账号取不到目录（超时/非 200/JSON 无 `models`）即整段降级为「免费模型 N」计数，
-  绝不编造名字；取到但清单为空则如实写「免费模型 0」。
-  > 早前版本用 serve 自带的 `POST /admin/probe` 逐账号 × 逐模型真实请求探测，
-  > 实测 44 模型 × 4 账号耗时 **634 秒**，超过 serve 的 `WriteTimeout: 300s`
-  > 而必然被截断，且真实消耗额度、可能触发限流冷却。已废弃。
-  > 也不读快照 `modelStates` —— 它只在模型被真实请求过时才有键，默认 `unknown`，
-  > 光读快照拿不到名字。
-
-- **端口 8318**：20128 是 OpenClaw 主 AI 网关（OmniRoute）的宿主端口，
-  二者并列互不干扰；本步骤**不**为本服务起 cloudflared 隧道，仅本机可达。
-- **执行与工作目录都在本地盘**：`serve` 的**工作目录**必须是数据目录 —— 它靠
-  「读取当前目录下所有 `workbuddy*.json`」组建账号池，状态文件与 `logs/` 也写在同目录。
-  因此启动前先把 Dropbox 数据 `rclone copy` 成本地运行目录，再 `cd` 进去执行本地盘二进制：
-  既拿到凭据，又避开在 FUSE 挂载点上高频写小文件。
-- **凭据只能人工准备，但放进 Dropbox 后约 5 分钟自动生效**：`login` 是终端内嵌二维码扫码
-  （或浏览器内完成登录），workflow 内无法完成。把凭据文件放到 **Dropbox** 的
-  `self-hosted/workbuddy-gateway/` 即可 —— 运行期的每 5 分钟同步循环（带删除，删掉即退出池）
-  会把它反映到运行目录，serve 再热加载（每 5 秒扫描 cwd），无需等下一轮；增删改凭据都免重启。
-- 更新失败（查询或下载失败）**不阻塞启动**：沿用现有二进制起服务，原因写进通知的「原因」行。
-- 失败原因按日志尾部区分「二进制不可执行 / 无有效凭据 / 其他启动即退」，
-  不一律写成「凭据或参数错误」，便于照着通知直接定位。
+- **免费模型名取自上游「模型目录」接口，不靠探测**：`GET {Base}/v2/enterprises/personal/models` 一次性返回全量模型的 `credits` 与促销，只读、不耗额度、无回环限制。国内站 Base `https://copilot.tencent.com`、国际站 `https://www.workbuddy.ai`，站点由凭据文件的 `edition` 决定，故逐账号各请求一次。免费判据照上游 `siteKnownFree`：倍率能解析出、且生效倍率为 0、且促销未过期。**只在首轮取**（结果不写回快照，纯展示）。任一账号取不到目录（超时/非 200/JSON 无 `models`）即整段降级为「免费模型 N」计数，绝不编造名字；取到但清单为空则如实写「免费模型 0」。
+- **端口 8318**：20128 是 OpenClaw 主 AI 网关（OmniRoute）的宿主端口；workbuddy 自 2026-09 起固定 8318，启动显式 `-port 8318` 覆盖上游默认 8317。8318 对 Tailscale/局域网开放（`-addr 0.0.0.0`），鉴权在 `config.json` 的 `gateway.apiKey`（`apiKeyEnabled`），不在启动参数里；通知里的「接口」写实际绑定端口。
+- **更新失败不阻塞启动**：查询或下载失败时沿用现有二进制，原因写进通知的「原因」行；没有可校验二进制则拒绝启动（不执行未校验产物）。
+- 失败原因按日志尾部区分「二进制不可执行 / 无有效凭据 / 其他启动即退」。
 
 ### 停止（收尾）
 
 `workbuddy-gateway` 是**宿主进程而非容器**，不会随 job 结束自动退出，故收尾步骤显式停止：
 
 ```
-kill $(cat /tmp/workbuddy-serve.pid)  →  pkill -f "<bin> serve" 兜底
-→ 轮询 30 秒等优雅退出（写完状态快照）
-→ 仍未退出则 pkill -9
-→ 复检残留：无残留发 ⛔ 已停止；仍有残留发 ⚠️ 已停止 · 进程残留
-→ rclone copy 本地运行目录 → dropbox:self-hosted/workbuddy-gateway（回推状态快照与本轮日志）
+services.sh stop workbuddy（systemctl --user；Restart=always 下必须走 systemd）
+→ 等 30 秒优雅退出（写完状态快照）
+→ 仍未退出则 pkill -9 兜底（仅针对过渡期非托管实例）
+→ 复检残留：正常停止并入「服务已停止」汇总；仍有残留发 ⚠️ 已停止 · 进程残留（alert）
 ```
 
-运行目录在本地盘、每轮重建，所以停止后必须**回推**一次，否则状态快照与本轮 `serve.log`
-随 runner 销毁。回推用 `rclone copy`（单向、只增不删）而非 `sync` —— 保留 Dropbox 上的
-历轮日志；回推失败只发 ⚠️ 提示，不影响停止结论。归档循环与最终归档只覆盖 OpenClaw 主包、
-AI 网关与 rsstt，不涉及本服务。
+数据目录本来就在 Dropbox，**不需要再回推**；workflow 的 3b-1 明确跳过 `rclone copy`，否则可能用旧本地副本覆盖直写的新数据。
 
-### 凭据的周期同步（每 5 分钟）
+### 凭据生效（不再有周期同步）
 
-`serve` 只扫描**自己的 cwd**，且启动后只认当时那份快照 —— 你在运行期往 Dropbox 新增或删除凭据，
-serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在「Start background archive loop」里
-额外起一个常驻循环（`/tmp/workbuddy-cred-sync.sh`，日志 `/tmp/workbuddy-cred-sync.log`）：
+`serve` 的 cwd 是 `/dropbox/self-hosted/workbuddy-gateway`，它直接扫描该目录下的 `workbuddy*.json`，每 5 秒热加载一次。你在 Dropbox 运行目录新增/覆盖/删除凭据，最坏约 5 秒生效，不需要重启，也不存在「Dropbox → 本地运行目录」的同步循环。旧的 `/tmp/workbuddy-cred-sync.sh`、300 秒 `rclone sync --delete` 与 `workbuddy-cred-sync` systemd unit 已于 2026-10-06 移除（见 `services.sh` 同款注释）；不要再按旧文档排查「同步日志」。
 
-```
-每 300 秒 → rclone sync dropbox:self-hosted/workbuddy-gateway → 本地运行目录
-           --filter '- workbuddy-status.json'     排除 serve 自建的状态快照
-           --filter '+ workbuddy*.json'           凭据：唯一进入同步的文件
-           --filter '- **'                        其余一律排除（二进制、模型缓存、logs/ 等）
-```
-
-- **Dropbox 是凭据的唯一真源，带删除**：你在 Dropbox 删掉某个 `workbuddy*.json`，
-  下一 tick 本地同步移除，账号随之退出池；改（覆盖）同理。
-- **必须显式排除 `workbuddy-status.json`**：`workbuddy*.json` 这个 glob 会把它一起匹配进来
-  ——它正是 serve 运行期高频重写的状态快照，`sync --delete` 会在每轮把它删掉
-  （已用真机 rclone 反证：不加这条排除规则，该文件确实每轮被 `Deleted`）。
-- **用 `--filter` 而非 `--include` + `--exclude`**：rclone 官方明确警告混用 include/exclude
-  结果不可预期，`--filter` 按序求值（首个命中即定）才是确定的。
-- **同步完即生效，无需重启**：serve 每 5 秒扫描 cwd 热加载凭据。所以「你改 Dropbox」到
-  「本地生效」最坏约 5 分钟（循环周期）+ 5 秒（serve 扫描），通知里的账号池构成下一轮会体现。
-- **用 per-file 锁，不共用归档锁**：本循环周期短，与每 20 分钟的归档抢同一把锁会互相拖慢。
-- **失败不发通知**：抢不到锁跳过本轮、rclone 失败只记日志 —— 你随时可以重试，下一 tick 就同步，
-  且收尾 3b 仍会把运行目录整体回推。
-- **拉起循环后立即同步跑一次探针**（`--- initial workbuddy credential sync probe ---`）：
-  后台循环的 stdout 只进 `/tmp/workbuddy-cred-sync.log`（在 runner 上，随轮次销毁），
-  而收尾打印只在**跑满一整轮**时才执行 —— 被取消的轮次收尾步骤会被跳过，等于看不到任何证据。
-  探针把同参数的 sync 结果直接打进 step 日志，任何轮次都留证：
-  `Checks: N/N` 即纳入同步的凭据数，`✅ probe ok` 表示连上 Dropbox 且成功。
-- **收尾会打印循环日志尾部**（`--- workbuddy-cred-sync.log tail ---`）与运行目录下的
-  `workbuddy*.json` 清单，用来确认这段时间里同步是否真的在发生。
-  （⚠️ `workbuddy-cred-sync` 已于 2026-10-06 停用移除，凭据不再需要双向同步 ——
-   见 `services.sh` 同款注释；此处仅作历史背景保留。）
 
 ### 排障入口
 
@@ -827,14 +762,14 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
   看该模型的 `credits` 与 `modelPromotions` —— 口径与通知里的免费名单一致，且不耗额度。
   快照 `accounts[].modelStates` 只在模型被真实请求过时才有键（默认 `unknown`），
   只适合查「实际用过的」模型。
-- 凭据同步日志：`/tmp/workbuddy-cred-sync.log`（每轮成功/跳过/失败各一行）。
+- 凭据无同步日志：凭据直读 Dropbox 运行目录，serve 每 5 秒扫描 cwd；旧的 `workbuddy-cred-sync.log` 已不存在。
 - 本步骤元数据：`/tmp/run-workbuddy-meta.env`（`WB_STATE` / `WB_VERSION` / `WB_UPDATE` /
   `WB_REASON` / `WB_READY` / `WB_ACCOUNTS`）。
 - 失败时日志尾部会**同时打到 stdout**（`--- serve.log tail (1200B) ---`），
   不必重跑一轮就能在 CI 日志里看到真实报错；`<pre>` 只进 Telegram。
 - `Permission denied` 又出现时，先确认二进制路径不在 `/dropbox` 下
   （`ls -l /tmp/local_workbuddy/workbuddy-gateway`），挂载点上永远执行不了。
-- 日志为空且进程秒退时，先确认 `cd` 的是本地运行目录而非 `/dropbox/...`。
+- 日志为空且进程秒退时，先确认服务进程由 systemd 管理且 `WorkingDirectory=/dropbox/self-hosted/workbuddy-gateway`（不再是旧本地 `/tmp` 运行目录）。
 
 > 说明：OpenClaw 主网关（OmniRoute `:20128` → cloudflared `ai-api` 隧道）见第六节；
 > 本节服务是**并列的第二网关**，对外入口与归档一律互不涉及。
@@ -846,8 +781,7 @@ serve 根本看不到，最快也要等下一轮（≈5.7 小时）。为此在�
 
 ### 9.1 workbuddy-gateway（`run-workbuddy.sh`）
 
-- **接口** `http://127.0.0.1:8318/v1`（显式 `-port 8318`；上游默认 8317 与本仓库 AI
-  网关撞车）。**API Key** 等宽回显 `AI_GATEWAY_API_KEY`，取不到写「未取到」，绝不编造。
+- **接口** `http://127.0.0.1:8318/v1`（显式 `-port 8318`；上游默认 8317，自 2026-09 起固定 8318 以避免客户端配置漂移）。**API Key** 等宽回显 `AI_GATEWAY_API_KEY`，取不到写「未取到」，绝不编造。
 - **绝不回显 `workbuddy*.json` 内容**（真实 Token）；`workbuddy-status.json` 是状态快照。
 - **账号池 TSV 每列都填**（空值 `-`）：连续制表符会被 `read` 折叠，中段空列整体左移 —
   实测把冷却数当模型名渲染成 `免费模型 1 · <code>2</code>`。jq 侧填 `-`，渲染侧先还原

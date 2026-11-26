@@ -232,7 +232,6 @@ ZCODE_GATEWAY_API_KEY
 | `cfip-pool.yml` | `PAT` `TS_OAUTH_CLIENT_ID` `TS_OAUTH_CLIENT_SECRET` |
 | `delete-workflow-runs.yml` | `PAT` |
 | `emby.yml` | `EMBY_API_TOKEN` `EMBY_USER` `OPENLIST_ADMIN_PASSWORD` `RCLONE` `TELEGRAM_*` `VD` |
-| `eshop.yml` | `ESHOP_MYSQL_PASSWORD` `ESHOP_MYSQL_ROOT_PASSWORD` `RCLONE` `VD` `YSHOP_WX_MINIAPP_APPID` `YSHOP_WX_MINIAPP_SECRET` |
 | `github_backup_all.yml` | `PAT` `RCLONE` `TELEGRAM_*` |
 | `icloud-photos-downloader.yml` | `APPLEID` `APPLEPASSWORD` `RCLONE` `TELEGRAM_*` |
 | `jellyfin.yml` | `JELLYFIN_API_TOKEN` `PAT` `RCLONE` `TELEGRAM_*` `VD` |

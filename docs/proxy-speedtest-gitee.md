@@ -11,7 +11,7 @@
 |---|---|---|---|---|
 | `proxy-speedtest-gitee` | Gitee 私有仓库 | 经代理 git push 上行 + clone 下行 + gitee.com HTTP 延迟 | 本文 | — |
 | `proxy-speedtest-cdn` | 国内 CDN/镜像站 + baidu/taobao | 经代理单流定窗 curl 下载（8s，只计传输段）+ HTTP 计时延迟 | `speedtest.py` | [cdn](proxy-speedtest-cdn.md) |
-| `proxy-speedtest-taier` | 泰尔三网（电信/联通/移动测速服务器） | taierspeedtest 延迟 + 单/多线程上下行 | `taier_speedtest.py` + mihomo TUN | [taier](proxy-speedtest-taier.md) |
+| `proxy-speedtest-taier` | 泰尔三网（电信/联通/移动测速服务器） | taierspeedtest 延迟 + 单/多线程上下行 | `taier_speedtest.py` + mihomo mixed-port 反压代理（默认；TUN 仅 `TAIER_USE_TUN=1` 逃生门） | [taier](proxy-speedtest-taier.md) |
 
 另有上游编排 `proxy-speedtest-gistnodes`（搜 gist + Sub-Store 去重 + `alive_filter` 探活后
 发订阅，再 `workflow_call` 三选一），本身不测速。
@@ -30,7 +30,7 @@ commit 等一律排除，见下方「下载计时」）。
 |---|---|---|---|---|
 | **探活** | ❌ 无（`ok = 延迟成功 or 下载成功`） | ❌ 无（push 成功即活） | ✅ 开测前一次 `GET /group/{组}/delay` 拿整组延迟表，逐节点查表 | ✅ 非惰性健康检查 + 轮询等结论 |
 | **延迟** | `latency_probe`：baidu+taobao，各 4 次，8s，**HTTP 首字节** | 同实现，目标只有 `gitee.com` | 引擎对运营商服务器打**原生 TCP** | — |
-| **上传** | git push→Gitee，**可切直连** | git push→Gitee，**可切直连** | 引擎发流（single/multi） | — |
+| **上传** | 已停用（2026-11-14；脚本能力保留，workflow 固定 `ENABLE_PUSH=0`） | git push→Gitee，**可切直连** | 引擎发流（single/multi） | — |
 | **下载** | curl **单流定窗 8s**（Range 上界 10MiB，到点截断，**只计传输段、不含 TTFB**），多镜像取最优 | `--no-checkout` clone，**只计整段网络传输**（不含本地 checkout 解包） | 同一次引擎调用的「↓」列 | — |
 | **单位** | MiB/s | MiB/s | 原始 Mbps | — |
 
@@ -81,7 +81,9 @@ CDN/Gitee 的「兆」= MiB/s×8 仍是两种单位口径，跨套比较要先�
 - `git_direct_speedtest`：不经代理直连 Gitee push/clone，作为「runner 直连出口上行」基线对比（**不是**家庭宽带）
   （`PROXY_SPEEDTEST_DIRECT_BASELINE_TIMEOUT` / `_MAX_ATTEMPTS` 控制），不受模式影响。
 
-## 上行测速：CDN 与 Gitee 已统一（2026-09-17）
+## 上行测速：CDN 与 Gitee 已统一（2026-09-17；CDN 自 2026-11-14 停用）
+
+> 历史口径：2026-11-14 起 CDN 已停用上行；以下保留实现与对比记录，当前只有 Gitee 仍测上行。
 
 **诉求**：两套的上行要么都经代理、要么都直连，且都能用 runner 直连基线做对照——否则「节点带宽」
 与「runner 直连出口」两套数字混在一起，无法判断节点是否还不如直连。
@@ -444,4 +446,4 @@ mihomo 对「组里不存在的成员」改为报错，gitee / cdn 会立刻把�
 | Gist 404 | **分两种**：真失效（重试仍 404 且 GET 也读不到）→ 新建并回填 secret；瞬时抖动（重试成功，或 404 但 GET 可见）→ 复用原 gist，绝不再建。见 [Gist 约定](#gist-约定三套各用各的)。日志 `gist_patch_404_retry` / `_recovered` / `_recreate` 三选一可定位 |
 | Gist 422（`missing_field: files`） | 2026-09-08 修：`update_gist` 曾在旧文件已删除后每轮仍发 `旧文件名: null`，GitHub 判 files 无有效字段。现在先 GET 探测旧文件是否存在才发删除项，且 422 会去掉删除项重试一次 |
 | 订阅可用性存疑 | 本工作流只负责导出达标节点、不做可用性回拉验证（2026-09-10 移除：抽检信息量低于本轮 push/clone 实测，且失败只制造误导性告警）。订阅端导入失败的排查重心回到「节点是否达标、订阅源本身是否可用」 |
-| 该工作流当前在 Actions 里被手动禁用 | 重新启用后按计划运行 |
+| 工作流在 Actions 里被手动禁用 | 仓库代码不记录启用状态；以 Actions 页面为准，重新启用后按计划运行 |

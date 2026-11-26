@@ -1,6 +1,6 @@
 # 出口节点池（socks-exit-pool）
 
-> 代码：`.github/scripts/socks-exit/build_socks_exit.py`
+> 代码：`.github/scripts/socks-exit/build_socks_exit.py`（生成）+ `gist_publish.py`（发布）
 > 入口：`.github/workflows/socks-exit-pool.yml`
 
 ## 它解决什么问题
