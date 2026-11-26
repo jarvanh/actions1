@@ -13,6 +13,8 @@
 # 凭据来源与 OpenList 自动注册同源：rclone.conf 的 [onedrive] 段
 
 set -uo pipefail
+# 临时文件可能含 Authorization 头（--dump headers），从创建起就只给属主读。
+umask 077
 
 RCLONE_CONF="${RCLONE_CONF:-$HOME/.config/rclone/rclone.conf}"
 PROBE_LOG="${PROBE_LOG:-/opt/logs/odprobe.log}"
@@ -75,10 +77,12 @@ if [ -z "$AT" ]; then
 fi
 
 if [ -z "$AT" ]; then
-  # 兜底：从 rclone 实际发出的请求头里抓取它使用的 token（只提取不打印，临时文件随即删除）
-  rclone lsjson onedrive:/ --max-depth 1 --config "$RCLONE_CONF" --dump headers >/dev/null 2>/tmp/od_dump.log
-  AT=$(grep -m1 -oE 'Authorization: Bearer [A-Za-z0-9._~+/-]+' /tmp/od_dump.log 2>/dev/null | sed 's/.*Bearer //' | head -1)
-  shred -u /tmp/od_dump.log 2>/dev/null || rm -f /tmp/od_dump.log
+  # 兜底：从 rclone 实际发出的请求头里抓取它使用的 token（只提取不打印，临时文件随即删除）。
+  # 用 mktemp（默认 600）而不是固定路径：避免预测路径被 symlink 抢注/多用户读走 token。
+  _dump="$(mktemp /tmp/od_dump.XXXXXX)"
+  if rclone lsjson onedrive:/ --max-depth 1 --config "$RCLONE_CONF" --dump headers >/dev/null 2>"$_dump"; then :; fi
+  AT=$(grep -m1 -oE 'Authorization: Bearer [A-Za-z0-9._~+/-]+' "$_dump" 2>/dev/null | sed 's/.*Bearer //' | head -1)
+  shred -u "$_dump" 2>/dev/null || rm -f "$_dump"
 fi
 
 if [ -z "$AT" ]; then
@@ -137,9 +141,11 @@ printf '%s' "$ROOT_JSON" | jq -c '.value[]' 2>/dev/null | while read -r item; do
 
   # 4a. 对照：OpenList 侧同一路径（预期失败，用于佐证"OpenList 解析不了快捷方式"）
   if [ -n "$OL_TOKEN" ]; then
+    # 用 jq 组 JSON：媒体名里可能含引号/反斜杠，手拼会把请求改成非法 JSON。
+    OL_REQ=$(jq -cn --arg p "/onedrive/$NAME" '{path:$p,password:"",refresh:false}')
     OLB=$(curl -s -m 15 -X POST http://127.0.0.1:5244/api/fs/get \
             -H "Authorization: $OL_TOKEN" -H 'Content-Type: application/json' \
-            -d "{\"path\":\"/onedrive/$NAME\",\"password\":\"\",\"refresh\":false}" 2>/dev/null)
+            -d "$OL_REQ" 2>/dev/null)
     out "     [对照] OpenList fs/get /onedrive/$NAME → code=$(printf '%s' "$OLB" | jq -r '.code // "?"' 2>/dev/null) msg=$(printf '%s' "$OLB" | jq -r '.message // ""' 2>/dev/null | head -c 100)"
   fi
 

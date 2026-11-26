@@ -71,7 +71,12 @@ def load_creds():
 
 
 def write_secret(session: str):
-    """session 直写 GitHub Secret；不打印、不落盘，写完立即置空。"""
+    """session 经 **stdin** 写入 GitHub Secret；不进 argv、不打印、不落盘。
+
+    为什么不用 --body：`gh secret set --body <value>` 会把 session 明文放进进程参数，
+    同机其它进程读 /proc/<pid>/cmdline 即可拿到（2026-11-26 审查发现）。gh 在未指定
+    --body 时从标准输入读取，等价且不可见于 argv；这里用 input= 直接喂字符串，
+    既不经临时文件也不进 shell。"""
     env = os.environ.copy()
     if "GH_TOKEN" not in env:
         # 尝试从 ~/.openclaw/.env 取 GH_TOKEN
@@ -84,8 +89,8 @@ def write_secret(session: str):
                     env["GH_TOKEN"] = line.split("=", 1)[1].strip()
 
     result = subprocess.run(
-        ["gh", "secret", "set", SECRET, "--repo", REPO, "--body", session],
-        capture_output=True, text=True, env=env,
+        ["gh", "secret", "set", SECRET, "--repo", REPO],
+        input=session + "\n", capture_output=True, text=True, env=env,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()

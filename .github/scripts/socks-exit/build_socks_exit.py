@@ -11,7 +11,7 @@
 #   - 全失败（无可用出口）时不产出文件 → workflow 保留上一版 Gist，避免客户端订阅清零
 #
 # 用法：python3 build_socks_exit.py --out out
-# 环境变量：SUBS_CHECK_GIST_ID（subs-check 产物 gist，必需）、SOCKS_EXIT 来源可选：
+# 环境变量：SUBS_CHECK_GIST_ID（subs-check 产物 gist，必需）、SOCKS_SOURCE_URL 来源可选：
 #   SOCKS_SOURCE_URL（默认 qzz 源）、MAX_EXITS（默认 20）、PROBE_WORKERS（默认 8）
 import argparse
 import copy
@@ -153,7 +153,8 @@ def main():
         log(f'::warning::出口源抓取失败（保留上一版 Gist）：{e}')
         return 0
     cands = [p for p in qzz if p.get('type') == 'socks5' and p.get('server') and p.get('port')]
-    log(f'出口候选：qzz 源 socks5 {len(cands)} 个（http/https 已按要求剔除）')
+    source_host = urllib.parse.urlparse(source).hostname or '自定义源'
+    log(f'出口候选：{source_host} socks5 {len(cands)} 个（http/https 已按要求剔除）')
 
     live = []
     if cands:
@@ -166,7 +167,7 @@ def main():
                 else:
                     log(f'  ❌ {tag}')
 
-    # 按代理地址去重（同一 host:port 只留最快一条）
+    # 按认证后的代理地址去重（同一 host:port、账号不同视为不同出口；同一出口只留最快一条）
     live.sort(key=lambda x: x['latency'])
     seen, picked = set(), []
     for item in live:

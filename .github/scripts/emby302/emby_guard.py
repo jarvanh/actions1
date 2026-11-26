@@ -126,7 +126,7 @@ def main():
 
     for rel in ("data/users.db", "data/library.db"):
         if not (root / rel).is_file():
-            fail("missing %s" % (root / rel))
+            fail("missing %s" % rel)
 
     users = check_users(root)
     media_items, folders, paths = check_library(root)

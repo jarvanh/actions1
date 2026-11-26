@@ -678,16 +678,42 @@ def openlist_err(code, message):
                       ensure_ascii=False).encode("utf-8")
 
 
-def forward_upstream(api, payload, auth):
-    """原样转发给本机 OpenList，保持非快捷方式路径的行为不变。"""
+def _upstream_session_token():
+    """读 workflow 机器登录得到的 OpenList 会话 token（只读，不打印）。"""
     try:
-        url = UPSTREAM + api
+        with open(UPSTREAM_TOKEN_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def forward_upstream(api, payload, auth):
+    """原样转发给本机 OpenList，保持非快捷方式路径的行为不变。
+
+    odlink 对外发的 AUTH_TOKEN 与 OpenList 会话 token 不是同一个值；ge2o 回退到
+    :5245 时带的是 odlink token，直接转发上游会 401。401 时用 workflow 写下的
+    /tmp/openlist-token 重试一次（token 不出现在日志里）。
+    """
+    url = UPSTREAM + api
+    data = json.dumps(payload).encode("utf-8")
+
+    def send(auth_value):
         req = urllib.request.Request(
-            url, data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Authorization": auth or ""})
+            url, data=data,
+            headers={"Content-Type": "application/json", "Authorization": auth_value or ""})
         with urllib.request.urlopen(req, timeout=20) as resp:
             return resp.status, resp.read()
+
+    try:
+        return send(auth)
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            token = _upstream_session_token()
+            if token and token != (auth or ""):
+                try:
+                    return send(token)
+                except urllib.error.HTTPError as retry_error:
+                    return retry_error.code, retry_error.read() if hasattr(retry_error, "read") else b""
         return e.code, e.read() if hasattr(e, "read") else b""
     except Exception as e:
         return 0, json.dumps({"code": 500, "message": "upstream %s" % type(e).__name__,

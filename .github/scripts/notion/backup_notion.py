@@ -215,10 +215,13 @@ class NotionExportClient:
         raise TimeoutError(f"Export timed out for {root.title}")
 
     def download(self, url: str, destination: Path) -> None:
+        """下载预签名导出链接：exportURL 可能指向外部域名，
+        显式清空 Cookie，避免本会话的 Notion 凭据随请求外泄。"""
         with self.session.get(
             url,
             stream=True,
             timeout=self.download_timeout,
+            headers={'Cookie': ''},
         ) as response:
             response.raise_for_status()
             with destination.open("wb") as handle:

@@ -13,6 +13,7 @@
 """
 import argparse
 import csv
+import ipaddress
 import os
 import re
 import sys
@@ -43,6 +44,15 @@ def fetch(url, timeout=20):
         return resp.read().decode('utf-8', 'ignore')
 
 
+def _valid_ip(value):
+    """正则只管形状，IPv4 每段 <=255 要靠 ipaddress 判（999.999.999.999 曾经能入库）。"""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_lines(text, default_port=DEFAULT_PORT):
     """只保留合法行：`ip:port[#备注]` 或纯 `ip`；错误文本/HTML/空行全部丢弃。"""
     out = []
@@ -54,11 +64,11 @@ def parse_lines(text, default_port=DEFAULT_PORT):
         m = IP_PORT.match(line)
         if m:
             ip, port, note = m.group(1), m.group(2), (m.group(3) or '').strip()
-            if 0 < int(port) < 65536:
+            if 0 < int(port) < 65536 and _valid_ip(ip):
                 out.append((ip, port, note))
             continue
         m = IP_ONLY.match(line)
-        if m:
+        if m and _valid_ip(m.group(1)):
             out.append((m.group(1), default_port, ''))
     return out
 
@@ -73,7 +83,7 @@ def parse_uouin_html(html):
         cells = [re.sub(r'<[^>]+>', '', c).strip()
                  for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.S)]
         for i in range(1, len(cells)):
-            if IP_ONLY.match(cells[i]) and re.search(r'电信|联通|移动', cells[i - 1]):
+            if _valid_ip(cells[i]) and re.search(r'电信|联通|移动', cells[i - 1]):
                 rows.append((cells[i], cells[i - 1]))
     return rows
 
@@ -84,7 +94,7 @@ def parse_wetest_html(html):
     for tr in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S):
         cells = [re.sub(r'<[^>]+>', '', c).strip()
                  for c in re.findall(r'<td[^>]*>(.*?)</td>', tr, re.S)]
-        if len(cells) >= 2 and IP_ONLY.match(cells[1]):
+        if len(cells) >= 2 and _valid_ip(cells[1]):
             rows.append((cells[1], cells[0]))
     return rows
 

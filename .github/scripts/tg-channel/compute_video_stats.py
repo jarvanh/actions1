@@ -25,11 +25,18 @@ def read_uploaded(uploaded_file: str) -> int:
             data = json.load(f)
         if isinstance(data, dict) and isinstance(data.get("uploaded"), dict):
             return len(data["uploaded"])
-        # 简写格式（直接对象）
+        # 旧「直接对象」简写（没有 version/uploaded 包裹）。
+        # 2026-11-26 审查：原实现「值全是 dict/None 就计数」，会把任意配置类对象
+        # （如 {"a": {...}, "b": null}）误当台账，uploaded 虚高 ⇒ pending 被吞。
+        # 收紧为「键名必须是视频文件名」才认，避免把别的 JSON 当台账。
         if isinstance(data, dict):
-            # 不是标准 v1，但如果所有值都是 dict，也统计一下
-            if all(isinstance(v, dict) or v is None for v in data.values()):
-                return len(data)
+            entries = {k: v for k, v in data.items() if isinstance(v, dict)}
+            if entries and all(os.path.splitext(k)[1].lower() in VIDEO_EXTS for k in entries):
+                return len(entries)
+        print(
+            f"[compute_video_stats] WARN: {uploaded_file} 不是可识别的 v1 台账格式，按 0 计",
+            file=sys.stderr,
+        )
     except json.JSONDecodeError:
         print(f"[compute_video_stats] WARN: {uploaded_file} JSON 解析失败", file=sys.stderr)
     except Exception as e:

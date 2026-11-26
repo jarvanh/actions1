@@ -37,9 +37,25 @@ jobs:
       - name: 在 autoclaw 上自扫（国内真实链路）
         if: ${{ steps.ts.outcome == 'success' }}
         continue-on-error: true
+        env:
+          # 可选的固定主机公钥（`ssh-keyscan` 一行，secret 名 CFIP_SSH_HOST_KEY）。
+          # 配了就用 StrictHostKeyChecking=yes 严格校验；没配退回 accept-new ——
+          # 它仍然拒绝「已记录后又被换掉」的密钥，比原来的 no 强，且不需要新增必填项。
+          CFIP_SSH_HOST_KEY: ${{ secrets.CFIP_SSH_HOST_KEY }}
         run: |
           set -e
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@100.90.2.41 '
+          # 主机密钥校验：no → accept-new（或 yes + 预置 known_hosts）。
+          # 原写法 StrictHostKeyChecking=no 等于放弃中间人防护，tailnet 内也不该裸奔。
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -n "${CFIP_SSH_HOST_KEY:-}" ]; then
+            printf '%s\n' "$CFIP_SSH_HOST_KEY" > ~/.ssh/known_hosts
+            SSH_STRICT=yes
+            echo "🔐 使用预置主机公钥做严格校验"
+          else
+            SSH_STRICT=accept-new
+            echo "::warning::未配置 CFIP_SSH_HOST_KEY，改用 accept-new（首次信任、变更拒绝）"
+          fi
+          ssh -o BatchMode=yes -o StrictHostKeyChecking="$SSH_STRICT" root@100.90.2.41 '
             set -e
             cd /tmp
             if [ ! -x cfst ]; then
@@ -55,7 +71,7 @@ jobs:
             ./cfst -o /tmp/out.csv -p 443 -t 20 -n 20 \
               -url "https://speed.cloudflare.com/__down?bytes=10000000" || true
           '
-          scp -o BatchMode=yes -o StrictHostKeyChecking=no -q root@100.90.2.41:/tmp/out.csv cfst.csv
+          scp -o BatchMode=yes -o StrictHostKeyChecking="$SSH_STRICT" -q root@100.90.2.41:/tmp/out.csv cfst.csv
           echo "CFST_LABEL=cfst-aliyun" >> "$GITHUB_ENV"
           head -3 cfst.csv
 
