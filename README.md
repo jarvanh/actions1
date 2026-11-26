@@ -679,6 +679,22 @@ trend 里同源字段为 `pairs_total:16 / pairs_synced:1`。拆开看:
 （无告警）/ `wopan175` 昨天 17:24 / `wopan176Crypt` 昨天 09:23 —— 两个 WoPan 都停在 403 之前。
 ⇒ 需要处理的是 `/wopan175` **和** `/wopan176` 两个账号的登录态，不是一个。
 
+📌 **影响面量化与代码侧现状（2026-11-26 02:50Z）**:
+16 个注册同步对里，**14 个（87.5%）的目标端在 `wopan176Crypt` / `wopan175`**，即两个 403 账号；
+只有 2 个 `baidupanCrypt` + 1 个 `aliyundriveCrypt` 落在健康后端。这就解释了为什么 403 之后
+本轮 2h20m 只写出 **14 个 marker**（上一个健康轮 61 个）——不是同步逻辑坏了，是
+**大部分同步对的目标后端登不进去**。
+
+代码侧**已经正确拦截**，不是待修缺陷: `_check_openlist_backend_connectivity`
+（`openlist_driver.sh:351`）做两层校验 + Crypt 底层校验 + 写探针；其中
+`_openlist_api_health_check` 对 `request failed` / 驱动 / 存储类消息返回 1 ⇒ 该对跳过本轮
+（`sync_engine.sh:397`、`task_engine.sh:3035` 均已接入）。所以死后端**不会**白传大文件。
+
+⚠️ 但它是**弱证据**，按 `_backend_dead_mark` 的设计**不写 `backend_dead.json`**
+（实测该文件不存在）——主人历史上有过「弱信号把健康 wopan175 判死、6 个对整体被跳过」的误判，
+所以刻意不跨轮持久化。**代价**: 每轮都要重新探测、重新跳过，占轮转槽位但不浪费带宽。
+⇒ 结论: 代码无需改动；**唯一的解法仍是人工刷新两个账号登录态**。
+
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
 （`OPENLIST_SYNC_MIN_SLICE_SECONDS`=10min）时不再开新同步对/子目录/最终完整同步，
