@@ -517,8 +517,37 @@ jobs:
           fi
 
       - name: 安装同步依赖（ffmpeg/jq 等）
+        # 为什么要先 update 且要容错（2026-11-25，run 45651997160 实证）:
+        #   裸 `apt-get install` 用的是 runner 镜像里**预置的包索引**，上游包被替换后
+        #   必然 404（该轮实测 libspa-0.2-modules / libpipewire-0.3-* 全 404，exit 100）
+        #   ⇒ 本 step 失败 ⇒ 后续「加载函数库/同步」全部 skipped ⇒ **整轮零产出**，
+        #   而自续触发也没能补位（该轮之后 8 小时无任何运行，同步停摆）。
+        #   修法三条:
+        #   ① 先 `apt-get update` 刷新索引（消掉「索引过期 → 包已换 → 404」这条路）；
+        #   ② update 失败**不中止**（网络抖动不该让整轮停摆，后续 install 会再报）；
+        #   ③ install 失败后做**能力复核**：只要真正需要的命令都在（jq/7z/ffmpeg），
+        #      就告警放行 —— 备份同步的核心路径不依赖 apt 一定成功。
+        #   ④ 仅当核心命令缺失才 exit 1（真缺依赖时仍要明确失败，不掩盖）。
         run: |
-          sudo apt-get install -y ffmpeg jq coreutils bc p7zip-full
+          set -u
+          echo "=== 刷新 apt 索引（失败不中止）==="
+          sudo apt-get update -qq || echo "⚠️ apt-get update 失败（继续，install 会再报）"
+          echo "=== 安装依赖 ==="
+          if sudo apt-get install -y ffmpeg jq coreutils bc p7zip-full; then
+            echo "✅ 依赖安装成功"
+          else
+            echo "⚠️ apt-get install 失败（多为上游包 404 / 索引与镜像不同步），转入能力复核"
+          fi
+          # 能力复核: 只认真正会被用到的命令（7z 由 p7zip-full 提供；jq/ffmpeg 同理）
+          _miss=""
+          for c in jq 7z ffmpeg; do
+            command -v "$c" >/dev/null 2>&1 || _miss="${_miss} ${c}"
+          done
+          if [ -n "$_miss" ]; then
+            echo "::error::核心依赖缺失:${_miss} —— 这些命令在同步/修复管线里是必需的"
+            exit 1
+          fi
+          echo "✅ 核心依赖齐备: jq=$(command -v jq) 7z=$(command -v 7z) ffmpeg=$(command -v ffmpeg)"
 
       # ===== 加载函数库 =====
       # 所有同步相关函数已提取到 .github/scripts/openlist/ 目录下的脚本文件中。
