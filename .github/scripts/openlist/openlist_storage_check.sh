@@ -25,7 +25,14 @@
 #   status == "work"                       → 健康
 #   status == ""                           → 未初始化/未落库，跳过（不冤枉）
 #   status == "disabled" 或 disabled=true   → 人工停用，跳过（不是故障）
-#   其余（非空且非上述）                     → 驱动 Init 失败，告警；status 即错误原文
+#   其余（非空且非上述）                     → 驱动 Init 失败，按错误原文分两类:
+#     credential（凭据层）: rsp_code 8005/1001、登录失败、无效令牌、
+#       refresh token expired … → 真登录态失效，alert 档告警，提示人工重登
+#     transport（传输层）: HTTP 4xx/5xx、request failed with status:、
+#       timeout / connection refused … → 多为 WAF/出口 IP/瞬时拦截，
+#       不是登录失效（2026-11-26 wopan 403 实测 token 0000 有效），
+#       走一般档提示，文案明确「无需重登」
+#   未知错误保守归 credential（仍提示人工介入，不静默放过）
 #
 # 依赖: openlist_api.sh (_get_openlist_token)、tg_notify.sh 排版助手（load_all L0）、
 #       telegram.sh (send_telegram_message); task_engine.sh (SYNC_TASK_REGISTRY) 可选
@@ -47,8 +54,9 @@ OPENLIST_STORAGE_ALERT_COOLDOWN="${OPENLIST_STORAGE_ALERT_COOLDOWN:-21600}"
 # ===== 存储健康巡检 =====
 # 全局输出（供调用方直接读，不走命令替换——子 shell 里赋值回不到父进程）:
 #   _SS_TOTAL       存储总数（含被人工停用的）
-#   _SS_BROKEN_TSV  失效存储清单，每行 "mount_path \t driver \t status 错误原文"
-#                   status 内的 \r\n\t 已被 jq 归一成单空格，保证行式读取不串行
+#   _SS_BROKEN_TSV  失效存储清单，每行 "mount_path \t driver \t status 错误原文 \t class"
+#                   class ∈ credential|transport；status 内的 \r\n\t 已被 jq
+#                   归一成单空格，保证行式读取不串行
 # 返回: 0=巡检完成（_SS_BROKEN_TSV 可能为空 = 全部健康）/ 1=巡检本身失败（不误报）
 _SS_TOTAL=0
 _SS_BROKEN_TSV=""
@@ -85,8 +93,14 @@ _ol_storage_health_scan() {
     (.data.content // .data // [])[]?
     | select((.status // "") != "" and .status != "work" and .status != "disabled")
     | select((.disabled // false) == false)
-    | [ (.mount_path // "?"), (.driver // "?"),
-        ((.status // "") | gsub("[\\r\\n\\t]+"; " ")) ] | @tsv
+    | . as $s
+    | ($s.status | gsub("[\\r\\n\\t]+"; " ")) as $st
+    | (if ($st | test("rsp_code\\s*:\\s*(8005|1001)|8005|1001|登录失败|无效登录信息|无效的令牌|login failed|invalid token|refresh token expired|token expired"; "i"))
+        then "credential"
+      elif ($st | test("request failed with status:|HTTP\\s+[45][0-9][0-9]|403 forbidden|timeout|connection refused|bad gateway|service unavailable"; "i"))
+        then "transport"
+      else "credential" end) as $class
+    | [ (.mount_path // "?"), (.driver // "?"), $st, $class ] | @tsv
   ' 2>/dev/null || true)
   return 0
 }
@@ -124,7 +138,7 @@ _ol_storage_affected_tasks() {
 # ===== 跨轮记账（冷却 + 首次发现时间）=====
 # 落盘位置与 backend_dead.json / task_rotation.json 同目录（SYNC_STATE_DIR，
 # 随收尾镜像到 dropbox:self-hosted/openlist/sync_state_mirror 并有打包外置备份）。
-# 形态: {"<mount_path>":{"driver":..,"status":..,"first_seen":epoch,
+# 形态: {"<mount_path>":{"driver":..,"status":..,"class":..,"first_seen":epoch,
 #        "last_seen":epoch,"notified_at":epoch}}
 _ol_storage_alert_state_path() {
   echo "${SYNC_STATE_DIR:-onedrive:/logs/sync_state}/storage_alert.json"
@@ -155,6 +169,7 @@ _ol_storage_alert_save() {
         .[$r[0]] = {
           driver: ($r[1] // ""),
           status: ($r[2] // ""),
+          class: ($r[3] // ""),
           first_seen: ($prev[$r[0]].first_seen // $now),
           last_seen: $now,
           notified_at: (if $notified == 1 then $now
@@ -197,14 +212,30 @@ check_openlist_storage_health() {
   n_broken=$(printf '%s\n' "$_SS_BROKEN_TSV" | grep -c . || true)
   case "$n_broken" in ''|*[!0-9]*) n_broken=0 ;; esac
 
-  # --- 决定要不要发: ① 历史里没有的挂载（新坏）必发 ② 全是老面孔则按冷却 ---
-  local do_notify=0 mp drv st dis
+  # 分类计数: credential（真登录态失效）/ transport（403 等 HTTP 层拦截）
+  local n_cred=0 n_trans=0
+  while IFS=$'\t' read -r mp drv st cls; do
+    [ -n "$mp" ] || continue
+    case "$cls" in
+      transport) n_trans=$((n_trans + 1)) ;;
+      *)         n_cred=$((n_cred + 1)) ;;
+    esac
+  done <<< "$_SS_BROKEN_TSV"
+
+  # --- 决定要不要发: ① 历史里没有的挂载（新坏）必发 ② 故障类别升级必发 ③ 其余按冷却 ---
+  local do_notify=0 mp drv st cls prev_cls
   if [ -z "$_SA_STATE" ]; then
     do_notify=1
   else
-    while IFS=$'\t' read -r mp drv st dis; do
+    while IFS=$'\t' read -r mp drv st cls; do
       [ -n "$mp" ] || continue
       if ! printf '%s' "$_SA_STATE" | jq -e --arg k "$mp" 'has($k)' >/dev/null 2>&1; then
+        do_notify=1
+        break
+      fi
+      # transport → credential 升级（403 转真失效）必须立刻发，不能被冷却压住
+      prev_cls=$(printf '%s' "$_SA_STATE" | jq -r --arg k "$mp" '.[$k].class // ""' 2>/dev/null || echo "")
+      if [ "$cls" = "credential" ] && [ "$prev_cls" = "transport" ]; then
         do_notify=1
         break
       fi
@@ -220,16 +251,29 @@ check_openlist_storage_health() {
   fi
 
   if [ "$do_notify" -ne 1 ]; then
-    echo "ℹ️ 存储健康巡检: ${n_broken} 个存储仍失效（冷却 ${cooldown}s 内，不重复告警）: $(printf '%s' "$_SS_BROKEN_TSV" | cut -f1 | tr '\n' ' ')"
+    echo "ℹ️ 存储健康巡检: ${n_broken} 个存储仍异常（凭据 ${n_cred} · HTTP 拦截 ${n_trans}，冷却 ${cooldown}s 内不重复告警）: $(printf '%s' "$_SS_BROKEN_TSV" | cut -f1 | tr '\n' ' ')"
     _ol_storage_alert_save "$now" 0 || true
     return 0
   fi
 
   # ===== 构建告警（规范 · 告警通知: 对象机器值 + 结论裸文本 + 原始输出 <pre>）=====
   local msg=""
-  # 标题不带数（规范 · 标题与分隔线）：失效个数已在下方「结论」kv，细节下沉
-  tg_add_title msg "🚨 存储账号失效"
-  tg_add_kv msg "结论" "${n_broken} 个存储的登录态已失效（共 ${_SS_TOTAL} 个），涉及它们的同步对会被跳过"
+  local tier=""
+  if [ "$n_cred" -gt 0 ]; then
+    # 真登录态失效 → alert 档（@SaberFuckBot，需人工重登）
+    tier="alert"
+    tg_add_title msg "🚨 存储账号失效"
+    if [ "$n_trans" -gt 0 ]; then
+      tg_add_kv msg "结论" "${n_cred} 个存储登录态失效、${n_trans} 个存储 HTTP 拦截（非登录失效，共 ${_SS_TOTAL} 个）; 涉及同步对会被跳过"
+    else
+      tg_add_kv msg "结论" "${n_cred} 个存储的登录态已失效（共 ${_SS_TOTAL} 个），涉及它们的同步对会被跳过"
+    fi
+  else
+    # 仅 HTTP 层拦截 → 一般档（@FuckSaberBot），明确「不是登录失效、无需重登」
+    tier=""
+    tg_add_title msg "⚠️ 存储后端 HTTP 拦截（非登录失效）"
+    tg_add_kv msg "结论" "${n_trans} 个存储返回 HTTP 拦截（共 ${_SS_TOTAL} 个），多为 WAF/出口 IP 瞬时问题; 涉及同步对本轮跳过，下轮自动重试"
+  fi
 
   # 时间上下文: 首轮只给发现时刻; 跨轮在账的给"已持续多久"（取最早 first_seen）
   local first_seen fs_txt dur
@@ -251,15 +295,34 @@ check_openlist_storage_health() {
     tg_add_kv msg "首次发现" "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M（东八区）')"
   fi
 
-  # 对象清单: 挂载名与驱动都是机器返回值 → <code>
-  tg_add_section msg "🧾 失效存储 · ${n_broken}"
   local _e=""
-  while IFS=$'\t' read -r mp drv st dis; do
+  if [ "$n_cred" -gt 0 ]; then
+    tg_add_section msg "🧾 登录态失效存储 · ${n_cred}"
+    while IFS=$'\t' read -r mp drv st cls; do
+      [ -n "$mp" ] || continue
+      [ "$cls" = "credential" ] || continue
+      # 挂载名与驱动都是机器值 → 双机器值并列用 tg_add_entry_codes（都等宽）
+      tg_add_entry_codes _e "$mp" "$drv"
+    done <<< "$_SS_BROKEN_TSV"
+    tg_append msg "$(tree_fold "${_e%$'\n'}")"$'\n'
+  fi
+  if [ "$n_trans" -gt 0 ]; then
+    _e=""
+    tg_add_section msg "🌐 HTTP 拦截存储 · ${n_trans}"
+    while IFS=$'\t' read -r mp drv st cls; do
+      [ -n "$mp" ] || continue
+      [ "$cls" = "transport" ] || continue
+      tg_add_entry_codes _e "$mp" "$drv"
+    done <<< "$_SS_BROKEN_TSV"
+    tg_append msg "$(tree_fold "${_e%$'\n'}")"$'\n'
+  fi
+
+  # 原始错误全文（含 credential 与 transport 两类）
+  local raw=""
+  while IFS=$'\t' read -r mp drv st cls; do
     [ -n "$mp" ] || continue
-    # 挂载名与驱动都是机器值 → 双机器值并列用 tg_add_entry_codes（都等宽）
-    tg_add_entry_codes _e "$mp" "$drv"
+    raw+="${mp} (${drv}): ${st}"$'\n'
   done <<< "$_SS_BROKEN_TSV"
-  tg_append msg "$(tree_fold "${_e%$'\n'}")"$'\n'
 
   # 影响面: 哪几个同步对会因此被跳过（含 Crypt 派生，见 _ol_storage_affected_tasks）
   local affected
@@ -274,15 +337,15 @@ check_openlist_storage_health() {
     tg_append msg "$(tree_fold "${_t%$'\n'}")"$'\n'
   fi
 
-  # 下一步（规范 · 说人话）: 这些登录态到期后无法自动续期，只能人工重登
-  tg_add_note msg "这些存储的登录态到期后无法自动续期，需要在 OpenList 管理后台重新填写账号; 重登成功后同步会自动恢复，不需要改动本仓库的任何配置。"
+  # 下一步（规范 · 说人话）: 分类型给建议，403 不再误导成账号失效
+  if [ "$n_cred" -gt 0 ]; then
+    tg_add_note msg "登录态失效的存储无法自动续期，需要在 OpenList 管理后台重新填写账号; 重登成功后同步会自动恢复，不需要改动本仓库的任何配置。"
+  fi
+  if [ "$n_trans" -gt 0 ]; then
+    tg_add_note msg "HTTP 403 是请求被边缘 WAF 拦截（常见于出口 IP / User-Agent），并非登录态到期，无需重登; 本轮相关同步对跳过，下轮自动重试。连续多轮仍 403 时再排查 runner 出口 IP。"
+  fi
 
   # 原始输出放最后（规范 · 告警通知: <pre> 是正文最后一块，其后只跟收尾区）
-  local raw=""
-  while IFS=$'\t' read -r mp drv st dis; do
-    [ -n "$mp" ] || continue
-    raw+="${mp} (${drv}): ${st}"$'\n'
-  done <<< "$_SS_BROKEN_TSV"
   # 同一条通知里 🧾 只给「失效存储」分节，原始输出改用 📄（同一 emoji 不承担两种角色）
   tg_add_section msg "📄 原始错误"
   tg_add_pre msg "${raw%$'\n'}"
@@ -296,9 +359,9 @@ check_openlist_storage_health() {
     return 0
   fi
 
-  # alert 档: 需人工介入，与「源端大小异常减小」同级（@SaberFuckBot，无回落）
-  send_telegram_message "$msg" HTML alert
-  echo "🚨 存储健康巡检: ${n_broken} 个存储登录态失效，已发 Telegram 告警: $(printf '%s' "$_SS_BROKEN_TSV" | cut -f1 | tr '\n' ' ')"
+  # 凭据失效走 alert 档（@SaberFuckBot，需人工重登）; 纯 HTTP 拦截走一般档（@FuckSaberBot）
+  send_telegram_message "$msg" HTML "$tier"
+  echo "🚨 存储健康巡检: ${n_broken} 个存储异常（凭据 ${n_cred} · HTTP 拦截 ${n_trans}，tier=${tier:-normal}），已发 Telegram 告警: $(printf '%s' "$_SS_BROKEN_TSV" | cut -f1 | tr '\n' ' ')"
   _ol_storage_alert_save "$now" 1 || true
   return 0
 }

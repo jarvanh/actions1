@@ -9,7 +9,10 @@
 #
 # 判据（只认持久化的驱动健康度，不猜）:
 #   status=="work" → 健康 / =="" → 未初始化，跳过 / ="disabled" 或 disabled=true
-#   → 人工停用，跳过 / 其余 → 驱动 Init 失败 = 账号失效，告警
+#   → 人工停用，跳过 / 其余 → 驱动 Init 失败，按错误原文分类:
+#     credential（8005/1001/登录失败/无效令牌/token expired…）→ 真登录失效，alert 档
+#     transport（request failed with status:/HTTP 4xx/5xx/timeout…）→ WAF/出口 IP，一般档
+#     未知 → 保守归 credential
 #
 # 覆盖:
 #   T1  全健康 → 不发通知
@@ -27,6 +30,10 @@
 #   T12 告警 HTML 转义: 错误原文含 < > & ' 不会触发 Telegram 400
 #   T13 OPENLIST_STORAGE_ALERT=0 → 只打日志不发通知
 #   T14 恒返回 0（fire-and-forget，不阻断同步 step）
+#   T15 仅 HTTP 403 → 一般档（非登录失效、无需重登），不误报为账号失效
+#   T16 403 + 8005 混合 → 一条 alert，两类分节都列
+#   T17 transport→credential 升级 → 冷却期内也必发（不能被压住）
+#   T18 同类 403 冷却期内 → 不重发
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
@@ -114,6 +121,29 @@ mk_resp_single_broken() {
  {"mount_path":"/wopan176Crypt","driver":"Crypt","status":"work","disabled":false},
  {"mount_path":"/baidupan","driver":"BaiduPan","status":"rsp_code:8005 login failed","disabled":false},
  {"mount_path":"/baidupanCrypt","driver":"Crypt","status":"work","disabled":false}
+],"total":4}}
+EOF
+}
+
+# 仅 HTTP 层拦截（wopan 403 形态）: 两个 wopan 挂载 + 一个 Crypt 正常
+mk_resp_403_only() {
+  cat >"$WORK_DIR/resp.json" <<'EOF'
+{"code":200,"message":"success","data":{"content":[
+ {"mount_path":"/wopan175","driver":"WoPan","status":"initialize user data: request failed with status: 403 Forbidden","disabled":false},
+ {"mount_path":"/wopan176","driver":"WoPan","status":"initialize user data: request failed with status: 403 Forbidden","disabled":false},
+ {"mount_path":"/wopan176Crypt","driver":"Crypt","status":"work","disabled":false}
+],"total":3}}
+EOF
+}
+
+# 混合: 一个真失效（8005）+ 一个 HTTP 拦截（403）
+mk_resp_mixed() {
+  cat >"$WORK_DIR/resp.json" <<'EOF'
+{"code":200,"message":"success","data":{"content":[
+ {"mount_path":"/baidupan","driver":"BaiduPan","status":"rsp_code:8005 login failed","disabled":false},
+ {"mount_path":"/baidupanCrypt","driver":"Crypt","status":"work","disabled":false},
+ {"mount_path":"/wopan175","driver":"WoPan","status":"initialize user data: request failed with status: 403 Forbidden","disabled":false},
+ {"mount_path":"/wopan176Crypt","driver":"Crypt","status":"work","disabled":false}
 ],"total":4}}
 EOF
 }
@@ -300,6 +330,69 @@ chk "T14a 巡检失败也返回 0" "$?" "0"
 reset_state; mk_resp; use_case ok
 check_openlist_storage_health >/dev/null 2>&1
 chk "T14b 巡检成功返回 0" "$?" "0"
+
+# ================= T15 仅 403 → 一般档、非登录失效 =================
+reset_state; reset_notify; mk_resp_403_only; use_case ok
+check_openlist_storage_health >/dev/null 2>&1
+chk "T15a 仅 403 → 发送 1 条" "$(notify_count)" "1"
+ok_or "$(has_substr 'TIER=<none>' "$(notify_txt)" && echo yes)" "T15b 走一般档（@FuckSaberBot，不需人工重登）"
+ok_or "$(has_substr '非登录失效' "$(notify_txt)" && echo yes)" "T15c 标题/结论明确非登录失效"
+ok_or "$(has_substr '无需重登' "$(notify_txt)" && echo yes)" "T15d 明确无需重登"
+ok_or "$(! printf '%s' "$(notify_txt)" | grep -q '登录态已失效' && echo yes)" "T15e 不误报为登录态失效"
+ok_or "$(has_substr '🌐 HTTP 拦截存储' "$(notify_txt)" && echo yes)" "T15f HTTP 拦截分节列出"
+ok_or "$(has_substr '403 Forbidden' "$(notify_txt)" && echo yes)" "T15g 原始 403 错误保留"
+ok_or "$(jq -e '.["/wopan175"].class == "transport"' "$WORK_DIR/storage_alert.json" >/dev/null 2>&1 && echo yes)" "T15h 状态文件记录 class=transport"
+
+# ================= T16 混合 403 + 8005 → alert 档、两类分节 =================
+reset_state; reset_notify; mk_resp_mixed; use_case ok
+check_openlist_storage_health >/dev/null 2>&1
+chk "T16a 混合 → 发送 1 条" "$(notify_count)" "1"
+ok_or "$(has_substr 'TIER=alert' "$(notify_txt)" && echo yes)" "T16b 含真失效 → alert 档"
+ok_or "$(has_substr '🧾 登录态失效存储' "$(notify_txt)" && echo yes)" "T16c 凭据分节出现"
+ok_or "$(has_substr '🌐 HTTP 拦截存储' "$(notify_txt)" && echo yes)" "T16d HTTP 分节出现"
+ok_or "$(has_substr '/baidupan' "$(notify_txt)" && echo yes)" "T16e 真失效挂载列出"
+ok_or "$(has_substr '/wopan175' "$(notify_txt)" && echo yes)" "T16f 403 挂载列出"
+ok_or "$(has_substr '需要在 OpenList 管理后台重新填写账号' "$(notify_txt)" && echo yes)" "T16g 重登提示仍保留"
+
+# ================= T17 transport → credential 升级 → 冷却期内必发 =================
+reset_state; reset_notify; mk_resp_403_only
+NOW2=$(date +%s)
+python3 - "$WORK_DIR/storage_alert.json" "$NOW2" <<'PY'
+import json, sys
+p, now = sys.argv[1], int(sys.argv[2])
+d = {}
+for mp in ("/wopan175", "/wopan176"):
+    d[mp] = {"driver": "WoPan",
+             "status": "initialize user data: request failed with status: 403 Forbidden",
+             "class": "transport", "first_seen": now - 1800,
+             "last_seen": now, "notified_at": now}
+json.dump(d, open(p, "w"), indent=2)
+PY
+# 把响应改成真失效（同挂载，class 升级）
+mk_resp
+use_case ok
+check_openlist_storage_health >/dev/null 2>&1
+chk "T17a transport→credential 升级 → 冷却期内也发" "$(notify_count)" "1"
+ok_or "$(has_substr 'TIER=alert' "$(notify_txt)" && echo yes)" "T17b 升级后走 alert 档"
+
+# ================= T18 同类 403 冷却期内 → 不重发 =================
+reset_notify; mk_resp_403_only; use_case ok
+# 沿用 T15 建的状态（class=transport, notified_at=刚发过）
+reset_state; mk_resp_403_only
+python3 - "$WORK_DIR/storage_alert.json" "$NOW2" <<'PY'
+import json, sys
+p, now = sys.argv[1], int(sys.argv[2])
+d = {}
+for mp in ("/wopan175", "/wopan176"):
+    d[mp] = {"driver": "WoPan",
+             "status": "initialize user data: request failed with status: 403 Forbidden",
+             "class": "transport", "first_seen": now - 1800,
+             "last_seen": now, "notified_at": now}
+json.dump(d, open(p, "w"), indent=2)
+PY
+use_case ok
+check_openlist_storage_health >/dev/null 2>&1
+chk "T18a 同类 403 冷却期内 → 不重发" "$(notify_count)" "0"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
