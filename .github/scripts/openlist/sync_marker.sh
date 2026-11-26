@@ -1127,7 +1127,18 @@ check_sync_marker() {
     local _nk_hint="" _nk_sig
     _nk_sig=$(echo "$marker_json" | jq -r '.last_refusal.sig // ""' 2>/dev/null || true)
     if [ -n "$_nk_sig" ]; then
-      _nk_hint="；上次拒写缺口 ${_nk_sig}（目标端/源端文件数）"
+      # WAF/列举未就绪时目标端会被读成 0（实测 run 期间 wopan176Crypt/1/1024j/套图
+      #   写下 `0/23818`，其实是「成功的空」而非真缺 23818 个）。若照抄签名，读日志的人会
+      #   把它当成真实缺口，进而怀疑数据全丢 —— 这正是 WAF 误诊的温床。
+      local _nk_dest _nk_src
+      _nk_dest=$(echo "$marker_json" | jq -r '.last_refusal.dest_count // ""' 2>/dev/null || true)
+      _nk_src=$(echo "$marker_json" | jq -r '.last_refusal.source_count // ""' 2>/dev/null || true)
+      if [[ "$_nk_dest" =~ ^[0-9]+$ ]] && [[ "$_nk_src" =~ ^[0-9]+$ ]] \
+         && [ "$_nk_dest" -eq 0 ] && [ "$_nk_src" -gt 0 ]; then
+        _nk_hint="；上次目标端读空（${_nk_sig}）—— 多为 WAF/列举未就绪的『成功的空』，非真实缺口，勿据此判数据丢失"
+      else
+        _nk_hint="；上次拒写缺口 ${_nk_sig}（目标端/源端文件数）"
+      fi
     elif [ -n "$(echo "$marker_json" | jq -r '.skip_basis_invalidated_at // ""' 2>/dev/null || true)" ]; then
       _nk_hint="；跳过依据已作废（$(echo "$marker_json" | jq -r '.skip_basis_invalidated_reason // "缺口未补齐"' 2>/dev/null || true)）"
     elif [ "${MARKER_FIXED_COUNT:-0}" -gt 0 ] 2>/dev/null; then

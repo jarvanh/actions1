@@ -36,5 +36,15 @@ fi
 # D: 1d-skip 判定本身未被改坏
 grep -q '检查是否在跳过时间窗口内' "$SM" && ok "D1 1d-skip 判定仍在" || bad "D1 1d-skip 判定丢失"
 
+# ===== F. dest=0 必须与真实缺口区分（2026-11-26 WAF 实测）=====
+# 背景: WAF 拦截期间驱动返回「成功的空」，marker 写下 last_refusal 0/23818。
+#   若照抄签名，读日志的人会以为真缺 23818 个文件、甚至怀疑数据全丢。
+grep -q "目标端读空" "$SM" && ok "F1 有「目标端读空」专用文案" || bad "F1 缺读空文案"
+grep -q "成功的空" "$SM" && ok "F2 点明「成功的空」这一形态" || bad "F2 未点明形态"
+grep -q "_nk_dest.*-eq 0" "$SM" && ok "F3 判据用 dest_count==0" || bad "F3 判据缺失"
+grep -q "_nk_src.*-gt 0" "$SM" && ok "F4 同时要求 source_count>0（双空不算）" || bad "F4 缺 source 条件"
+grep -q "勿据此判数据丢失" "$SM" && ok "F5 明确警告不要据此判数据丢失" || bad "F5 缺警告"
+grep -q "上次拒写缺口" "$SM" && ok "F6 非读空场景仍报真实缺口" || bad "F6 真实缺口分支丢失"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
