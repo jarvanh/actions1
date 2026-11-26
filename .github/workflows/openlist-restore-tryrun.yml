@@ -167,6 +167,11 @@ jobs:
           fi
 
       - name: 运行一键还原 try run（只读预演）
+        # 主步骤独立超时（2026-11-26 加）: job 级 timeout-minutes=300 是兜底，
+        #   但主步骤若卡死会吃满整个预算、且要 5 小时后才有失败结论。
+        #   实测全量预演（482 marker / 1949 条目）约 40min 量级，给 120min 足够，
+        #   超出即快速失败、便于及时发现异常（只读，失败无副作用）。
+        timeout-minutes: 120
         env:
           # inputs 一律经 env 传入（README「注入面」: 不做 ${{ }} 直接内插 bash）
           TRYRUN_TASK_INPUT: ${{ inputs.task }}
