@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       domain:
-        description: "只跑指定域（留空 = 全部：openlist / proxy-speedtest / notify）"
+        description: "只跑指定域（留空 = 全部：openlist / proxy-speedtest / notify / static）"
         required: false
         type: string
         default: ""
@@ -30,6 +30,70 @@ permissions:
   contents: read
 
 jobs:
+  static:
+    # 全库静态检查（与业务域解耦）：bash -n + shellcheck(error) + py_compile + workflow YAML。
+    # 为什么单列一个 job：`openlist` job 的 shell 检查只覆盖 .github/scripts，且没有 shellcheck；
+    # 而 shellcheck 的 SC2068/SC2218 这类「引用错/定义顺序」问题 bash -n 抓不到。
+    # 基线（2026-11-26）：164 个 .sh 全绿；新增 error 级发现即失败，逼着当场修而不是攒着。
+    if: ${{ github.event.inputs.domain == '' || github.event.inputs.domain == 'static' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: bash -n（全部 shell）
+        run: |
+          set -u
+          fail=0; n=0
+          while IFS= read -r f; do
+            n=$((n + 1))
+            bash -n "$f" || { echo "❌ bash -n 失败: $f"; fail=1; }
+          done < <(find .github/scripts skills -name '*.sh' -type f | sort)
+          echo "bash -n 通过 $n 个脚本"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: shellcheck（severity=error）
+        # 只卡 error 级：warning/info 在 164 个脚本上噪声太大，先保住「会真出错」的门槛。
+        # 若新增 error 属误报（如 $(...) 里调用 source 进来的助手），就地加
+        # `# shellcheck disable=SCxxxx` 并写明为什么，不要整体降级检查强度。
+        run: |
+          set -u
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            echo "::error::runner 上没有 shellcheck（ubuntu-latest 通常自带），检查未执行"
+            exit 1
+          fi
+          mapfile -t files < <(find .github/scripts skills -name '*.sh' -type f | sort)
+          shellcheck --severity=error --format=gcc "${files[@]}"
+          echo "shellcheck 通过 ${#files[@]} 个脚本"
+      - name: py_compile（全部 Python）
+        run: |
+          set -u
+          fail=0; n=0
+          while IFS= read -r f; do
+            n=$((n + 1))
+            python3 -m py_compile "$f" || { echo "❌ py_compile 失败: $f"; fail=1; }
+          done < <(find .github/scripts skills -name '*.py' -type f | sort)
+          echo "py_compile 通过 $n 个脚本"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: workflow YAML 解析
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              try:
+                  yaml.safe_load(open(f, encoding='utf-8'))
+              except Exception as e:
+                  print('❌ YAML 解析失败: ' + f + ': ' + str(e)); bad = 1
+          print('workflow YAML 全部通过' if not bad else 'workflow YAML 有失败')
+          sys.exit(bad)
+          PY
+
   openlist:
     if: ${{ github.event.inputs.domain == '' || github.event.inputs.domain == 'openlist' }}
     runs-on: ubuntu-latest
@@ -217,14 +281,25 @@ jobs:
           echo "✅ proxy-speedtest 回归套件全绿（$pass/$pass）"
 
   notify:
-    # 通知域：版式渲染自检 + 审计清单机械校验（清单项数以 list_notify.sh --check 输出为准）。
-    # 无外部依赖（只用 bash/python3 + 仓库内脚本），因此不需要 setup / 凭据。
+    # 通知域：版式渲染自检 + 审计清单机械校验 + 发送层回归测试。
+    # 依赖 PyYAML：list_notify 第 8 项按「发通知的 step」逐个校验继承链，需要解析 workflow YAML；
+    # 不装会降级成文件级检查并在项名标注「文件级降级」（宁可显示变弱，也不静默全绿）。
     if: ${{ github.event.inputs.domain == '' || github.event.inputs.domain == 'notify' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pyyaml
+      - name: 发送层回归测试（stub curl/python3）
+        # 覆盖 2026-11-26 审查修掉的三个静默故障：escape_html 吞 -n/-e/-E、
+        # 429 带空格 JSON 不重试、python3 缺失时分片静默丢弃；另含 400 不重发与收尾区降级。
+        run: bash .github/scripts/telegram/tests/test_send_layer.sh
       - name: 渲染预览（版式构件自检）
         # 转义/空行/条目粘连/子行对齐都在这里验；失败即版式构件被改坏
         run: bash skills/telegram-notify-audit/scripts/render_preview.sh

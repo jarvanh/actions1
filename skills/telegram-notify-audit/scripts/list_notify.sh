@@ -502,13 +502,56 @@ def check():
                        f"（tg_add_footer/Get-TgFooter/tg_footer_line/🕒）")
     add(7, "收尾区覆盖（有标题必有收尾区）", bad)
 
-    # 8 TG_RUN_URL 接线
+    # 8 TG_RUN_URL 接线 —— 按「发通知的 step」逐个判，而不是全文件出现即通过。
+    #    旧实现是文件级 `"TG_RUN_URL" not in t`：同一 workflow 里只要任一 step 注入过，
+    #    其余漏注入的 step 也会判 ✅（2026-11-26 用伪造副本复现的假阴性，openclaw.yml 32 处
+    #    注入掩盖了单步漏注入）。继承链取 workflow.env → job.env → step.env；同一 job 内
+    #    前序 step 通过 $GITHUB_ENV 写入 TG_RUN_URL 也算接线（run 级传播）。
     bad = []
-    for p in sorted(set(f for f in all_files if f.endswith((".yml", ".yaml")))):
-        t = open(p, encoding="utf-8", errors="replace").read()
-        if ANY_SEND.search(t) and "TG_RUN_URL" not in t:
-            bad.append(f"{p}: 有发送点但未注入 TG_RUN_URL")
-    add(8, "TG_RUN_URL 接线", bad)
+    try:
+        import yaml as _yaml
+    except Exception:
+        _yaml = None
+    if _yaml is None:
+        # 没有 PyYAML 就退回文件级，但项名明确标「降级」——宁可让人看见检查变弱，
+        # 也不要静默给出全绿（tests.yml 的 notify job 已 pip install pyyaml）。
+        for p in sorted(set(f for f in all_files if f.endswith((".yml", ".yaml")))):
+            t = open(p, encoding="utf-8", errors="replace").read()
+            if ANY_SEND.search(t) and "TG_RUN_URL" not in t:
+                bad.append(f"{p}: 有发送点但未注入 TG_RUN_URL")
+        add(8, "TG_RUN_URL 接线（文件级降级：未安装 PyYAML）", bad)
+    else:
+        for p in sorted(set(f for f in all_files if f.endswith((".yml", ".yaml")))):
+            try:
+                doc = _yaml.safe_load(open(p, encoding="utf-8", errors="replace"))
+            except Exception as e:
+                bad.append(f"{p}: YAML 解析失败，无法校验接线: {e}")
+                continue
+            if not isinstance(doc, dict):
+                continue
+            wf_env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+            for jid, job in (doc.get("jobs") or {}).items():
+                if not isinstance(job, dict):
+                    continue
+                job_env = job.get("env") if isinstance(job.get("env"), dict) else {}
+                gh_env_seen = False
+                for idx, st in enumerate(job.get("steps") or []):
+                    if not isinstance(st, dict):
+                        continue
+                    script = str(st.get("run") or "")
+                    code_only = "\n".join(l for l in script.split("\n")
+                                            if not l.lstrip().startswith("#"))
+                    if "TG_RUN_URL" in code_only and "GITHUB_ENV" in code_only:
+                        gh_env_seen = True
+                    if not ANY_SEND.search(code_only):
+                        continue
+                    step_env = st.get("env") if isinstance(st.get("env"), dict) else {}
+                    keys = set(wf_env) | set(job_env) | set(step_env)
+                    if "TG_RUN_URL" in keys or gh_env_seen:
+                        continue
+                    bad.append(f"{p}: job={jid} step#{idx + 1}({st.get('name', '<未命名>')}): "
+                               f"有发送调用但继承链里没有 TG_RUN_URL")
+        add(8, "TG_RUN_URL 接线（step 级）", bad)
 
     # 9 树形前缀必须包 <code>
     bad = []
