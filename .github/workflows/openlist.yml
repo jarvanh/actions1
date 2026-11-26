@@ -565,8 +565,10 @@ jobs:
           mkdir -p /tmp/telegram
           cp "$GITHUB_WORKSPACE/.github/scripts/telegram/tg_notify.sh" /tmp/telegram/
           echo "函数库加载完成"
-          # 环境就绪标记: 供「收尾与清理」「自续触发」两个 always() step 判定。
-          # 二者在前置 step 失败时仍会执行，而那时 /tmp/load_all.sh 根本不存在 ——
+          # 环境就绪标记: 供三个 always() step 判定 ——「收尾与清理」「自续触发」
+          #   以及「Notify: 环境未就绪告警」（2026-11-26 加；三者都在前置失败时仍会执行，
+          #   而那时 OL_ENV_READY 为空，正是「本轮没起来」的判据）。
+          # 三者在前置 step 失败时仍会执行，而那时 /tmp/load_all.sh 根本不存在 ——
           # run 34685067684 就是 rclone-install 挂掉后，收尾 source 不到文件再补一个
           # exit 1，把真实原因盖掉；自续触发还照常 dispatch 了下一轮，形成空转接力。
           echo "OL_ENV_READY=1" >> "$GITHUB_ENV"
