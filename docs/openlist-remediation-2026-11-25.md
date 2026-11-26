@@ -54,28 +54,30 @@ bash .github/scripts/openlist/verify_new_code_round.sh <run_id>
 
 上面五节是 2026-11-25 交付时的快照（当时 24 项改动）。此后又加了 16 项，并有三个**必须知道**的新结论。
 
-### 6.1 当前阻塞：两个 WoPan 存储账号 403（需要人工处理，代码改不了）
+### 6.1 曾经的阻塞：WoPan 403（已自愈，**不是**账号掉线 —— 2026-11-26 更正）
 
-`storage_alert.json` 当前清单:
+00:32Z `storage_alert.json` 记录两个挂载 403，我曾判定「账号登录态失效、必须人工重登」并据此把目标
+标记为 blocked。**这个诊断是错的，已由用户实测推翻。**
 
-```
-/wopan175: initialize user data: request failed with status: 403 Forbidden
-/wopan176: initialize user data: request failed with status: 403 Forbidden
-```
+**用户实测（直连复刻驱动同协议 dispatcher）**:
+- `/wopan175` token → `FamilyUserCurrentEncode` 返回 `0000`，解析账号 17575020502（家 id 86044881）
+- `/wopan176` token → 同样 `0000`，账号 17675740502（家 id 80929434）
+- 两个账号 `AppQueryUser` 均 `0000` 成功
+- 线上: `/wopan175` `/wopan176` `/wopan176Crypt` 全部 `status=work`；`/wopan175` 列举 `total=7361`
 
-`first_seen = last_seen = notified_at = 2026-11-26T00:32:28Z`（同一次巡检发现，Telegram 已发）。
-按 `openlist_storage_check.sh` 的「已恢复条目自动销账」语义，清单里剩下的就是**当前仍失效**的。
+⇒ token 有效、账号在线，403 来自 **WoPan 边缘 WAF 瞬时拦截**，短时自愈，**不需要重新登录**。
+（重登反而有害: wopan 重抓登录跨端互踢，可能把健康挂载踢下线。）
 
-**影响面**: 16 个注册同步对里 **14 个（87.5%）** 的目标端在这两个账号上（8 个 wopan176Crypt + 6 个 wopan175），
-只有 2 个 `baidupanCrypt` + 1 个 `aliyundriveCrypt` 健康。实测对比: 健康轮写 61 个 marker，403 期间同长度只写 14 个。
+**自愈的独立佐证**: 事后 `storage_alert.json` 变回 `{}`（巡检自动销账），`wopan175` 的 `last_success`
+推进到 `2026-11-26T04:29Z`。
 
-**解法**: 在 OpenList 里重新登录/刷新这两个账号。代码侧已正确拦截（`_check_openlist_backend_connectivity`
-两層校验 + Crypt 底层 + 写探针；`_openlist_api_health_check` 对 `request failed` 返回 1 ⇒ 跳过该对），
-所以死后端**不会白传大文件**；但它是弱证据，按设计**不写 `backend_dead.json`**（历史上弱信号曾把健康
-`wopan175` 判死、6 个对整体被跳过），代价是每轮重探。**不要**为了让「看起来完成」而放宽这个保守设计。
+**影响面（事实部分保留）**: 16 个对里 14 个（87.5%）目标端在这两个后端，所以拦截期间一轮 2h20m
+只写 14 个 marker（健康轮 61 个）。代码侧无需改动: `_check_openlist_backend_connectivity` + 
+`_openlist_api_health_check` 会跳过该对（`request failed` 命中「驱动异常」分支返回 1），**不白传大文件**；
+弱证据不写 `backend_dead.json` 是**防误判的保守设计**（历史上弱信号曾把健康 wopan175 判死），不要放宽。
 
-运维提示（代码内已有）: wopan 令牌有效期 方法一 7 天 / 方法二 2 个月，到期必须人工重抓；
-重抓时跨端互踢 —— 方法一别登网页版、方法二别登手机 APP，以免把其他健康挂载踢下线。
+**教训**: `storage_alert.json` 的 403 只说明「当时那次探测被拒」，不等于账号掉线。先按驱动同协议
+复验 token，或等一轮看是否自动销账，再决定是否要人介入。**不要用单项证据就把目标判成 blocked。**
 
 ### 6.2 `wopan176Crypt` 的停滞曾被误判为「调度饥饿」
 

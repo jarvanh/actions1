@@ -645,55 +645,39 @@ trend 里同源字段为 `pairs_total:16 / pairs_synced:1`。拆开看:
 要么让对更少（按子树拆细、让小的先完成），要么让每对拿到更长的不间断时间。
 ⚠️ 但两者都会改变轮转公平性 —— 动之前必须实测，不要凭直觉调 `OPENLIST_PAIR_PARALLEL`。
 
-🔴 **`wopan176` 存储账号 403 失效 —— 「同步完不成」的真实根因之一（2026-11-26 00:32Z 发现）**:
-上一版这里写的是「深层子树饥饿 / 调度问题」，**那是误判，已由 storage_alert.json 推翻**:
+🔴 **`wopan175` / `wopan176` 的 403 是 WoPan 边缘 WAF 瞬时拦截，不是账号掉线（2026-11-26 更正）**:
 
-```
-/wopan176: {"driver":"WoPan","status":"initialize user data: request failed with status: 403 Forbidden",
-            "first_seen":1795653148,"last_seen":1795653148,"notified_at":1795653148}
-```
+**一段被推翻的诊断，记下来防重犯**: 00:32Z `storage_alert.json` 记录两个挂载
+`initialize user data: request failed with status: 403 Forbidden`，我曾据此判定「账号登录态失效、
+必须人工重新登录」，并因此把目标标记为 blocked。**这个结论是错的。**
 
-00:32Z 首次发现并已发告警。同一源端 `onedrive:1` 的三个目标分支状态对比，决定性地区分了
-「账号失效」和「调度慢」:
+**用户实测（直连复刻驱动同协议 dispatcher）**:
+- `/wopan175` token → `FamilyUserCurrentEncode` 返回 `0000`，解析账号 17575020502（家 id 86044881）
+- `/wopan176` token → 同样 `0000`，账号 17675740502（家 id 80929434）
+- 两个账号 `AppQueryUser` 均 `0000` 成功
+- 线上实例当时已恢复: `/wopan175` `/wopan176` `/wopan176Crypt` 全部 `status=work`，
+  `/wopan175` 列举 `total=7361`
 
-| 目标端分支 | marker 数 | 最新 last_success | 解释 |
-|---|---|---|---|
-| `openlist:baidupanCrypt/1` | **155** | **2026-11-26T02:08Z**（活跃）| 账号正常 |
-| `openlist:wopan175/1` | 19 | 2026-11-25T15:48Z | 正常但轮转慢 |
-| `openlist:wopan176Crypt/1` | 49 | 2026-11-25T01:22Z（停滞 33h）| **账号 403，无法写入** |
+⇒ token 有效、账号在线，403 来自 **WoPan 边缘 WAF 的瞬时拦截**，会自愈，**不需要重新登录**。
+（重登反而有害: wopan 重抓登录会跨端互踢，可能把健康挂载踢下线。）
 
-⇒ 同一个源端、同一套调度，只有走 `wopan176` 的分支停滞 ⇒ 不是调度算法问题。
-那个缺 14904 文件的 `wopan176Crypt/1/1024j/视频` 之所以补不齐，是因为**整个后端账号 403**，
-不是「试了 2 次都失败」也不是「轮不到」。
+**自愈的独立佐证（本会话自行核对）**: 之后 `storage_alert.json` 已变回 `{}`（巡检自动销账，
+说明失效条目消失），`wopan175` 的 `last_success` 已推进到 `2026-11-26T04:29Z`。
+（`wopan176Crypt` 当时仍停在 11-25 09:23Z，但那是轮转尚未服务到，不是账号问题。）
 
-**怎么处理**: 代码改不了 403 —— 必须在 OpenList 里重新登录/刷新 `/wopan176` 存储账号。
-恢复后下一轮自然会把这批缺口补上（别的后端分支已证明同步链路本身是好的）。
-⚠️ 这也再次印证「存储账号失效巡检」这个 step 的价值: 它把这个 403 持久化进
-   `storage_alert.json` 并发了 Telegram，否则「33 小时没成功」会被误读成调度问题。
+**影响面与代码侧（事实部分保留）**: 16 个注册同步对里 14 个（87.5%）目标端在这两个后端，
+所以 WAF 拦截期间本轮 2h20m 只写 14 个 marker（健康轮 61 个）。代码侧无需改动:
+`_check_openlist_backend_connectivity`（`openlist_driver.sh:351`）做两层校验 + Crypt 底层 +
+写探针，`_openlist_api_health_check` 对 `request failed` 返回 1 ⇒ 该对跳过本轮
+（`sync_engine.sh:397`、`task_engine.sh:3035` 已接入），**不白传大文件**；恢复后自动继续。
+该判定是弱证据，按 `_backend_dead_mark` 设计不写 `backend_dead.json`（防历史上
+「弱信号把健康 wopan175 判死、6 个对整体被跳过」的误判重演），代价是每轮重探但不浪费带宽。
 
-⚠️ **更正（2026-11-26 02:28Z 二次核对）**: 失效的是**两个** WoPan 账号，不是只有 `/wopan176`。
-`storage_alert.json` 当前清单同时含 `/wopan175` 与 `/wopan176`，两者 `first_seen = last_seen = notified_at`
-同为 `2026-11-26T00:32Z`（同一次巡检发现）。按 `openlist_storage_check.sh` 的实现「已恢复的条目自然
-消失（自动销账）」，清单里剩下的就是**当前仍失效**的。
-四个后端的最新 `last_success` 佐证: `baidupanCrypt` 今天 02:08（健康）/ `aliyundriveCrypt` 昨天 08:49
-（无告警）/ `wopan175` 昨天 17:24 / `wopan176Crypt` 昨天 09:23 —— 两个 WoPan 都停在 403 之前。
-⇒ 需要处理的是 `/wopan175` **和** `/wopan176` 两个账号的登录态，不是一个。
-
-📌 **影响面量化与代码侧现状（2026-11-26 02:50Z）**:
-16 个注册同步对里，**14 个（87.5%）的目标端在 `wopan176Crypt` / `wopan175`**，即两个 403 账号；
-只有 2 个 `baidupanCrypt` + 1 个 `aliyundriveCrypt` 落在健康后端。这就解释了为什么 403 之后
-本轮 2h20m 只写出 **14 个 marker**（上一个健康轮 61 个）——不是同步逻辑坏了，是
-**大部分同步对的目标后端登不进去**。
-
-代码侧**已经正确拦截**，不是待修缺陷: `_check_openlist_backend_connectivity`
-（`openlist_driver.sh:351`）做两层校验 + Crypt 底层校验 + 写探针；其中
-`_openlist_api_health_check` 对 `request failed` / 驱动 / 存储类消息返回 1 ⇒ 该对跳过本轮
-（`sync_engine.sh:397`、`task_engine.sh:3035` 均已接入）。所以死后端**不会**白传大文件。
-
-⚠️ 但它是**弱证据**，按 `_backend_dead_mark` 的设计**不写 `backend_dead.json`**
-（实测该文件不存在）——主人历史上有过「弱信号把健康 wopan175 判死、6 个对整体被跳过」的误判，
-所以刻意不跨轮持久化。**代价**: 每轮都要重新探测、重新跳过，占轮转槽位但不浪费带宽。
-⇒ 结论: 代码无需改动；**唯一的解法仍是人工刷新两个账号登录态**。
+**教训（最重要）**: `storage_alert.json` 里的 403 **只说明「当时那次探测被拒」，不等于「账号掉线」**。
+下结论前要区分三类: ① 凭据真失效（同协议 token 调用也失败 / 持续多天不恢复）；
+② WAF 瞬时拦截（token 调用正常、短时自愈）；③ 路径特异性拒写（挂载根可写、个别目录不可写）。
+**不要用 `storage_alert` 单项证据就把目标判成 blocked** —— 先按驱动同协议复验 token，
+或等一轮看是否自动销账。本次就因为跳过这一步，错误地要求用户重登、并误判了 10 轮。
 
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
