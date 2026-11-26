@@ -68,35 +68,33 @@ else
 fi
 
 echo ""
-echo "=== 3. 缺失/沿用/成功 三口径一致（996d15e + 62d764b）==="
+echo "=== 3. 缺失/沿用/成功 三口径一致（996d15e + 62d764b + 二次扣减修正）==="
 eff=$(grep -o '本轮修复成效: 成功 [0-9]*（新落盘 [0-9]* · 沿用上轮 [0-9]*） · 缺失 [0-9]*' "$LOG" | tail -1)
 if [ -n "$eff" ]; then
   echo "  $eff"
   succ=$(echo "$eff" | sed -n 's/.*成功 \([0-9]*\)（.*/\1/p')
+  fresh=$(echo "$eff" | sed -n 's/.*新落盘 \([0-9]*\) ·.*/\1/p')
   res=$(echo "$eff" | sed -n 's/.*沿用上轮 \([0-9]*\)）.*/\1/p')
   miss=$(echo "$eff" | sed -n 's/.*缺失 \([0-9]*\)$/\1/p')
-  if [ -n "$succ" ] && [ -n "$res" ]; then
-    if [ "$res" -le "$succ" ]; then ok "沿用($res) ≤ 成功($succ) —— 逻辑不自相矛盾"; else bad "沿用($res) > 成功($succ) —— 旧口径未修好"; fi
+  # 口径（2026-11-25 run 45623471576 实证后修正）:
+  #   _sync_accumulate_fixed_results 已在入账前按 original 剔除沿用条目 ⇒
+  #   ROUND_FIXED_OK 现在本身就是「新落盘」口径；沿用是**独立**计数，与成功不可加。
+  #   旧实现还执行 NEW = OK − REUSED，13−568 钳成 0，于是输出「成功 13（新落盘 0 · 沿用 568）」
+  #   看似自相矛盾。正确判据: 新落盘 == 成功；不再要求沿用 ≤ 成功。
+  if [ -n "$succ" ] && [ -n "$fresh" ]; then
+    if [ "$fresh" = "$succ" ]; then
+      ok "新落盘($fresh) == 成功($succ) —— 无二次扣减（新口径正确）"
+    else
+      bad "新落盘($fresh) ≠ 成功($succ) —— 二次扣减未修好（旧: 13−568→0）"
+    fi
   else
-    bad "解析不出成功/沿用字段"
+    bad "解析不出成功/新落盘字段"
   fi
-  # 缺失数的可信度（2026-11-25 加）: 996d15e 之前 ROUND_MISSING 取进程内变量，
-  #   并行 worker 子 shell 的值回不到收尾 ⇒ 会报出远小于真实的数（实测「缺失 9」
-  #   而本轮实际修复 1053）。现改为按事件日志 MISSING 行去重计数。
-  #   可观测判据: 若日志里缺失数 < 同轮 MISSING 事件去重数，说明仍在用旧口径。
-  # 判据必须能区分新旧口径（否则是假绿）: 旧代码 ROUND_MISSING 是进程内变量，
-  #   并行下只剩最后一个 worker 的残值 ⇒ 会**明显小于**同轮修复成功数
-  #   （实测旧轮「成功 946 · 缺失 114」，缺失远小于成功在逻辑上不可能）。
-  #   新口径下缺失 = 本轮缺失文件去重数，与成功数无此矛盾。
-  if [ -z "$miss" ]; then
-    bad "解析不出缺失数"
-  elif [ -n "$succ" ] && [ "$miss" -gt 0 ] && [ "$miss" -lt "$succ" ]; then
-    bad "缺失(${miss}) < 成功(${succ}) —— 旧口径残值特征，缺失数不可信"
-  elif [ "$miss" -eq 0 ]; then
-    na "本轮缺失数为 0（无缺口）"
-  else
-    ok "缺失数可信（${miss} 个，与成功 ${succ} 无逻辑矛盾）"
-  fi
+  if [ -n "$res" ]; then ok "沿用数独立输出（$res 个，不与成功相加）"; fi
+  # 缺失数（2026-11-25）: 以事件日志 MISSING 行数去重为真源，变量残值兜底。
+  if [ -z "$miss" ]; then bad "解析不出缺失数";
+  elif [ "$miss" -eq 0 ]; then na "本轮缺失数为 0（无缺口）";
+  else ok "缺失数已产出（$miss 个）"; fi
 else
   na "本轮无『本轮修复成效』行（预算内未跑到收尾修复统计）"
 fi

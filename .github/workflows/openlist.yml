@@ -917,8 +917,12 @@ jobs:
           #   fix_list = 新落盘 ∪ 沿用 的口径下逻辑上不可能；相减为负被钳成 0，
           #   于是「新落盘 0」恒成立、真实产出（同轮 `✅ 修复成功` 8 行）被吞掉。
           #   改为按文件名（第二列）去重后再减。
-          ROUND_FIXED_NEW=$(( ROUND_FIXED_OK - ROUND_REUSED ))
-          [ "$ROUND_FIXED_NEW" -lt 0 ] && ROUND_FIXED_NEW=0
+          # ⚠️ 口径变更后不得再相减（2026-11-25，run 45623471576 实证）:
+          #   _sync_accumulate_fixed_results 已在入账前**按 original 剔除沿用条目**，
+          #   所以 ROUND_FIXED_OK 现在本身就是「新落盘」口径；再减一次 ROUND_REUSED
+          #   会得到 13−568 → 钳成 0，并让「成功 13（沿用 568）」看起来自相矛盾
+          #   （沿用 568 > 成功 13）。直接取 ROUND_FIXED_OK 即新落盘数。
+          ROUND_FIXED_NEW=$ROUND_FIXED_OK
           # 缺失数同口径换真源（2026-11-25，run 45473411880 实证「缺失 9」vs 同轮
           # 修复 1053）: SYNC_MISSING_TOTAL_RUN 是进程内累计，并行 worker 子 shell 的
           #   值回不到收尾 ⇒ 以事件日志 MISSING 行数（按文件名去重）为准，变量值兜底。

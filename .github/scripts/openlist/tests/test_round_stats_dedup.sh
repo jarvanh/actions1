@@ -25,8 +25,14 @@ grep -q "cut -d'|' -f2 | sort -u" "$WF" \
 # T3: 只查**代码行**（注释里保留旧写法作为对照，不算违规）
 grep -vE '^\s*#' "$WF" | grep -q "grep -c '\^REUSED|'" \
   && bad "T3 代码里仍存在未去重的 grep -c REUSED" || ok "T3 代码中未去重的计数已移除（注释对照不算）"
-grep -q 'ROUND_FIXED_NEW=$(( ROUND_FIXED_OK - ROUND_REUSED ))' "$WF" \
-  && ok "T4 新落盘 = 成功 - 沿用（同口径相减）" || bad "T4 新落盘公式缺失"
+# T4（2026-11-25 改口径）: 旧断言锁的是「新落盘 = 成功 − 沿用」，但 _sync_accumulate_fixed_results
+#   已在入账前按 original 剔除沿用条目 ⇒ ROUND_FIXED_OK 本身就是新落盘口径，再相减会
+#   得到 13−568 → 钳成 0（run 45623471576 实证「成功 13（新落盘 0 · 沿用 568）」自相矛盾）。
+#   新不变量: 新落盘直接取 ROUND_FIXED_OK；且**不得**再出现二次扣减。
+grep -q 'ROUND_FIXED_NEW=$ROUND_FIXED_OK' "$WF" \
+  && ok "T4 新落盘 = ROUND_FIXED_OK（不再二次扣减）" || bad "T4 新落盘口径缺失"
+grep -vE '^\s*#' "$WF" | grep -q 'ROUND_FIXED_OK - ROUND_REUSED' \
+  && bad "T4b 代码里仍有二次扣减（成功−沿用）" || ok "T4b 二次扣减已移除（注释对照不算）"
 
 # T5: 行为——去重后沿用数不得大于成功数（构造 3 文件、其中 2 个重复记 REUSED）
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
