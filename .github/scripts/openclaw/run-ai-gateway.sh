@@ -619,6 +619,50 @@ start_cliproxyapi() {
     eceasy/cli-proxy-api:latest || return 1
 }
 
+
+# ── 2026-11-26：token 估算器热补丁（防事件循环冻结）──
+# 镜像 3.8.54 估算器对整个请求体 JSON 做 CJK 正则全量扫描；
+# SSE transform 对每个 chunk 在同一对象上重跑。大上下文请求曾把
+# 事件循环冻 5s~265s（11-25 热补丁在 11-26 容器重建时丢失）。
+# 重放幂等：已补丁则跳过；上游重构导致形状不符则安全跳过，不阻断部署。
+
+_est_patch_script="${GITHUB_WORKSPACE:-}/.github/scripts/openclaw/patch_omniroute_estimator.py"
+patch_omniroute_estimator() {
+  local c=omniroute f b tmp changed=0
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+    echo "[estpatch] omniroute 容器未运行，跳过"
+    return 0
+  fi
+  if [ ! -f "$_est_patch_script" ]; then
+    echo "[estpatch] 补丁器缺失，跳过（卡顿风险回归）"
+    return 0
+  fi
+  tmp=$(mktemp -d)
+  for f in $(docker exec "$c" sh -c 'grep -rlo "request_body_heuristic" /app/.build/next/server/chunks 2>/dev/null' | sort -u); do
+    b=$(basename "$f")
+    docker cp "$c:$f" "$tmp/$b.orig" >/dev/null 2>&1 || { echo "[estpatch] 拷出 $b 失败"; continue; }
+    if python3 "$_est_patch_script" "$tmp/$b.orig" "$tmp/$b" && [ -s "$tmp/$b" ]; then
+      if docker exec -i "$c" node --input-type=module --check < "$tmp/$b" >/dev/null 2>&1; then
+        docker exec "$c" sh -c "cp -a $f $f.orig-estpatch" >/dev/null 2>&1 || true
+        docker cp "$tmp/$b" "$c:$f" >/dev/null 2>&1 || { echo "[estpatch] 安装 $b 失败"; continue; }
+        echo "[estpatch] $b 已补丁"
+        changed=1
+      else
+        echo "[estpatch] $b 语法校验失败，保持原文件"
+      fi
+    else
+      echo "[estpatch] $b 无需补丁（已补丁或上游已修复）"
+    fi
+  done
+  rm -rf "$tmp"
+  if [ "$changed" -eq 1 ]; then
+    docker restart "$c" >/dev/null 2>&1 || { echo "[estpatch] 重启失败，补丁下次重启生效"; return 0; }
+    echo "[estpatch] omniroute 已重启使补丁生效"
+  fi
+  return 0
+}
+
+
 # ---------- 启动：恢复路径走 compose（卷已由 compose 声明复用），bootstrap 路径走 docker run ----------
 
 start_omniroute() {
@@ -672,6 +716,7 @@ start_omniroute() {
       --env-file "$OMNIROUTE_DIR/.env" \
       "$OMNIROUTE_IMAGE" || return 1
   fi
+  patch_omniroute_estimator
 }
 
 # 2026-11-06（主人拍板）：prestart 后台脚本已完成「归档恢复 + 起容器」时

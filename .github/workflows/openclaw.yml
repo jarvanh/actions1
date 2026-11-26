@@ -2136,6 +2136,12 @@ jobs:
           TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
           TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # 2026-11-26：OmniRoute token 估算器热补丁随每次启动重放（防事件循环冻结）。
+        # 补丁器与执行函数分别在：
+        #   .github/scripts/openclaw/patch_omniroute_estimator.py（补丁生成，形状不符即跳过）
+        #   .github/scripts/openclaw/run-ai-gateway.sh 内 patch_omniroute_estimator()
+        # prestart 与同步部署两条路径都会调用，已在 run-ai-gateway.sh 的 start_omniroute() 尾部挂钩，
+        # 本步骤只需传 GITHUB_WORKSPACE（脚本已默认继承），无需额外命令。
         # 2026-10-30 减重外置：脚本本体在 .github/scripts/openclaw/run-ai-gateway.sh
         #（原样搬移，零逻辑改动），P5b 等齐门消费 /tmp/upstream-rc-*（上游四脚本的
         # 标记，契约不变）。背景同 Install OpenClaw 的 500KB 注。

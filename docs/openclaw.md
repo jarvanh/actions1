@@ -573,6 +573,7 @@ OmniRoute 有熔断器（CliRelay 没有），所以对齐策略 = **总超时�
 ```
 restore_omniroute_data()   ← Dropbox OmniRoute.tar.gz（缺失/无效 → bootstrap 空库 + alert 告警）
     → start_omniroute()    ← compose up（有 compose）或 docker run（纯 bootstrap）
+        → patch_omniroute_estimator()  ← 每轮重放 token 估算器热补丁（见下）
     → /healthz 健康检查（150×2s，判据为任意 HTTP 响应码）
         ├─ 就绪 → ACTIVE_BACKEND=omniroute
         └─ 失败 → docker logs → docker rm -f omniroute → 记录 FALLBACK_REASON
@@ -585,6 +586,7 @@ restore_omniroute_data()   ← Dropbox OmniRoute.tar.gz（缺失/无效 → boot
 ```
 
 - 当前生效后端与回退原因写入 `/tmp/active-ai-backend.env`，供归档循环分支与启动通知读取。
+- **token 估算器热补丁（2026-11-26 固化）**：镜像 3.8.54 的 `usageEstimation.ts` 对整个请求体 JSON 做 CJK 正则全量扫描，SSE transform 每个 chunk 重调同一对象；大上下文请求曾把事件循环冻 5s~265s（healthz lag 同步飙高）。`start_omniroute()` 成功后调 `patch_omniroute_estimator()`，将 `.github/scripts/openclaw/patch_omniroute_estimator.py` 的补丁重放到容器内包含 `request_body_heuristic` 的 chunk；node ESM 语法校验通过才回写，已补丁或上游已修复则跳过，真正改动才重启容器。补丁只影响 usage 估计（偏差 +0.1%），不改请求内容/路由/计费数据源。若上游重构导致补丁器定位失败，会跳过且不阻断部署（卡顿风险回归，需要新补丁）。
 - 数据准备失败不终止步骤（bootstrap 全新部署兜底，与旧 CliRelay 同口径）。
 - 就绪后起 `ai-api` 命名隧道：`tunnels.sh ensure ai-api`（systemd 托管，固定地址模式
   → `127.0.0.1:20128`）；脚本缺失时回落 `nohup cloudflared tunnel run --url http://127.0.0.1:20128 ai-api`。
