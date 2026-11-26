@@ -671,6 +671,14 @@ trend 里同源字段为 `pairs_total:16 / pairs_synced:1`。拆开看:
 ⚠️ 这也再次印证「存储账号失效巡检」这个 step 的价值: 它把这个 403 持久化进
    `storage_alert.json` 并发了 Telegram，否则「33 小时没成功」会被误读成调度问题。
 
+⚠️ **更正（2026-11-26 02:28Z 二次核对）**: 失效的是**两个** WoPan 账号，不是只有 `/wopan176`。
+`storage_alert.json` 当前清单同时含 `/wopan175` 与 `/wopan176`，两者 `first_seen = last_seen = notified_at`
+同为 `2026-11-26T00:32Z`（同一次巡检发现）。按 `openlist_storage_check.sh` 的实现「已恢复的条目自然
+消失（自动销账）」，清单里剩下的就是**当前仍失效**的。
+四个后端的最新 `last_success` 佐证: `baidupanCrypt` 今天 02:08（健康）/ `aliyundriveCrypt` 昨天 08:49
+（无告警）/ `wopan175` 昨天 17:24 / `wopan176Crypt` 昨天 09:23 —— 两个 WoPan 都停在 403 之前。
+⇒ 需要处理的是 `/wopan175` **和** `/wopan176` 两个账号的登录态，不是一个。
+
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
 （`OPENLIST_SYNC_MIN_SLICE_SECONDS`=10min）时不再开新同步对/子目录/最终完整同步，
