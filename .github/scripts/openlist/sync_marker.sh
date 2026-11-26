@@ -583,6 +583,11 @@ save_sync_marker() {
   dest_count=$(_size_json_field "$dest_size_json" count)
 
   # 严格校验: 源端（过滤口径）与目标端文件数完全一致才写 marker。
+  # ⚠️ 它是「能力上限口径」，与 fix-check 的 VERDICT 不同源: 定点实测（run 45812137697）
+  #   5 个被拉黑文件全部 already_ok（以短哈希名替代形态落盘并记账），fix-check 判「修好」，
+  #   但这里的 dest_count 按原名统计、不计替代名 ⇒ 仍判缺 52 个 ⇒ last_success 永不写。
+  #   两套口径冲突是「连续 23 轮缺口」的结构性根因（非同步没做/后端拒收）。
+  #   是否让固定条目抵扣缺口属「什么算同步完成」的数据正确性决策，未获用户认可前不改。
   # 有任何缺失即拒绝 → 下次运行重新同步（rclone --size-only 幂等，已对齐文件直接跳过，无副作用）
   local missing_count=$((source_count - dest_count))
   if [ "$missing_count" -gt 0 ]; then
