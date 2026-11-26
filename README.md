@@ -683,6 +683,21 @@ trend 里同源字段为 `pairs_total:16 / pairs_synced:1`。拆开看:
 **不要用 `storage_alert` 单项证据就把目标判成 blocked** —— 先按驱动同协议复验 token，
 或等一轮看是否自动销账。本次就因为跳过这一步，错误地要求用户重登、并误判了 10 轮。
 
+✅ **判断后端真状态: 三种「无新 last_success」要分开（2026-11-26 实测）**:
+WAF 恢复后观察 `wopan176Crypt`: `last_success` 停在 11-25 09:23Z（22.8h 前），一度怀疑
+「还没轮到」或「仍写不进」。核对 marker 后第三种解释才对:
+
+- `task5_e6b6b1f4`（dest=`openlist:wopan176Crypt/5`）于 11-26 15:48 被**写入**;
+- 它 `last_success=null`、但 `fixed_count=56`、`last_refusal=null` —— 这是**修复骨架 marker**:
+  本轮真实修好 56 个文件（短哈希名直传如 `19fb67cc.mp4`，绕开长名/敏感字符拒收），
+  但目标端文件数仍 < 源端 ⇒ 顶层精确校验不通过 ⇒ 不写成功戳。
+
+⇒ **判断后端死活不能只看 `last_success`**。三层要分开:
+  ① 有没有 marker 写入（有 = 在被服务）② 有没有 `fixed_count`（有 = 修复在产出且后端能写）
+  ③ 有没有 `last_success`（有 = 整个对通过精确校验）。
+「有①②无③」是**正常的收敛中状态**，不是卡死、更不是账号失效。
+这正是 WAF 误诊的解药 —— 我此前把 ① 的缺失当成「账号掉线」、把 ③ 的缺失当成「后端不可写」，两次都错。
+
 **优雅到站（P2）**：大任务常态撞 6h runner 上限被硬杀。现在同步 step 启动时设预算锚点
 （`OPENLIST_SYNC_BUDGET_SECONDS`=320min），剩余预算不足最小工作片
 （`OPENLIST_SYNC_MIN_SLICE_SECONDS`=10min）时不再开新同步对/子目录/最终完整同步，
