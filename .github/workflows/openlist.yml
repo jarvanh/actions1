@@ -1213,6 +1213,43 @@ jobs:
       #   2. 人工取消不打架: 同步 step 被 cancel 且 job 未到 6h 上限
       #      （<5h50m）→ 判定为人工取消，不接力
       #   3. 防堆积: 已有排队/等待中的运行则不重复触发
+      # ===== 基础设施失败告警（2026-11-26 加）=====
+      # 为什么必须有（run 45651997160 / 45727347379 实证）:
+      #   apt 安装步骤 404 失败 ⇒ 「加载函数库/同步」全部 skipped ⇒ 整轮零产出。
+      #   而「自续触发」在 OL_ENV_READY!=1 时**按设计不接力**（防「失败→接力→再失败」
+      #   空转），cron 兜底也迟迟没补上 —— 结果**停摆 8 小时无人知晓**
+      #   （marker 从 02:19 一直停到 10:39 人工发现）。
+      #   静默失败是最贵的一类故障: 系统看起来「没在跑」和「跑挂了」在通知上没区别。
+      # 判据: OL_ENV_READY != 1（前置步骤没跑到「加载同步函数库」）⇒ 环境根本没起来，
+      #   这不是业务失败、而是基础设施失败，必须让人知道，否则接力链断了没人补。
+      # 档位: alert（需人工处理，无回落）；与环境就绪时的正常收尾通知互斥，不会重复。
+      - name: "Notify: 环境未就绪告警"
+        if: ${{ always() && (inputs.run_mode == '' || inputs.run_mode == '同步') }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
+          TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "${OL_ENV_READY:-0}" = "1" ]; then
+            echo "环境就绪（OL_ENV_READY=1），无需告警"
+            exit 0
+          fi
+          if [ -z "${TELEGRAM_BOT_TOKEN_ALERT:-}" ] || [ -z "${TELEGRAM_CHAT_ID_ALERT:-}" ]; then
+            echo "::warning::未配置告警 bot 凭据，跳过环境未就绪告警"
+            exit 0
+          fi
+          source "$GITHUB_WORKSPACE/.github/scripts/telegram/tg_notify.sh"
+          msg=""
+          tg_add_title msg "🚨 同步环境未就绪"
+          tg_add_kv msg "结论" "前置步骤失败，本轮同步未启动、零产出；且按设计不自续接力，需人工处理"
+          tg_add_kv msg "影响" "本轮没有任何文件被同步；接力链已停，直到下一次 cron 或人工触发"
+          tg_add_kv msg "常见成因" "apt 安装 404 / 容器未就绪 / 隧道异常 / 凭据缺失"
+          tg_add_note msg "处理完前置失败后手动触发一轮即可恢复；若反复出现请检查 runner 镜像与上游仓库同步状态"
+          tg_add_footer msg
+          send_telegram_message "$msg" HTML alert || echo "::warning::环境未就绪告警发送失败"
+
       - name: 自续触发（下轮接力）
         # 同「会话保持」step: 开关判断从 `inputs.self_retrigger != false`
         # （schedule 下恒 false → 定时运行从未接接过力）改为 env 默认值 +
