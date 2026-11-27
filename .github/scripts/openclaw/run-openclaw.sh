@@ -5,6 +5,10 @@
 # schedule 停摆 —— 按 .github/scripts/services/ 同款模式给 yml 减重。
 # 消费方：/tmp/run-openclaw-step.log（失败通知取摘要）、/tmp/run-openclaw-meta.env。
 # yml 薄包装保留 id=run_openclaw 与 if 条件；脚本非零退出即步骤失败。
+# 2026-11-27 修复：首启等待健康时显式回收陈旧 gateway state lock。
+# OpenClaw 跨 PID namespace 无法证明旧 holder 已停，只按心跳老化不会自动回收，
+# 新进程会空等 95s 才放弃，18789 超时；恢复入口要求 --confirm 本轮指纹，
+# 只处理 recover-lock 自己判定为 unchanged 的 owner，绝不误伤活网关。
 
 set -euo pipefail
 
@@ -106,11 +110,60 @@ openclaw_health_http_ok() {
   [ "$(curl -fsS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 15 http://127.0.0.1:18789/health || true)" = "200" ]
 }
 
+# 陈旧 gateway state lock 自愈：OpenClaw 2026.11.10 在跨 PID namespace 时无法证明
+# 旧 holder 已停，心跳再老也不会自动回收；新 gateway 会先空等 95s 才放弃监听。
+# recover-lock 的 --confirm 只接受本轮检查生成的 unchanged-owner 指纹；再叠加
+# 心跳至少 300s 的门限，避免把另一 namespace 刚启动、端口尚未绑定的活网关误判成僵尸。
+# 仅在「端口未监听 + 日志出现锁等待」时试一次。
+heal_stale_gateway_lock() {
+  local label="$1"
+
+  # 端口已在听就是有活网关，任何状态下都不碰锁。
+  if openclaw_port_listening || openclaw_health_http_ok; then
+    return 0
+  fi
+  journalctl --user -u openclaw-gateway.service --since "3 minutes ago" --no-pager 2>/dev/null \
+    | grep -qE 'cannot verify Gateway ownership|previous Gateway to release state|GatewayLockNamespaceError' || return 0
+
+  echo "🔓 Detected unverifiable/stale gateway state lock (${label}); inspecting for explicit recovery..."
+  local inspection confirm_line confirm_fp max_age=0 age
+  inspection="$(openclaw gateway recover-lock --json 2>&1 || true)"
+  confirm_line="$(printf '%s\n' "$inspection" | grep -m1 '"confirmation"' || true)"
+  confirm_fp="$(printf '%s\n' "$confirm_line" | sed -E 's/.*"confirmation"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  # 指纹只保证「检查后记录未变」；还必须真的老旧才动锁。心跳新鲜时绝不回收，
+  # 避免把另一 namespace 里刚启动、端口尚未绑定的活网关误判成僵尸。
+  while IFS= read -r age; do
+    [ -n "$age" ] || continue
+    [ "$age" -gt "$max_age" ] && max_age="$age"
+  done < <(printf '%s\n' "$inspection" | grep -oE 'last renewed [0-9]+ s ago' | awk '{print $3}' || true)
+  if [ "$max_age" -lt 300 ]; then
+    echo "⏭️ Lock heartbeat is fresh (${max_age}s); not recovering."
+    return 0
+  fi
+  if [ -z "$confirm_fp" ] || ! printf '%s\n' "$confirm_fp" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "⏭️ No unchanged-owner confirmation fingerprint; lock is live/verified or inspection unavailable."
+    return 0
+  fi
+
+  echo "🧹 Recovering unchanged gateway owner lock with confirmation ${confirm_fp:0:12}..."
+  if openclaw gateway recover-lock --confirm "$confirm_fp"; then
+    echo "✅ Gateway state lock recovered; restarting gateway so it retries admission immediately."
+    echo "STALE_GATEWAY_LOCK_RECOVERED=1" >> "$RUN_OPENCLAW_META"
+    # 恢复只清锁记录；进程可能仍停在 95s 等待中，必须重启才能立刻重走准入。
+    systemctl --user reset-failed openclaw-gateway.service 2>/dev/null || true
+    systemctl --user restart openclaw-gateway.service 2>/dev/null || true
+    return 0
+  fi
+  echo "⚠️ Gateway state lock recovery failed; keep the original failure path for diagnostics."
+  return 0
+}
+
 wait_for_openclaw_health() {
   local label="$1"
   local timeout_sec="${2:-180}"
   local interval_sec="${3:-5}"
   local start_ts now_ts elapsed
+  local _lock_healed_at=0
   start_ts=$(date +%s)
 
   echo "Waiting for OpenClaw health (${label}, timeout=${timeout_sec}s)..."
@@ -131,6 +184,11 @@ wait_for_openclaw_health() {
       fi
     else
       echo "⏳ Gateway port is not listening yet... ${elapsed}/${timeout_sec}s (${label})"
+      # 锁等待只会拖延首启，不会让端口自己 listen；在等待窗口前半段显式恢复一次。
+      if [ "$_lock_healed_at" = 0 ] && [ "$elapsed" -ge 5 ] && [ "$elapsed" -lt $((timeout_sec / 2)) ]; then
+        heal_stale_gateway_lock "$label"
+        _lock_healed_at=1
+      fi
     fi
 
     if [ "$elapsed" -ge "$timeout_sec" ]; then

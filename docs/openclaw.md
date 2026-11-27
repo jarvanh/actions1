@@ -279,6 +279,16 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
 随后 `dump_openclaw_diagnostics` 打印 systemd status、journal（近 10 分钟）与
 `/tmp/openclaw/openclaw-*.log` 最新两个文件的尾部 80 行。
 
+#### 陈旧 gateway state lock 自愈（2026-11-27）
+
+OpenClaw 跨 PID namespace 时无法证明旧 holder 已停，只按心跳老化不会自动回收；
+新 gateway 会先空等 95s 才放弃监听，健康等待窗口因此耗尽。等待循环在“端口未监听”分支
+检测到 journal 出现 `cannot verify Gateway ownership` / `previous Gateway to release state` /
+`GatewayLockNamespaceError` 时，调用 `openclaw gateway recover-lock --json` 取本轮
+`confirmation` 指纹（64 位十六进制），并要求心跳至少 300s；两者同时成立才用
+`--confirm` 显式恢复，成功后写 `STALE_GATEWAY_LOCK_RECOVERED=1` 到 meta 并重启服务。
+每个健康等待窗口最多试一次；端口已在听或心跳新鲜时一律不动锁，避免误伤活网关。
+
 ### 机制③：主包单区
 
 只有 `openclaw.tar.gz` 一个对象，平铺在 `self-hosted/` 根目录，与同层的
@@ -446,7 +456,8 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openclaw
 
 - 运行中日志：`/tmp/run-openclaw-step.log`（`Run OpenClaw` 步骤 stdout/stderr 全量 tee，经 Tailscale SSH 可见）。
 - 阶段与版本元数据：`/tmp/run-openclaw-meta.env`（`FAIL_STAGE` / `CURRENT_OPENCLAW_VERSION` /
-  `FALLBACK_TARGET_VERSION` / `FALLBACK_VERSION_SOURCE` / `RECORDED_SUCCESSFUL_OPENCLAW_VERSION` / 各段耗时）。
+  `FALLBACK_TARGET_VERSION` / `FALLBACK_VERSION_SOURCE` / `RECORDED_SUCCESSFUL_OPENCLAW_VERSION` /
+  `STALE_GATEWAY_LOCK_RECOVERED`（陈旧 state lock 已自动回收并重启）/ 各段耗时）。
 - 归档循环日志：`/tmp/openclaw-archive-loop.log`；AI 网关生效后端：`/tmp/active-ai-backend.env`。
 - 结束后拉日志：`gh run view --job <job_id> --repo jarvanh/actions --log`。
 
@@ -455,6 +466,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openclaw
 | 场景 | 行为 |
 |---|---|
 | 配置被外部改成新旧版本都不认 | doctor --fix 尝试修复；失败则回退重装，仍失败需人工修复配置 |
+| 跨 PID namespace 的陈旧 gateway state lock | 端口未监听 + 锁等待日志 + 心跳至少 300s + 本轮 confirmation 指纹四条件同时成立才显式回收并重启；端口在听/心跳新鲜/指纹缺失时不动锁，保留原失败诊断路径 |
 | 云端主包结构/配置坏（空壳、截断、配置语义坏、secrets 解析不了） | 恢复侧判据（体积 ≥50MB / 解包后盘上有 `openclaw.json` / `config validate` 通过 / `secrets audit` unresolved=0）任一不过即自动 revision 回退：逐个历史版本（上限 100）验到第一个能过的为止；全部不可用才失败通知人工。四道判据在**同一趟解包**后读盘上文件（2026-10-21 去重：旧实现同一个包解三趟，白烧 ~180s CPU+IO） |
 | 需要语义决策的迁移（agent roster 归属等） | doctor 与恢复机制拒绝代做决定，需人工显式声明 |
 | 降级/状态库移位 | 会话索引丢失（工作区与配置不受影响）；`*.state-bak-*` / `*.broken-bak-*` 保留可恢复 |
