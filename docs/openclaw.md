@@ -10,7 +10,7 @@
 | 触发 | 定时 `cron: "*/5 * * * *"` + `workflow_dispatch`（手动） |
 | 并发 | 动态并发组（2026-11-10 Phase 1）：serving 主轮独占 `openclaw-serve`；交接继任轮用 `openclaw-handoff-<run_id>` 专属键与旧轮**合法并存**；cron 兜底轮启动时经 `handoff/guard.sh` 自检，发现并存 run 即自我取消让位（落 `/tmp/openclaw-guard-declined` 标记；带该标记的轮不推 SSH 入口/入口失败通知、不回存证书缓存、不做最终归档） |
 | 单轮时长 | `Keep alive` 死线 = 360 − 收尾预算 26 − 安全余量 8 = **326 分钟**（job 起点起算）；T-2 停机倒计时保留；T-15「即将进入最终归档」预告默认关闭（2026-11-17 降噪，`OPENCLAW_NOTIFY_T15=1` 可开） |
-| 自我接力 | 双通道（2026-11-10 Phase 1）：主路径 = 死线前 T-12min 由 `handoff/tick.sh` 触发**交接继任者**（warm standby），继任者接管成功后旧轮 `Trigger next` 跳过；兜底 = 继任者未就绪/交接失败时沿用末尾 `Trigger next OpenClaw run` 传统接力 |
+| 自我接力 | 双通道（2026-11-10 Phase 1）：主路径 = 死线前 T-12min 由 `handoff/tick.sh` 触发**交接继任者**（warm standby），继任者接管成功后旧轮 `Trigger next` 跳过；兜底 = 继任者未就绪/交接失败时沿用末尾 `Trigger next OpenClaw run` 传统接力。2026-11-27 起，启动失败轮在收尾后同样触发继任 run（受并发组约束只在本轮结束后启动），避免失败轮保活结束后的 cron 空窗 |
 | 权限 | `contents: read` + `actions: write`（自我触发需要） |
 
 ### warm-standby 交接（Phase 1，2026-11-10）
@@ -137,9 +137,11 @@ ssh runner@openclaw 'touch /tmp/openclaw-restart-request'
 
 #### 网页端 Cancel 会怎样（实测对照）
 
-`Trigger next` 要求 `steps.keepalive.conclusion == 'success'`，**cancel 时该步是 `cancelled`**
+`Trigger next` 要求 `steps.keepalive.conclusion == 'success'` 且非 `cancelled()`，**cancel 时该步是 `cancelled`**
 → 不会自己派下一轮；下一轮只能来自 cron（`*/5`），是普通 serve 轮 → **传统冷启动**
 （若取消时继任者已武装，它会因旧轮 `cancelled` 而 `abort_takeover` 自我取消）。
+失败轮不再被排除：只要 keepalive 正常结束且非交接完成，收尾后照常触发继任 run；
+继任 run 在 `openclaw-serve` 并发组里排队，等本轮结束才启动，因此不缩短调试窗口。
 
 2026-11-11 16:18 实测（提交 cancel 那次）：
 
@@ -202,7 +204,7 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
 | Run workbuddy-gateway | 先查 GitHub Releases 决定是否更新二进制，再 `serve`（见第八节） | 8318（仅本机） |
 | Run OpenClaw | 自愈主流程（本文第三、四章） | 18789 |
 | Start background archive loop | 主包每 60 分钟、小包（AI 网关 / zcode / rsstt / zcode2api-data）每 20 分钟归档，`flock` 防重入（2026-11-19 主包降频） | Dropbox |
-| Keep alive → Stop OpenClaw and Final Archive → Notify OpenClaw final archive result → Trigger next OpenClaw run | 收尾与自我接力 | — |
+| Keep alive → Stop OpenClaw and Final Archive → Notify OpenClaw final archive result → Trigger next OpenClaw run | 收尾与自我接力；失败轮也会触发继任 run（cancel/guard 让位除外） | — |
 
 > rss-to-telegram 带一层自愈：登录被 `AuthKeyDuplicatedError` 判废时删掉 `bot.session*` 重启一次并立即归档。
 > Sub-Store 不在本 workflow 内运行（2026-09-13 移除）：本 workflow 无任何步骤消费它，原先只是借这台 runner 当第二宿主；服务由 `sub-store.yml` 单宿主提供。

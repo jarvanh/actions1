@@ -6190,7 +6190,11 @@ jobs:
       - name: Trigger next OpenClaw run
         # 2026-11-10 Phase 1：handoff_done=1 时继任者已在跑（serving 回执触发过），
         # 此处再触发只会多一个被 guard 自我取消的空轮 —— 跳过。
-        if: ${{ always() && steps.keepalive.conclusion == 'success' && steps.install_openclaw.outcome == 'success' && steps.run_openclaw.outcome == 'success' && steps.final_archive.outputs.handoff_done != '1' }}
+        # 2026-11-27 修：失败轮也触发继任 run。原先只认 run_openclaw=success，
+        # 失败轮 Keep alive 到死线后不派下一轮，只能等 cron；guard 又会把排队 cron
+        # 让位取消，形成数小时空窗。继任 run 受并发组约束，只会等本轮结束后才启动，
+        # 不缩短调试窗口；cancel 与 guard 让位仍不触发。
+        if: ${{ always() && !cancelled() && steps.keepalive.conclusion == 'success' && steps.final_archive.outputs.handoff_done != '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
