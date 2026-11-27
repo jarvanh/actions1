@@ -360,6 +360,7 @@ _openlist_api_health_check() {
 #   · 命中缓存时仍打印一行说明，便于从日志分辨「真探测失败」与「本轮已判失效跳过」。
 declare -A _BACKEND_CONN_FAIL_ROUND=()
 declare -A _BACKEND_CONN_FAIL_REASON=()
+declare -A _BACKEND_CONN_FAIL_TS=()
 # 同步前连通性预检总入口。
 # 两层校验都针对目标本身与 Crypt 底层裸存储各执行一次：
 #   第1层 _pre_webdav_health_check — 快速、无凭据依赖，抓典型故障签名；
@@ -375,8 +376,16 @@ _check_openlist_backend_connectivity() {
   # 轮内短路: 该后端**根**本轮已实测失效 ⇒ 不再重复探测（省下大量注定失败的开销）
   local _broot; _broot=$(_backend_root_of "$dest_path")
   if [ "${_BACKEND_CONN_FAIL_ROUND[$_broot]:-0}" = "1" ]; then
-    echo "⏭ $dest_path 所属后端 $_broot 本轮已判失效（${_BACKEND_CONN_FAIL_REASON[$_broot]:-确定性失败}），跳过重复探测" | tee ${log_file:+-a "$log_file"}
-    return 1
+    # TTL 复核: 不能永久短路 —— 后端可能中途恢复，而 F22 的「写探针周期性重探」
+    # 依赖连通性预检先放行才能到达。故按 TTL 定期真探一次，兼顾省时与自愈。
+    local _ttl=${OPENLIST_CONN_FAIL_TTL:-1800}
+    local _ts=${_BACKEND_CONN_FAIL_TS[$_broot]:-0}
+    if [ $(( $(date +%s) - _ts )) -lt "$_ttl" ]; then
+      echo "⏭ $dest_path 所属后端 $_broot 本轮已判失效（${_BACKEND_CONN_FAIL_REASON[$_broot]:-确定性失败}），TTL ${_ttl}s 内跳过重复探测" | tee ${log_file:+-a "$log_file"}
+      return 1
+    fi
+    echo "♻️ $dest_path 所属后端 $_broot 失效结论已过 TTL(${_ttl}s)，重新探测一次" | tee ${log_file:+-a "$log_file"}
+    unset "_BACKEND_CONN_FAIL_ROUND[$_broot]" "_BACKEND_CONN_FAIL_TS[$_broot]"
   fi
 
   # 后端整体失效的判定必须探**后端根**，不能拿子目录的失败去代表整个后端 ——
@@ -386,7 +395,7 @@ _check_openlist_backend_connectivity() {
   _conn_note_fail() {
     local _reason="$1"
     if [ "$_broot" = "$dest_path" ]; then
-      _BACKEND_CONN_FAIL_ROUND["$_broot"]=1
+      _BACKEND_CONN_FAIL_ROUND["$_broot"]=1; _BACKEND_CONN_FAIL_TS["$_broot"]=$(date +%s)
       _BACKEND_CONN_FAIL_REASON["$_broot"]="$_reason"
       return 0
     fi
@@ -394,7 +403,7 @@ _check_openlist_backend_connectivity() {
     if _pre_webdav_health_check "$_broot" "后端根 $_broot" "$log_file" >/dev/null 2>&1; then
       return 0   # 后端根健康 ⇒ 路径特异性，不缓存
     fi
-    _BACKEND_CONN_FAIL_ROUND["$_broot"]=1
+    _BACKEND_CONN_FAIL_ROUND["$_broot"]=1; _BACKEND_CONN_FAIL_TS["$_broot"]=$(date +%s)
     _BACKEND_CONN_FAIL_REASON["$_broot"]="$_reason（后端根同样失败）"
     return 0
   }
