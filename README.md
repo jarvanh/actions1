@@ -1102,3 +1102,26 @@ already_ok|...Asian perfect feet worshipped by 2 girls-...mp4|目标端原路径
 
 下一步（尚未完成）: 要在父目录 1024j-视频-pornhub-channel 层级做源/目标 diff
 （fix-check mode=diff，30-60min），才能定位真正的 370 缺口落在哪些子树。
+
+
+### 7.8 真正的 370 缺口定位（2026-11-27 diff 实测）
+
+用 fix-check mode=diff 对父目录 onedrive:3/1024j-视频-pornhub-channel 做源/目标递归列举:
+源端 422 个文件，目标端(wopan176Crypt) 52 个，缺 407。该目录下有三个子树:
+
+| 子树 | 源端文件数 | 目标端状态 |
+|---|---|---|
+| foot-fetish-center | 51 | 已完整（fix-check 实测 38 替代 + 13 原名 = 51）|
+| sakurasfeet | 65 | wopan175 侧 marker 有 last_success(11-09)、fixed=6 |
+| teacher-of-magic | 306 | wopan175 侧 marker fixed=60、last_success=null、无 refusal |
+
+⇒ 370 缺口的主体是 teacher-of-magic 的 306 个文件 + sakurasfeet 的一部分，
+而不是 foot-fetish-center（它已完整）。7.7 的更正成立。
+
+另一个决定性事实: 父目录 marker 在两个后端的计数分别是
+wopan176Crypt 52/422 与 wopan175 273/422 —— 同一源端 422 个文件,
+两个后端各自只拿到 52 和 273 个 ⇒ 这是「文件没同步过去」，
+与 marker 记账口径、WAF、后端写 500 都无关。
+
+下一步: 要补齐 teacher-of-magic 的 306 个文件，需确认该子树在目标端为什么从未完成
+（被跳过？写不进？源端过滤？）。对 teacher-of-magic 跑定点 diff + 单文件修复测试即可定性，尚未执行。
