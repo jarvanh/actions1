@@ -377,6 +377,12 @@ _check_openlist_backend_connectivity() {
   local log_file="${2:-}"
   [[ "$dest_path" == openlist:* ]] || return 0
 
+  # 每次进入必须清空上一次的失败类别 —— 它是全局变量，若不重置，
+  #   上一次的 auth 会被本次「API 层失败」或「写探针失败」误读成 WebDAV auth 类，
+  #   进而在 sync_engine 里误置 SYNC_BACKEND_DEAD_STRONG ⇒ 把瞬时故障当成
+  #   凭据失效写进 backend_dead.json，正是原设计最忌讳的「误判污染」。
+  _PRE_WEBDAV_FAIL_KIND=""
+
   # 轮内短路: 该后端**根**本轮已实测失效 ⇒ 不再重复探测（省下大量注定失败的开销）
   local _broot; _broot=$(_backend_root_of "$dest_path")
   if [ "${_BACKEND_CONN_FAIL_ROUND[$_broot]:-0}" = "1" ]; then

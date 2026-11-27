@@ -10,21 +10,31 @@ if [ -z "${OL_DIR:-}" ]; then _here=$(cd "$(dirname "$0")" && pwd); OL_DIR="$_he
 echo "=== 1: driver 导出 _PRE_WEBDAV_FAIL_KIND ==="
 grep -q '_PRE_WEBDAV_FAIL_KIND="$kind"' "$OL_DIR/openlist_driver.sh" && ok "导出失败类别" || bad "未导出"
 
-echo "=== 2: sync_engine 对 auth 类置 STRONG ==="
+echo "=== 2: 进入预检时先清空（防上次 auth 泄漏成本次强证据） ==="
+func_body=$(sed -n '/^_check_openlist_backend_connectivity() {/,/^}/p' "$OL_DIR/openlist_driver.sh")
+first_exec=$(echo "$func_body" | grep -n -m1 -vE '^\s*(#|$)' | cut -d: -f1)
+clear_rel=$(echo "$func_body" | grep -n '^  _PRE_WEBDAV_FAIL_KIND=""$' | head -1 | cut -d: -f1)
+if [ -n "$clear_rel" ] && [ "$clear_rel" -le 10 ]; then
+  ok "清空在函数体前部（相对第 ${clear_rel} 行），先于任何探测"
+else
+  bad "清空缺失或位置过晚 rel=$clear_rel"
+fi
+
+echo "=== 3: sync_engine 对 auth 类置 STRONG ==="
 seg=$(sed -n '/elif \[ "${_PRE_WEBDAV_FAIL_KIND:-}" = "auth" \]/,/^    fi/p' "$OL_DIR/sync_engine.sh")
 echo "$seg" | grep -q "SYNC_BACKEND_DEAD_STRONG=1" && ok "auth 类置 STRONG=1" || bad "auth 类未置 STRONG"
 echo "$seg" | grep -q "SYNC_BACKEND_DEAD=1" && ok "auth 类置 DEAD=1" || bad "auth 类未置 DEAD"
 
-echo "=== 3: 只在 auth 分支，不含 backend/unknown ==="
+echo "=== 4: 只在 auth 分支，不含 backend/unknown ==="
 if echo "$seg" | grep -qE '= "backend"|= "unknown"'; then bad "误把 backend/unknown 纳入强证据"; else ok "backend/unknown 仍走弱证据"; fi
 
-echo "=== 4: _backend_dead_mark 弱证据不持久化（原设计保留） ==="
+echo "=== 5: _backend_dead_mark 弱证据不持久化（原设计保留） ==="
 grep -q 'SYNC_BACKEND_DEAD_STRONG:-0}" != "1"' "$OL_DIR/task_engine.sh" && ok "弱证据不写 backend_dead.json" || bad "强证据闸缺失"
 
-echo "=== 5: 语义 —— auth 命中、backend/unknown 不命中 ==="
+echo "=== 6: 语义 —— auth 命中、backend/unknown 不命中 ==="
 W=$(mktemp)
 (
-  declare -A _BACKEND_WRITE_PROBE_CACHE=()   # 关联数组: 否则 set -u 下索引 none 会被当变量求值
+  declare -A _BACKEND_WRITE_PROBE_CACHE=()
   for kind in auth backend unknown; do
     SYNC_BACKEND_DEAD=0; SYNC_BACKEND_DEAD_STRONG=0
     _PRE_WEBDAV_FAIL_KIND="$kind"
