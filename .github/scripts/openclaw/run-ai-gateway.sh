@@ -332,6 +332,9 @@ services:
     container_name: omniroute
     restart: unless-stopped
     stop_grace_period: 40s
+    # 2026-11-27: raise CPU weight under contention (4-core runner, archive spikes load to 7+).
+    # Default cpu_shares=1024; 4096 gives ~4x share when CPU is saturated. No hard cap: idle cores still usable.
+    cpu_shares: 4096
     ports:
       - "127.0.0.1:20128:20128"
     env_file: .env
@@ -690,6 +693,7 @@ start_omniroute() {
       --name omniroute \
       --restart unless-stopped \
       --stop-timeout 40 \
+      --cpu-shares 4096 \
       -p 127.0.0.1:20128:20128 \
       -e PORT=20128 \
       -e OMNIROUTE_MEMORY_MB=4096 \

@@ -499,6 +499,10 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openclaw
 `cliproxyapi`）：**pinned 模式只跑指定后端，失败即失败、不降级**，便于定点验证单个后端；
 `auto`（默认 / 定时触发）走完整降级链。
 
+### CPU 争抢优先级（2026-11-27）
+
+4 核 runner 上后台归档（rsync ~51s + pigz ~104s + rclone 128M 分片上传）会把 load 顶到 7+、iowait 17~26%，OmniRoute 事件循环因此出现 1.2~18s 的**调度延迟**（外部 healthz 仍是毫秒级，与 token 估算器那次同步冻结是两回事）。处置：OmniRoute 在 compose 与 bootstrap docker run 均设 cpu_shares: 4096（默认 1024 的 4 倍；不设 quota/cpus 上限，闲时仍可用满 4 核）；归档侧 rsync / tar / pigz 与 rclone copyto/rcat 统一 nice -n 19 ionice -c3。在线不中断生效用 docker update --cpu-shares 4096 omniroute。
+
 ### 长上下文阈值调参（2026-10-12）
 
 **现象**：OmniRoute 侧刷屏 `[503] runner-autoclaw/zai_glm-5.3-flash: provider — Provider

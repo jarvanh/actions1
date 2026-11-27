@@ -2689,7 +2689,7 @@ jobs:
                     echo "❌ repaired rsstt archive is too small: size=${actual_size} min=${min_size}"
                     exit 1
                   fi
-                  rclone copyto /tmp/rsstt.tar.gz dropbox:self-hosted/rsstt.tar.gz -v
+                  nice -n 19 ionice -c3 rclone copyto /tmp/rsstt.tar.gz dropbox:self-hosted/rsstt.tar.gz -v
                   rm -f /tmp/rsstt.tar.gz
                   echo "✅ Repaired rss-to-telegram state uploaded"
                 }
@@ -3366,7 +3366,7 @@ jobs:
             # 压得更快只能小幅前移上传窗口；包体 +15~25% 换压缩 ~2×，每 20min 周期
             # 归档同样受益。效果看埋点 rsync_sec / compress_sec 对比。
             if command -v pigz >/dev/null 2>&1; then
-              nice -n 19 ionice -c3 tar -C "$STAGE_DIR" -cf - .openclaw | pigz -p "$(nproc)" -1 >&3
+              nice -n 19 ionice -c3 tar -C "$STAGE_DIR" -cf - .openclaw | nice -n 19 ionice -c3 pigz -p "$(nproc)" -1 >&3
             else
               nice -n 19 ionice -c3 tar -C "$STAGE_DIR" -cf - .openclaw | gzip -6 >&3
             fi
@@ -4507,7 +4507,7 @@ jobs:
               # 完整性由归档脚本的关键文件校验把关（体积本就不是「状态全不全」
               # 的判据，2026-09-12 起「缩水」即不再拦截）。
               openclaw_upload_output=""
-              if openclaw_upload_output=$(timeout 30m rclone copyto "$TMP_OPENCLAW_TAR" "$ARCHIVE_DEST" --dropbox-chunk-size 128M 2>&1); then
+              if openclaw_upload_output=$(nice -n 19 ionice -c3 timeout 30m rclone copyto "$TMP_OPENCLAW_TAR" "$ARCHIVE_DEST" --dropbox-chunk-size 128M 2>&1); then
                 echo "[$(date '+%F %T')] openclaw upload ok"
                 # 2026-11-10 Phase 0：只有「已落到 Dropbox 的那份包」才配当交接基座，
                 # 故 marker 在上传成功后写（失败/被锁跳过都不写，宁可让收尾那边报
@@ -4569,7 +4569,7 @@ jobs:
             if ai_archive_output=$(flock -E 200 -n "$LOCK_AIGW" timeout 40m bash "$AI_ARCHIVE_SCRIPT" "$AI_ARCHIVE_TAR" 2>&1); then
               echo "[$(date '+%F %T')] ${AI_LABEL} archive ok, uploading... ${ai_archive_output}"
               ai_upload_output=""
-              if ai_upload_output=$(timeout 30m rclone copyto "$AI_ARCHIVE_TAR" "$AI_ARCHIVE_DEST" 2>&1); then
+              if ai_upload_output=$(nice -n 19 ionice -c3 timeout 30m rclone copyto "$AI_ARCHIVE_TAR" "$AI_ARCHIVE_DEST" 2>&1); then
                 echo "[$(date '+%F %T')] ${AI_LABEL} upload ok"
                 if [ "$AI_SUDO_RM" = "yes" ]; then sudo rm -f "$AI_ARCHIVE_TAR"; else rm -f "$AI_ARCHIVE_TAR"; fi
               else
@@ -4597,7 +4597,7 @@ jobs:
                 echo "[$(date '+%F %T')] zcode archive ok, uploading... ${zcode_archive_output}"
                 # 2026-10-22：rclone ls 体积对照已移除（口径同主包，不参与判定纯成本）
                 zcode_upload_output=""
-                if zcode_upload_output=$(timeout 30m rclone copyto "$TMP_ZCODE_TAR" "dropbox:self-hosted/zcode.tar.gz" 2>&1); then
+                if zcode_upload_output=$(nice -n 19 ionice -c3 timeout 30m rclone copyto "$TMP_ZCODE_TAR" "dropbox:self-hosted/zcode.tar.gz" 2>&1); then
                   echo "[$(date '+%F %T')] zcode upload ok"
                   rm -f "$TMP_ZCODE_TAR"
                 else
@@ -4628,7 +4628,7 @@ jobs:
           if rsstt_archive_output=$(flock -E 200 -n "$LOCK_RSSTT" timeout 20m bash /tmp/create-rsstt-archive.sh "$TMP_RSSTT_TAR" 2>&1); then
             echo "[$(date '+%F %T')] rsstt archive ok, uploading... ${rsstt_archive_output}"
             rsstt_upload_output=""
-            if rsstt_upload_output=$(timeout 20m rclone copyto "$TMP_RSSTT_TAR" "dropbox:self-hosted/rsstt.tar.gz" 2>&1); then
+            if rsstt_upload_output=$(nice -n 19 ionice -c3 timeout 20m rclone copyto "$TMP_RSSTT_TAR" "dropbox:self-hosted/rsstt.tar.gz" 2>&1); then
               echo "[$(date '+%F %T')] rsstt upload ok"
               sudo rm -f "$TMP_RSSTT_TAR"
             else
@@ -4656,7 +4656,7 @@ jobs:
           if z2a_archive_output=$(flock -E 200 -n "$LOCK_Z2A" timeout 20m bash /tmp/create-zcode2api-data-archive.sh "$TMP_Z2A_DATA_TAR" 2>&1); then
             echo "[$(date '+%F %T')] zcode2api-data archive ok, uploading... ${z2a_archive_output}"
             z2a_upload_output=""
-            if z2a_upload_output=$(timeout 20m rclone copyto "$TMP_Z2A_DATA_TAR" "dropbox:self-hosted/zcode2api-data.tar.gz" 2>&1); then
+            if z2a_upload_output=$(nice -n 19 ionice -c3 timeout 20m rclone copyto "$TMP_Z2A_DATA_TAR" "dropbox:self-hosted/zcode2api-data.tar.gz" 2>&1); then
               echo "[$(date '+%F %T')] zcode2api-data upload ok"
               rm -f "$TMP_Z2A_DATA_TAR"
             else
@@ -4681,7 +4681,7 @@ jobs:
             # 优先恢复的那份（见「Restore .env early」）。.env 可能被本轮修改
             #（QUOTA_BOARD_TOKEN 等），不同步就会陈旧。
             if [ -s "$HOME/.openclaw/.env" ]; then
-              rclone copyto "$HOME/.openclaw/.env" dropbox:self-hosted/openclaw.env >/dev/null 2>&1 \
+              nice -n 19 ionice -c3 rclone copyto "$HOME/.openclaw/.env" dropbox:self-hosted/openclaw.env >/dev/null 2>&1 \
                 && echo "[$(date '+%F %T')] .env 已同步到独立小文件" \
                 || echo "⚠️ .env 独立小文件同步失败（下轮启动将用旧值，主包里的仍是新的）"
             fi
@@ -5293,7 +5293,7 @@ jobs:
               send_archive_alert "$obj" "归档失败" "压缩包小于最小阈值 · 放弃覆盖云端数据" "size=$size min=$min_size output=$tar_path"
               return 1
             fi
-            if out=$(rclone copyto "$tar_path" "$remote" -v --dropbox-chunk-size 128M 2>&1); then
+            if out=$(nice -n 19 ionice -c3 rclone copyto "$tar_path" "$remote" -v --dropbox-chunk-size 128M 2>&1); then
               echo "final ${obj} archive/upload ok (${size} bytes)"
               record_archive_result "$obj" ok "$size"
               # 包可能由 root 产出（rsstt / CLIProxyAPI 用 sudo tar），普通 rm 会失败
@@ -5440,7 +5440,7 @@ jobs:
               # 2026-10-24 上传调优（本机 512MB A/B 实测）：dropbox 分片 48M→128M
               # 把上传从 21-26MB/s 提到 31-34MB/s（+30~40%）；--buffer-size 64M 对
               # rcat 无影响（单变量对照），故不保留。效果看归档日志 "streamed XB in Ys"。
-              if flock -w 600 -E 200 "$LOCK_OPENCLAW" timeout 40m bash /tmp/create-openclaw-archive.sh - 2>/tmp/openclaw-stream.err | rclone rcat --dropbox-chunk-size 128M "$STREAM_DEST" 2>/tmp/openclaw-stream-upload.err; then
+              if flock -w 600 -E 200 "$LOCK_OPENCLAW" timeout 40m bash /tmp/create-openclaw-archive.sh - 2>/tmp/openclaw-stream.err | nice -n 19 ionice -c3 rclone rcat --dropbox-chunk-size 128M "$STREAM_DEST" 2>/tmp/openclaw-stream-upload.err; then
                 stream_bytes=$(rclone size --json "$STREAM_DEST" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
                 case "${stream_bytes:-0}" in ''|*[!0-9]*) stream_bytes=0 ;; esac
                 if [ "$stream_bytes" -ge $(( openclaw_src_kb * 1024 * 30 / 100 )) ]; then
@@ -5512,7 +5512,7 @@ jobs:
               rclone deletefile "$ZCODE_STREAM_DEST" >/dev/null 2>&1 || true
               _zc_begin=$(date +%s)
               _zc_ok=0
-              if flock -w 600 -E 200 "$LOCK_ZCODE" timeout 40m bash /tmp/create-zcode-archive.sh - 2>/tmp/zcode-stream.err | rclone rcat --dropbox-chunk-size 128M "$ZCODE_STREAM_DEST" 2>/tmp/zcode-stream-upload.err; then
+              if flock -w 600 -E 200 "$LOCK_ZCODE" timeout 40m bash /tmp/create-zcode-archive.sh - 2>/tmp/zcode-stream.err | nice -n 19 ionice -c3 rclone rcat --dropbox-chunk-size 128M "$ZCODE_STREAM_DEST" 2>/tmp/zcode-stream-upload.err; then
                 _zc_bytes=$(rclone size --json "$ZCODE_STREAM_DEST" 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
                 case "${_zc_bytes:-0}" in ''|*[!0-9]*) _zc_bytes=0 ;; esac
                 if [ "$_zc_bytes" -le 0 ] || { [ "$_zcode_archived_kb" -gt 0 ] && [ "$_zc_bytes" -lt $(( _zcode_archived_kb * 1024 * 10 / 100 )) ]; }; then
@@ -5721,7 +5721,7 @@ jobs:
           if [ "$HEALTHY_RUN" = "1" ] && [ "$(cat /tmp/openclaw-stream.rc 2>/dev/null || echo 1)" != "0" ]; then
             echo "4a-fallback. 流式未成功，回退旧路径（本地打包 → 校验 → 上传）..."
             if openclaw_final_output=$(flock -w 600 -E 200 "$LOCK_OPENCLAW" timeout 40m bash /tmp/create-openclaw-archive.sh "$TMP_OPENCLAW_TAR" 2>&1); then
-              if openclaw_final_upload_output=$(rclone copyto "$TMP_OPENCLAW_TAR" "$ARCHIVE_DEST" -v --dropbox-chunk-size 128M 2>&1); then
+              if openclaw_final_upload_output=$(nice -n 19 ionice -c3 rclone copyto "$TMP_OPENCLAW_TAR" "$ARCHIVE_DEST" -v --dropbox-chunk-size 128M 2>&1); then
                 # 大小必须在 rm 之前取——成功上传后临时包即被删除，事后测不到
                 openclaw_final_size=$(stat -c%s "$TMP_OPENCLAW_TAR" 2>/dev/null || echo 0)
                 echo "final openclaw archive/upload ok (fallback) → $ARCHIVE_DEST: ${openclaw_final_output}"
