@@ -409,6 +409,16 @@ sync_with_logging() {
       SYNC_BACKEND_DEAD=1
       # 写探针（真实 PUT + 刷新缓存复核）判死属**强证据**，允许跨轮持久化（F6）
       SYNC_BACKEND_DEAD_STRONG=1
+    elif [ "${_PRE_WEBDAV_FAIL_KIND:-}" = "auth" ]; then
+      # 凭据层失败（如 WoPan rsp_code 1001 无效令牌）同样是**强证据**:
+      #   它不是网络抖动（unknown 类已在 _pre_webdav_health_check 内重试过一次才判失败），
+      #   而是明确的登录态失效，短期自愈概率低。
+      #   此前只认写探针 ⇒ auth 类在 WebDAV 预检就 return，根本走不到写探针 ⇒
+      #   SYNC_BACKEND_DEAD 永不置位 ⇒ 不写 backend_dead.json ⇒ 每轮继续撞这个死后端。
+      #   实测 2026-11-27: wopan175 报 1001 后 10+ 小时仍每轮被撞，backend_dead.json 不存在。
+      #   backend/unknown 类仍按弱证据处理，不在此列（防瞬时故障污染后续轮次）。
+      SYNC_BACKEND_DEAD=1
+      SYNC_BACKEND_DEAD_STRONG=1
     fi
     return 0
   fi

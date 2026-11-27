@@ -252,6 +252,10 @@ _pre_webdav_health_check() {
     kind=backend
   fi
 
+  # 导出失败类别供调用方判定「是否够强证据跨轮熔断」:
+  #   auth（凭据层，如 1001 无效令牌）= 明确登录态失效，非网络抖动 ⇒ 可持久化;
+  #   backend/unknown 仍按弱证据处理（可能瞬时），不跨轮持久化。
+  _PRE_WEBDAV_FAIL_KIND="$kind"
   local reason
   case "$kind" in
     auth)       reason="认证失效" ;;
