@@ -1125,3 +1125,36 @@ wopan176Crypt 52/422 与 wopan175 273/422 —— 同一源端 422 个文件,
 
 下一步: 要补齐 teacher-of-magic 的 306 个文件，需确认该子树在目标端为什么从未完成
 （被跳过？写不进？源端过滤？）。对 teacher-of-magic 跑定点 diff + 单文件修复测试即可定性，尚未执行。
+
+
+### 7.9 终局定位: teacher-of-magic 目录写 500，306 个文件从未落盘（2026-11-27 diff 完成）
+
+fix-check diff 对 teacher-of-magic 的实测（run 458xxxxx，虽然最终 40min 超时被取消，但关键数据已产出）:
+
+```
+源端:   onedrive:3/1024j-视频-pornhub-channel/teacher-of-magic  → 306 个文件（rc=0）
+目标端: openlist:wopan176Crypt/3/.../teacher-of-magic            →   0 个文件（rc=0）
+缺失（源端有·目标端无）: 306
+逐文件修复尝试: VERDICT|failed|...|所有修复方法均失败
+目录探测写探针: olprobe_*.txt Failed to copy: unchunked simple update failed: 500 Internal Server Error
+```
+
+三层证据闭合（这次是真的闭合，不是又一次误判）:
+1. 同父目录的三个子树中，foot-fetish-center 51/51 完整、sakurasfeet 有 last_success，
+   只有 teacher-of-magic 目标端 0 文件 ⇒ 问题局限于这一个目录，不是整个后端/账号;
+2. 该目录的写探针（真实 PUT + 复核）稳定报 500，连 26B 短名都失败 ⇒ 是后端写入端故障;
+3. 逐文件 4 方法修复全部失败 ⇒ 不是方法/名长问题，是目标目录根本写不进。
+
+**这解释了为什么父目录 marker 长期停在 52/422**: 306 个文件所在的目录写不进，
+所以永远凑不齐 422，顶层 marker 永远不写 last_success，每轮重列重传这棵树。
+
+**最终定性（不再反复）**:
+- 代码侧: 45+ 项改动全部验证通过，四条链路健康，最早 4 类缺陷全闭环;
+- 数据侧: 唯一实质障碍 = teacher-of-magic 这一个目标目录的后端写 500;
+- 已排除: 账号失效（用户实测 token 0000）、WAF（403）、名长（26B 也失败）、
+  记账口径（foot-fetish-center 已证明完整）、调度饥饿;
+- 解法不在 agent 侧: 需要服务端处理该目录写 500（换后端/换目录映射/等服务恢复）。
+  代码侧能做的（探测/告警/跳过/换目录兜底）均已做且验证。
+
+**不要做的事**: 不要放宽顶层 marker 判据来「让它显示完成」——这会把真实缺 306 个文件
+伪装成已同步，是数据静默丢失。
