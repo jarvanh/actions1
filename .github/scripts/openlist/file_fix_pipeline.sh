@@ -1514,6 +1514,23 @@ _sync_fix_missing_files() {
         [ -n "$_fix_pos_before" ] || _fix_pos_before=0
 
         _fix_event ATTEMPT "$failed_line"
+        # 路径级不可写快跳过（2026-11-27）: 本轮写探针已实测该目录写不进时，不再为每个文件
+        #   做「整文件下载 + 8 种上传组合」——实测单文件走完 4 方法 + 短哈希目录 4 方法约 20min
+        #   (fix-check 实测)，306 个文件的目录足以吃掉整轮预算。
+        #   语义: 只跳过**本轮**、不写黑名单 —— 后端恢复后下一轮照常重试，不影响数据完整性。
+        if declare -F _path_unwritable_hit >/dev/null 2>&1; then
+          _fw_skip=0
+          _path_unwritable_hit "$dest_path" && _fw_skip=1
+          if [ "$_fw_skip" -eq 0 ] && [ -n "${failed_line:-}" ]; then
+            _fw_dir="$(dirname -- "$failed_line")"; [ "$_fw_dir" = "." ] && _fw_dir=""
+            [ -n "$_fw_dir" ] && _path_unwritable_hit "${dest_path}/${_fw_dir}" && _fw_skip=1
+          fi
+          if [ "$_fw_skip" -eq 1 ]; then
+            echo "⏭ 本轮该目录已实测写不进（路径特异性）→ 跳过修复尝试，留待后端恢复 · $(_short_path "${failed_line:-}")" | tee -a "$LOG_FILENAME"
+            _fix_event DEFERRED "${failed_line:-}"
+            continue
+          fi
+        fi
         try_fix_failed_file "$source_path" "$dest_path" "$task_name" "$failed_line" "$fix_log" || true
         _cb_done=$((_cb_done + 1))
         _FIX_NAMELEN_CONTENT=0
