@@ -39,7 +39,7 @@ install_from_cache() {
     echo "::warning::缓存证书包含非 certs/ 成员或子目录，拒绝解包；本轮将现签"
     rm -f /tmp/ts-certs.tar.gz; exit 0
   fi
-  sudo tar -C /var/lib/tailscale -xzf --no-same-owner /tmp/ts-certs.tar.gz
+  sudo tar -C /var/lib/tailscale --no-same-owner -xzf /tmp/ts-certs.tar.gz
   rm -f /tmp/ts-certs.tar.gz
   # certs/ 下文件是 root:600：glob 与读取都必须以 root 身份做
   CRT="$(sudo sh -c 'ls /var/lib/tailscale/certs/*.crt 2>/dev/null | head -1' || true)"
