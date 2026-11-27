@@ -255,6 +255,7 @@ cutover 在停服务**之前**落 `/tmp/openclaw-handoff/switching`：
 
 ### 机制①：预检门（config validate）
 
+- 启动前会逐级打开 cgroup `+io` 控制器委托（GitHub runner 的 `user.slice` 默认只给 cpu/memory/pids）；否则 gateway 的 agent exec 隔离会持续告警并退化为共享内存保护。
 - 网关启动前，以**当前安装版本**运行 `openclaw config validate`。
 - **通过**：运行 `doctor --fix`（迁移官方废弃路径、剥除未知键），然后启动网关。
 - **失败**：先运行 `doctor --fix` 尝试修复并**复检**；修复成功则照常启动，仍失败则跳过网关启动、进入回退。

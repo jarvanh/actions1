@@ -97,6 +97,34 @@ fix_openclaw_permissions() {
   fi
 }
 
+# OpenClaw 的 agent exec 隔离要求 gateway service cgroup 暴露 cpu/io/memory 控制器。
+# GitHub hosted runner 的 user.slice 默认只向下委托 cpu/memory/pids，io 被挡在
+# user.slice 一层 → gateway 每次 exec 都告警并退化为共享内存保护。这里从 user.slice
+# 逐级打开 +io（root 权限），让新起的 gateway service 直接拿到控制器；非 cgroup v2
+# 或无 sudo 的环境静默跳过，绝不阻断启动。
+ensure_gateway_cgroup_controllers() {
+  local uid base um p
+  uid="$(id -u)"
+  base="/sys/fs/cgroup/user.slice"
+  um="$base/user-${uid}.slice/user@${uid}.service"
+  for p in "$base" "$base/user-${uid}.slice" "$um" "$um/app.slice"; do
+    [ -d "$p" ] || continue
+    grep -qw io "$p/cgroup.subtree_control" 2>/dev/null && continue
+    echo '+io' | sudo tee "$p/cgroup.subtree_control" >/dev/null 2>&1 || true
+  done
+}
+
+# apple-design 的 SKILL.md 曾带两个 description 键（第一个为空），OpenClaw 会整份跳过。
+# 只删第一个空的 description 行，修好后不再匹配；数据修正随主包归档延续。
+repair_known_skill_frontmatter() {
+  local f="$HOME/.openclaw/workspace/skills/apple-design/SKILL.md"
+  [ -f "$f" ] || return 0
+  if grep -qx 'description: >' "$f"; then
+    awk 'BEGIN{done=0} { if (!done && $0=="description: >") { done=1; next } print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    echo "🔧 Repaired duplicate description key in apple-design skill"
+  fi
+}
+
 openclaw_port_listening() {
   sudo lsof -Pi :18789 -sTCP:LISTEN -t >/dev/null
 }
@@ -217,6 +245,8 @@ dump_openclaw_diagnostics() {
 }
 
 fix_openclaw_permissions
+ensure_gateway_cgroup_controllers
+repair_known_skill_frontmatter
 
 echo "FAIL_STAGE=config_validate" >> "$RUN_OPENCLAW_META"
 echo "🧪 Preflight config validation for $CURRENT_OPENCLAW_VERSION ..."
