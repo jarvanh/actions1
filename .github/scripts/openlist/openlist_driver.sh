@@ -345,6 +345,21 @@ _openlist_api_health_check() {
   return 1
 }
 
+# ===== 后端级连通性失败缓存（轮内，仅缓存确定性失败）=====
+# 为什么需要（2026-11-27 实测）: _check_openlist_backend_connectivity 被逐批次/逐目录调用，
+#   而每次都会对「Crypt 底层裸存储」做一遍 WebDAV+API 探测。当整个后端失效（如 wopan175
+#   返回 rsp_code 1001 无效令牌）时，每个子目录都要重复一次注定失败的探测 ——
+#   run 45860950730 实测 wopan175「后端异常（WebDAV 预检），跳过」出现 **455 次**，
+#   相邻间隔中位数 11s、累计 **14436s ≈ 240.6min**，而整轮预算只有 320min ⇒
+#   约 75% 的时间被浪费在已知失效的后端上，健康后端只剩 25% 的窗口。
+# 设计约束:
+#   · 只在**本轮**缓存（不跨轮持久化）—— 后端恢复后下一轮立即重新探测，不会永久跳过；
+#   · 只缓存**确定性失败**（auth/backend）—— unknown（网络抖动）不缓存，避免误伤；
+#   · 键用**后端根**（openlist:wopan175），不是完整 dest_path，否则每个子目录各占一个键，
+#     缓存形同虚设（这正是问题所在）；
+#   · 命中缓存时仍打印一行说明，便于从日志分辨「真探测失败」与「本轮已判失效跳过」。
+declare -A _BACKEND_CONN_FAIL_ROUND=()
+declare -A _BACKEND_CONN_FAIL_REASON=()
 # 同步前连通性预检总入口。
 # 两层校验都针对目标本身与 Crypt 底层裸存储各执行一次：
 #   第1层 _pre_webdav_health_check — 快速、无凭据依赖，抓典型故障签名；
@@ -357,8 +372,41 @@ _check_openlist_backend_connectivity() {
   local log_file="${2:-}"
   [[ "$dest_path" == openlist:* ]] || return 0
 
-  _pre_webdav_health_check "$dest_path" "目标端 $dest_path" "$log_file" || return 1
-  _openlist_api_health_check "$dest_path" "目标端 $dest_path" "$log_file" || return 1
+  # 轮内短路: 该后端**根**本轮已实测失效 ⇒ 不再重复探测（省下大量注定失败的开销）
+  local _broot; _broot=$(_backend_root_of "$dest_path")
+  if [ "${_BACKEND_CONN_FAIL_ROUND[$_broot]:-0}" = "1" ]; then
+    echo "⏭ $dest_path 所属后端 $_broot 本轮已判失效（${_BACKEND_CONN_FAIL_REASON[$_broot]:-确定性失败}），跳过重复探测" | tee ${log_file:+-a "$log_file"}
+    return 1
+  fi
+
+  # 后端整体失效的判定必须探**后端根**，不能拿子目录的失败去代表整个后端 ——
+  #   子目录失败可能是路径特异性（如某个目录写 500 而同后端其它目录正常，
+  #   2026-11-27 teacher-of-magic 即此形态）。用子目录失败缓存整后端会误杀健康目录。
+  #   故: 子目录预检失败时，额外探一次后端根；只有后端根也失败才记入轮内缓存。
+  _conn_note_fail() {
+    local _reason="$1"
+    if [ "$_broot" = "$dest_path" ]; then
+      _BACKEND_CONN_FAIL_ROUND["$_broot"]=1
+      _BACKEND_CONN_FAIL_REASON["$_broot"]="$_reason"
+      return 0
+    fi
+    # 子目录失败 → 复核后端根
+    if _pre_webdav_health_check "$_broot" "后端根 $_broot" "$log_file" >/dev/null 2>&1; then
+      return 0   # 后端根健康 ⇒ 路径特异性，不缓存
+    fi
+    _BACKEND_CONN_FAIL_ROUND["$_broot"]=1
+    _BACKEND_CONN_FAIL_REASON["$_broot"]="$_reason（后端根同样失败）"
+    return 0
+  }
+
+  _pre_webdav_health_check "$dest_path" "目标端 $dest_path" "$log_file" || {
+    _conn_note_fail "WebDAV 预检失败"
+    return 1
+  }
+  _openlist_api_health_check "$dest_path" "目标端 $dest_path" "$log_file" || {
+    _conn_note_fail "API 强校验失败"
+    return 1
+  }
 
   if [[ "$dest_path" == openlist:*Crypt/* ]]; then
     local rel="${dest_path#openlist:}"
