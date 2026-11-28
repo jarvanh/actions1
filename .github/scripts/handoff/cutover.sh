@@ -110,7 +110,7 @@ done
 while IFS= read -r _db; do
   [ -n "$_db" ] || continue
   _checkpoint_db "$_db"
-done < <(find "$HOME/.zcode" -name '*.sqlite-wal' -size +0c -printf '%h\n' 2>/dev/null \
+done < <(find "$HOME/.zcode" -name '*.sqlite-wal' -size +0c -printf '%p\n' 2>/dev/null \
   | sed 's/-wal$//' | sort -u)
 echo "✅ [cutover] sqlite checkpoint 完成"
 
