@@ -21,6 +21,15 @@
 
 set +e
 
+# 中间清单固定写 /tmp 下的同名文件：手动 + 定时并发时会互相覆盖，
+# 甚至用另一轮的数据做删除决策。改为每轮私有目录 + EXIT 清理（2026-11-28）。
+DEDUP_TMP="$(mktemp -d /tmp/dedupe.XXXXXX)"
+trap 'rm -rf "$DEDUP_TMP"' EXIT
+VIDEOS_TSP="$DEDUP_TMP/videos_tsp.txt"
+HASH_LIST="$DEDUP_TMP/hashes.txt"
+HASH_ERR="$DEDUP_TMP/hash_err.log"
+RCLONE_ERR="$DEDUP_TMP/rclone_err.log"
+
 WORKFLOW_LABEL="${WORKFLOW_LABEL:-91-tg}"
 # 从 SOURCE_REMOTE 提取目录名作为通知中的目录标识（如 onedrive:1/1024j/视频/91 → 91）
 DIR_LABEL=$(basename "${SOURCE_REMOTE#*:}")
@@ -79,10 +88,10 @@ _grp_block() {
 HASH_TYPE=""
 for h in sha1 sha256 md5 QuickXorHash; do
   # 同时捕获 stdout 到解析管道、stderr 到错误日志文件
-  if rclone hashsum "$h" "$SOURCE_REMOTE/" 2>/tmp/rclone_hash_err.log \
+  if rclone hashsum "$h" "$SOURCE_REMOTE/" 2>"$HASH_ERR" \
     | python3 -c "import sys;[print(f'{p[0]};{p[1]}') for line in sys.stdin if len(p:=line.strip().split(None,1))==2]" \
-    > /tmp/91_hashes.txt; then
-    if [ -s /tmp/91_hashes.txt ]; then
+    > "$HASH_LIST"; then
+    if [ -s "$HASH_LIST" ]; then
       HASH_TYPE="$h"
       break
     fi
@@ -92,10 +101,10 @@ done
 # 获取文件列表（time;size;path），path 放最后，文件名含 ; 时最后一个字段获取剩余全部，安全
 # -R 递归子目录，path 包含子目录前缀
 rclone lsf "$SOURCE_REMOTE/" --files-only --format "tsp" -R 2>/dev/null \
-  | grep -iE '\.mp4$' > /tmp/91_videos_tsp.txt || true
+  | grep -iE '\.mp4$' > "$VIDEOS_TSP" || true
 
-TOTAL=$(wc -l < /tmp/91_videos_tsp.txt)
-HASH_COUNT=$(wc -l < /tmp/91_hashes.txt)
+TOTAL=$(wc -l < "$VIDEOS_TSP")
+HASH_COUNT=$(wc -l < "$HASH_LIST")
 echo "📊 数据采集: $TOTAL 个 mp4 文件, $HASH_COUNT 个哈希${HASH_TYPE:+（哈希类型: $HASH_TYPE）}"
 if [ "$TOTAL" -eq 0 ]; then
   echo "未在 $SOURCE_REMOTE 中找到 mp4 文件"
@@ -104,7 +113,7 @@ fi
 if [ "$HASH_COUNT" -eq 0 ]; then
   echo "⚠️ 哈希采集失败（已尝试 sha1/sha256/md5/QuickXorHash 均返回空），跳过去重"
   echo "  最后一次 rclone 错误（如有）:"
-  tail -n 5 /tmp/rclone_hash_err.log 2>/dev/null | sed 's/^/    /' || echo "    无错误输出"
+  tail -n 5 "$HASH_ERR" 2>/dev/null | sed 's/^/    /' || echo "    无错误输出"
   exit 0
 fi
 
@@ -113,7 +122,7 @@ declare -A PATH_META
 while IFS=';' read -r time size path; do
   [ -z "$path" ] && continue
   PATH_META["$path"]="${time};${size}"
-done < /tmp/91_videos_tsp.txt
+done < "$VIDEOS_TSP"
 
 # 按哈希分组: hash → entries(time;size;path)
 declare -A HASH_ENTRIES
@@ -129,7 +138,7 @@ while IFS=';' read -r hash path; do
   else
     HASH_ENTRIES[$hash]="${entry}"
   fi
-done < /tmp/91_hashes.txt
+done < "$HASH_LIST"
 
 # 预统计重复组数量（哈希出现 >1 次）
 DUP_TOTAL=0
@@ -170,12 +179,12 @@ for hash in "${!HASH_ENTRIES[@]}"; do
       [ "$p" = "$kept_path" ] && continue
       [ -z "$p" ] && continue
       if [ "$AUTO_DELETE" = "true" ]; then
-        if rclone deletefile "$SOURCE_REMOTE/$p" 2>/tmp/rclone_err.log; then
+        if rclone deletefile "$SOURCE_REMOTE/$p" 2>"$RCLONE_ERR"; then
           REMOVED_COUNT=$((REMOVED_COUNT + 1))
           _grp_add group_entries "$(tg_entry "${p}" "已删除" "$(format_bytes "$s")" "$(_bj_time "$t")")"$'\n'
         else
           _grp_add group_entries "$(tg_entry "${p}" "删除失败")"$'\n'
-          echo "  ❌ 删除失败: $(tail -n 3 /tmp/rclone_err.log)"
+          echo "  ❌ 删除失败: $(tail -n 3 "$RCLONE_ERR")"
         fi
       else
         _grp_add group_entries "$(tg_entry "${p}" "待删除 · 已跳过" "$(format_bytes "$s")" "$(_bj_time "$t")")"$'\n'
@@ -193,12 +202,12 @@ for hash in "${!HASH_ENTRIES[@]}"; do
       [ "$p" = "$kept_path" ] && continue
       [ -z "$p" ] && continue
       if [ "$AUTO_DELETE" = "true" ]; then
-        if rclone deletefile "$SOURCE_REMOTE/$p" 2>/tmp/rclone_err.log; then
+        if rclone deletefile "$SOURCE_REMOTE/$p" 2>"$RCLONE_ERR"; then
           REMOVED_COUNT=$((REMOVED_COUNT + 1))
           _grp_add group_entries "$(tg_entry "${p}" "已删除" "哈希一致" "旧文件")"$'\n'
         else
           _grp_add group_entries "$(tg_entry "${p}" "删除失败")"$'\n'
-          echo "  ❌ 删除失败: $(tail -n 3 /tmp/rclone_err.log)"
+          echo "  ❌ 删除失败: $(tail -n 3 "$RCLONE_ERR")"
         fi
       else
         _grp_add group_entries "$(tg_entry "${p}" "待删除 · 已跳过" "哈希一致" "旧文件")"$'\n'

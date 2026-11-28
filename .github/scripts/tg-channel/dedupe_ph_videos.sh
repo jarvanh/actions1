@@ -19,6 +19,15 @@
 
 set +e
 
+# 中间清单固定写 /tmp 下的同名文件：手动 + 定时并发时会互相覆盖，
+# 甚至用另一轮的数据做删除决策。改为每轮私有目录 + EXIT 清理（2026-11-28）。
+DEDUP_TMP="$(mktemp -d /tmp/dedupe.XXXXXX)"
+trap 'rm -rf "$DEDUP_TMP"' EXIT
+VIDEOS_TSP="$DEDUP_TMP/videos_tsp.txt"
+HASH_LIST="$DEDUP_TMP/hashes.txt"
+HASH_ERR="$DEDUP_TMP/hash_err.log"
+RCLONE_ERR="$DEDUP_TMP/rclone_err.log"
+
 # 从 SOURCE_REMOTE 提取目录名作为通知中的目录标识（如 onedrive:0/j-1024j-视频-pornhub-favorites → j-1024j-视频-pornhub-favorites）
 DIR_LABEL=$(basename "${SOURCE_REMOTE#*:}")
 
@@ -71,8 +80,8 @@ _grp_block() {
 # rclone lsf 列出文件（time;size;path），path 放最后，文件名含 ; 时最后一个字段获取剩余全部，安全
 # -R 递归子目录，path 包含子目录前缀
 rclone lsf "$SOURCE_REMOTE/" --files-only --format "tsp" -R 2>/dev/null \
-  | grep -iE '\.mp4$' > /tmp/videos_tsp.txt || true
-TOTAL=$(wc -l < /tmp/videos_tsp.txt)
+  | grep -iE '\.mp4$' > "$VIDEOS_TSP" || true
+TOTAL=$(wc -l < "$VIDEOS_TSP")
 echo "📊 数据采集: $TOTAL 个 mp4 文件"
 if [ "$TOTAL" -eq 0 ]; then
   echo "未在 $SOURCE_REMOTE 中找到 mp4 文件"
@@ -91,7 +100,7 @@ while IFS=';' read -r time size path; do
   else
     ID_ENTRIES[$id]="${entry}"
   fi
-done < /tmp/videos_tsp.txt
+done < "$VIDEOS_TSP"
 
 # 计算规范化标题：去扩展名 + 去掉所有位置的 ph ID + 方括号 + 压缩分隔符并 trim + NFC 归一化
 # NFC 归一化解决 OneDrive/macOS(NFD) 与其他系统(NFC) 对同一字符（如 й）编码不同导致的误判
@@ -138,12 +147,12 @@ for id in "${!ID_ENTRIES[@]}"; do
     while IFS=';' read -r t s p; do
       [ "$p" = "$kept_path" ] && continue
       [ -z "$p" ] && continue
-      if rclone deletefile "$SOURCE_REMOTE/$p" 2>/tmp/rclone_err.log; then
+      if rclone deletefile "$SOURCE_REMOTE/$p" 2>"$RCLONE_ERR"; then
         REMOVED_COUNT=$((REMOVED_COUNT + 1))
         _grp_add group_entries "$(tg_entry "${p}" "已删除" "$(format_bytes "$s")" "$(_bj_time "$t")")"$'\n'
       else
         _grp_add group_entries "$(tg_entry "${p}" "删除失败")"$'\n'
-        echo "  ❌ 删除失败: $(tail -n 3 /tmp/rclone_err.log)"
+        echo "  ❌ 删除失败: $(tail -n 3 "$RCLONE_ERR")"
       fi
     done <<< "$sorted"
     _fold=$(_grp_fold)
@@ -168,12 +177,12 @@ for id in "${!ID_ENTRIES[@]}"; do
       [ "$p" = "$kept_path" ] && continue
       [ -z "$p" ] && continue
       if [ "$AUTO_DELETE" = "true" ]; then
-        if rclone deletefile "$SOURCE_REMOTE/$p" 2>/tmp/rclone_err.log; then
+        if rclone deletefile "$SOURCE_REMOTE/$p" 2>"$RCLONE_ERR"; then
           REMOVED_COUNT=$((REMOVED_COUNT + 1))
           _grp_add group_entries "$(tg_entry "${p}" "已删除" "$(format_bytes "$s")" "$(_bj_time "$t")")"$'\n'
         else
           _grp_add group_entries "$(tg_entry "${p}" "删除失败")"$'\n'
-          echo "  ❌ 删除失败: $(tail -n 3 /tmp/rclone_err.log)"
+          echo "  ❌ 删除失败: $(tail -n 3 "$RCLONE_ERR")"
         fi
       else
         _grp_add group_entries "$(tg_entry "${p}" "待删除 · 已跳过" "$(format_bytes "$s")" "$(_bj_time "$t")")"$'\n'
@@ -190,7 +199,7 @@ for id in "${!ID_ENTRIES[@]}"; do
       printf '    title=[%s] file=%s\n' "$(get_title "$p")" "$p"
     done <<< "$entries"
     # 计算每个文件哈希，写入: hash;time;size;path
-    HASH_LIST="/tmp/hash_list_${id}.txt"
+    HASH_LIST=""$HASH_LIST""
     > "$HASH_LIST"
     HCOUNT=0
     while IFS=';' read -r t s p; do
@@ -214,12 +223,12 @@ for id in "${!ID_ENTRIES[@]}"; do
           [ "$p" = "$hkept_path" ] && continue
           [ -z "$p" ] && continue
           if [ "$AUTO_DELETE" = "true" ]; then
-            if rclone deletefile "$SOURCE_REMOTE/$p" 2>/tmp/rclone_err.log; then
+            if rclone deletefile "$SOURCE_REMOTE/$p" 2>"$RCLONE_ERR"; then
               REMOVED_COUNT=$((REMOVED_COUNT + 1))
               _grp_add group_entries "$(tg_entry "${p}" "已删除" "哈希一致 ${hash:0:12}" "旧文件")"$'\n'
             else
               _grp_add group_entries "$(tg_entry "${p}" "删除失败")"$'\n'
-              echo "  ❌ 删除失败: $(tail -n 3 /tmp/rclone_err.log)"
+              echo "  ❌ 删除失败: $(tail -n 3 "$RCLONE_ERR")"
             fi
           else
             _grp_add group_entries "$(tg_entry "${p}" "待删除 · 已跳过" "哈希一致 ${hash:0:12}" "旧文件")"$'\n'
