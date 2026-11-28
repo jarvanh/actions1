@@ -57,7 +57,10 @@ require_vd() {
     local level="error"
     [ "$mode" = "--warn" ] && level="warning"
     echo "::${level}::VD secret 不是合法 DNS 标签 —— 需为单个前缀（仅 a-z A-Z 0-9 与连字符，无空格/下划线/引号/换行/非ASCII）。上行为元信息，值本身不打印。"
-    [ "$mode" = "--warn" ] && return 0
+    # --warn 只影响「是否打 error 注解」，返回值一律反映合法性（2026-11-28）：
+    # 此前 --warn 恒 return 0，而 emby/openclaw 把它当 `if require_vd ... --warn`
+    # 的布尔守卫用 ⇒ 非法 VD 照样去 route dns，且跳过下面的小写归一化。
+    # 容错调用方请改成 `require_vd ... --warn || true`，语义即「告警但继续」。
     return 1
   fi
 
