@@ -803,7 +803,9 @@ def collect_sources(item, token, timeout, max_file_bytes):
         log_progress('gist_nodes_fetch_failed', gist=item['url'], error=str(e))
         return [], stats
     stats['gists_scanned'] = 1
-    hard_cap = (max_file_bytes or 0) + 4096
+    # max_file_bytes=0 的语义是「不限」，但原式 (0 or 0)+4096 会给出 4096 字节硬顶，
+    # 大文件被静默截断后仍可能通过 looks_like_subscription 喂给 Sub-Store（少节点且无告警）。
+    hard_cap = (max_file_bytes + 4096) if max_file_bytes else 0
     files = []
     for name, meta in sorted((data.get('files') or {}).items()):
         if not isinstance(meta, dict):
