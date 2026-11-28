@@ -423,9 +423,10 @@ def download_speedtest(urls, proxy_env, timeout=30.0, size_hint_mib=10, window_s
         if per_url_seconds < 1:
             # 剩余不足 1 秒测不出有意义的速度，不如不收（也避免 --max-time 0/负数）
             break
-        # **向上取整**：`int()` 截断会把 2.99 秒变成 2 秒，凭空少测 1 秒（实测端到端
-        # 3 秒窗口只跑了 2 秒）。curl 的 --max-time 只接受整数秒。
-        curl_max_time = max(1, int(math.ceil(per_url_seconds)))
+        # curl 的 --max-time 只接受整数秒。这里取 floor 而不是 ceil：ceil 会让每个 URL
+        # 都比预算多跑接近 1 秒，节点多时累积击穿单节点 12s 上界（2026-11-28 修）；
+        # 少于 1 秒的余量测不出有意义的速度，直接按 1 秒跑最后一小段。
+        curl_max_time = max(1, int(per_url_seconds))
         range_arg = f'0-{cap_bytes - 1}'
         cmd = ['curl', '-sSL', '-o', '/dev/null']
         if proxy:

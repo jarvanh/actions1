@@ -769,9 +769,22 @@ def _read_trial_log_after_init(provider_names, timeout=TRIAL_CONCLUSION_TIMEOUT)
         # 2026-11-28 复核：曾尝试改成按 provider 名精确匹配，
         # 但真实日志行形如 msg="Start initial provider <名>"（带引号）且调用方传 key，
         # 精确匹配会永远等不到 → 整批超时放行，test_trial_load 直接失败，故保持原判据。
-        if sum(1 for line in text.splitlines()
-               if line.startswith(TRIAL_START_MARKER) is False
-               and TRIAL_START_MARKER in line) >= want:
+        # 按本批 provider 名精确匹配：日志行形如 level=info msg="Start initial provider trial-b0000"，
+        # 名字后可能跟一个收尾引号；调用方传的是 key（b0000），这里两种形态都认。
+        # 比「数 Start 行总数」稳：旧行/兼容 provider 的行不会把本批凑满。
+        _wanted = set()
+        for _n in provider_names:
+            _n = str(_n).strip()
+            _wanted.add(_n)
+            _wanted.add(_n if _n.startswith(TRIAL_PROVIDER_PREFIX) else TRIAL_PROVIDER_PREFIX + _n)
+        _seen = set()
+        for line in text.splitlines():
+            i = line.find(TRIAL_START_MARKER)
+            if i < 0:
+                continue
+            rest = line[i + len(TRIAL_START_MARKER):].strip()
+            _seen.add(rest.split('"')[0].strip())
+        if _wanted and _wanted <= _seen:
             return text, True
         if time.monotonic() >= deadline:
             return text, False
@@ -864,8 +877,9 @@ def _trial_judge(items, names, written, opener, starts):
     # 写盘的体积自己先核一遍：越界的话下面的正证会恰好是「静默归零」，那是量纲出错的
     # 信号（不是节点坏），必须打出来，否则又会变成一桩无解之谜。
     total_bytes = sum(written.values())
-    if total_bytes > TRIAL_MAX_BYTES_TOTAL or any(
-            b > TRIAL_MAX_BYTES_PER_FILE for b in written.values()):
+    _oversize = total_bytes > TRIAL_MAX_BYTES_TOTAL or any(
+        b > TRIAL_MAX_BYTES_PER_FILE for b in written.values())
+    if _oversize:
         log_progress('trial_load_batch_oversize', providers=len(items),
                      total_bytes=total_bytes, limit=TRIAL_MAX_BYTES_TOTAL,
                      biggest=max(written.values()) if written else 0,
@@ -893,6 +907,17 @@ def _trial_judge(items, names, written, opener, starts):
             if not first_error:
                 first_error = (f'{pname} 只装到 {got}/{len(nodes)} 个节点'
                                f'（文件 {written.get(key, 0)} 字节）')
+    # 只有「单个节点本身就超体积」才 fail-open：它没法再切小，mihomo 必然静默归零，
+    # 此时的「装到 0 个」是量纲问题而不是节点坏，按坏节点摘掉会误删合法大节点。
+    # 多节点批次超限仍按可信归因处理 —— 那属于「切块没切好」，应当由 _trial_split_batches
+    # 提前避免（见 test_trial_load 第 16 组），不能拿 fail-open 掩盖真实的坏节点。
+    if (_oversize and len(items) == 1 and len(items[0][1]) == 1
+            and written.get(items[0][0], 0) > TRIAL_MAX_BYTES_PER_FILE):
+        log_progress('trial_load_single_oversize_failopen', providers=1,
+                     node_bytes=written.get(items[0][0], 0), limit=TRIAL_MAX_BYTES_PER_FILE)
+        return (failed_keys, False,
+                first_error or '单节点试装文件超体积上限，mihomo 会静默归零，归因不可信',
+                starts)
     return failed_keys, True, first_error, starts
 
 
@@ -1170,8 +1195,21 @@ def trial_load(proxies, workdir=None, max_nodes_per_batch=TRIAL_MAX_NODES_PER_BA
     if failed and failed == done_batches and done_batches:
         return give_up('all_batches_unresolved', first_error or 'mihomo 无法完成任何一次试装')
 
+    # 同名节点不能按名字摘：removed_set 里存的是名字，删一个会连带删掉同名的好节点。
+    # 同名一律 fail-open（保留），并在报告里点出来，免得「removed 数」被误读。
+    _name_counts = {}
+    for _p in proxies:
+        _n = str((_p or {}).get('name') or '')
+        if _n:
+            _name_counts[_n] = _name_counts.get(_n, 0) + 1
+    _dup_names = {n for n, c in _name_counts.items() if c > 1}
+    if _dup_names and (removed_set & _dup_names):
+        log_progress('trial_load_duplicate_names_failopen',
+                     duplicated=len(_dup_names),
+                     note='同名节点按名字摘会误伤，已保留')
     kept = [p for p in proxies
-            if str((p or {}).get('name') or '') not in removed_set]
+            if str((p or {}).get('name') or '') not in removed_set
+            or str((p or {}).get('name') or '') in _dup_names]
     # 只按名字摘节点，名字缺失/重复的不会被摘掉——如实反映在报告里，免得读者以为
     # 「removed 数」就等于「订阅少了多少」。
     dropped = total - len(kept)
