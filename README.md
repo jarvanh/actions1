@@ -1190,3 +1190,33 @@ fix-check diff 的逐文件日志给出完整轨迹（以 teacher-of-magic 的�
 结论不变且更强: 306 个文件补不齐不是「没用哈希目录修复」，而是**用了哈希目录修复也救不回**——
 原目录、短哈希目录、4 种文件形态（原名/短名/原名分卷/短名分卷）共 8 种组合全部失败，
 且写探针在两种目录上都报 500。这是后端写入端故障的充分证据。
+
+### 7.11 重要事实修正: wopan175 数据面是 HTTP 500，不是凭据失效（2026-11-28 复核）
+
+对 head=1b5e41a 那一轮（已含全部提速改动）的生产日志逐条核对：
+
+```
+🚫 目标端 openlist:wopan175/5/... 后端异常（WebDAV 预检），跳过本轮同步
+   ▸ CRITICAL: Failed to create file system: read metadata failed:
+     Internal Server Error: 500 Internal Server Error
+```
+
+⇒ 跳过原因分布：后端异常 56 次 / 认证失效 0 次。wopan175 的数据面错误是 HTTP 500，
+与 wopan176Crypt 的 teacher-of-magic 写 500 属同一类，很可能是同一个服务端根因
+（WoPan 侧故障/限流），而不是两个互相独立的故障。
+
+两个口径必须分清（这是此前判断反复的根源）：
+
+| 口径 | wopan175 的表现 | 来源 |
+|---|---|---|
+| 巡检 API 层（initialize user data）| rsp_code 1001「无效的令牌」| storage_alert.json |
+| 数据面（WebDAV read/list）| HTTP 500 Internal Server Error | 生产同步日志 |
+
+两者不一致 ⇒ 不能用 storage_alert 的 credential 判定去推断数据面故障性质。
+
+因此上一版「auth 类计入强证据」对当前实际故障无效 —— 它按 auth 分类，而实际分类是
+backend（弱证据），所以 backend_dead.json 仍然不生成。该改动本身仍正确（auth 确实是
+强证据），但不是本场景的解法，保留不动。
+
+对应提速实测（同一轮）：wopan175 的 WebDAV 预检真实探测从 455 次降到 58 次，
+TTL 缓存短路 454 次。
