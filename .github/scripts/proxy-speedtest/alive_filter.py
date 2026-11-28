@@ -503,7 +503,9 @@ def _start_mihomo(wait_timeout=60):
     # 判据：先看端口是否已在监听——**一开始就不可用**说明不是我们的进程占的，直接走。
     if killed:
         port = _controller_port()
-        if port is None or not _port_free(port):
+        # port=None 说明控制器端口都读不到（配置/参数形态变了），此时等也没有意义，
+        # 原写法 `port is None or ...` 会进 while 再拿 None 比较，直接 TypeError（2026-11-28）。
+        if port is not None and not _port_free(port):
             deadline = time.monotonic() + TRIAL_TERMINATE_GRACE_SECONDS
             while time.monotonic() < deadline:
                 if _port_free(port):
@@ -761,9 +763,16 @@ def _read_trial_log_after_init(provider_names, timeout=TRIAL_CONCLUSION_TIMEOUT)
             text = MIHOMO_LOG.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             text = ''
-        if sum(1 for line in text.splitlines()
-               if line.startswith(TRIAL_START_MARKER) is False
-               and TRIAL_START_MARKER in line) >= want:
+        # 精确到「本批每个 provider 名都出现过」，而不是数 Start 行总数：
+        # 日志是追加写的，旧轮/兼容 provider 的 Start 行会一起被数进去，
+        # 数够了就提前判完成 → 后半截 provider 还没结论就被当好的。
+        seen = set()
+        for line in text.splitlines():
+            idx_name = line.find(TRIAL_START_MARKER)
+            if idx_name < 0:
+                continue
+            seen.add(line[idx_name + len(TRIAL_START_MARKER):].strip())
+        if all(n in seen for n in provider_names):
             return text, True
         if time.monotonic() >= deadline:
             return text, False
