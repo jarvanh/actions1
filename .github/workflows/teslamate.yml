@@ -202,7 +202,8 @@ jobs:
           if [ "$OLD_DB_EXISTS" -eq 1 ] && [ "$OLD_TABLE_COUNT" -gt 10 ]; then
             echo "旧数据库存在且包含 $OLD_TABLE_COUNT 张表，需要备份"
             NEED_BACKUP=true
-            # 备份到容器内的 /tmp 目录
+            # 备份到 runner 的 /tmp（重定向在本机 shell 执行，容器内看不到这个文件；
+            # 恢复必须用 stdin 喂给容器内的 psql，见下方「使用宿主机上的备份文件」）
             docker compose -p teslamate exec -T database pg_dump -U teslamate -d teslamate > /tmp/teslamate_data.sql
           else
             echo "旧数据库不存在或为空（$OLD_TABLE_COUNT 张表），无需备份"
@@ -237,15 +238,19 @@ jobs:
           # 决定是否需要恢复
           if [ "$NEED_BACKUP" = true ] && [ "$NEW_TABLE_COUNT" -eq 0 ]; then
             echo "新数据库为空，恢复数据..."
-            # 使用容器内的备份文件
-            docker compose -p teslamate exec -T database psql -U teslamate -d teslamate -f /tmp/teslamate_data.sql
+            # 使用宿主机上的备份文件（pg_dump 的重定向发生在 runner，不在容器内）
+            if [ ! -s /tmp/teslamate_data.sql ]; then
+              echo "::error::备份文件 /tmp/teslamate_data.sql 不存在或为空，拒绝继续（旧数据卷仍保留为 teslamate-db-old）"
+              exit 1
+            fi
+            docker compose -p teslamate exec -T database psql -U teslamate -d teslamate < /tmp/teslamate_data.sql
             
-            # 删除容器内的备份文件
-            docker compose -p teslamate exec -T database rm -f /tmp/teslamate_data.sql
+            # 删除宿主机上的备份文件
+            rm -f /tmp/teslamate_data.sql
           elif [ "$NEED_BACKUP" = true ]; then
             echo "新数据库已有数据($NEW_TABLE_COUNT 张表)，跳过恢复"
-            # 删除容器内的备份文件
-            docker compose -p teslamate exec -T database rm -f /tmp/teslamate_data.sql
+            # 删除宿主机上的备份文件
+            rm -f /tmp/teslamate_data.sql
           fi
           
           # 验证
