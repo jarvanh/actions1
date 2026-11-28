@@ -51,33 +51,98 @@ read_openclaw_version_file() {
   fi
 }
 
+# 版本历史（2026-11-28）：known-good 不再只存一行裸版本。
+# 背景：一次 build 失败的 fallback 选中版本 == 当前失败版本（都是 2026.11.10），
+# 于是「回退」变成把同一份有 pid-namespace 锁缺陷的 CLI 重装一遍，必然再次失败。
+# 现在记录 version + pid-ns 指纹 + 时间，本地保留最近 N 条，并同步一份到 Dropbox；
+# 回退时优先取 Dropbox 历史里「不等于当前失败版本」的最新一条。
+OPENCLAW_VERSION_HISTORY_MAX="${OPENCLAW_VERSION_HISTORY_MAX:-5}"
+OPENCLAW_VERSION_HISTORY_REMOTE="${OPENCLAW_VERSION_HISTORY_REMOTE:-dropbox:self-hosted/openclaw-known-good-versions.txt}"
+
 record_successful_openclaw_version() {
-  local version="$1"
+  local version="$1" pidns ts
   version="$(normalize_openclaw_version "$version")"
   if [ -z "$version" ]; then
     echo "⚠️ Cannot record successful OpenClaw version: current version is empty or invalid."
     return 0
   fi
   mkdir -p "$HOME/.openclaw"
-  printf '%s\n' "$version" > "$KNOWN_GOOD_VERSION_FILE"
+  pidns="$(readlink /proc/1/ns/pid 2>/dev/null || echo unknown)"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # 去重口径：同一 version 只保留最新一条（tac → 取首次出现 → 还原顺序）
+  {
+    [ -s "$KNOWN_GOOD_VERSION_FILE" ] && cat "$KNOWN_GOOD_VERSION_FILE"
+    printf '%s\tpidns=%s\t%s\n' "$version" "$pidns" "$ts"
+  } | tac | awk -F'\t' 'NF && !seen[$1]++' | tac | tail -n "$OPENCLAW_VERSION_HISTORY_MAX" > "$KNOWN_GOOD_VERSION_FILE.tmp"
+  mv "$KNOWN_GOOD_VERSION_FILE.tmp" "$KNOWN_GOOD_VERSION_FILE"
   echo "RECORDED_SUCCESSFUL_OPENCLAW_VERSION=$version" >> "$RUN_OPENCLAW_META"
-  echo "✅ Recorded successful OpenClaw version: $version"
+  echo "✅ Recorded successful OpenClaw version: $version (pidns=$pidns)"
+  # Dropbox 备份一份，供「本机被回收 / 本地文件丢失」时回退使用；失败不阻断
+  if command -v rclone >/dev/null 2>&1; then
+    if rclone copyto "$KNOWN_GOOD_VERSION_FILE" "$OPENCLAW_VERSION_HISTORY_REMOTE" >/dev/null 2>&1; then
+      echo "☁️ Version history synced: $OPENCLAW_VERSION_HISTORY_REMOTE"
+    else
+      echo "⚠️ Version history sync failed (non-fatal): $OPENCLAW_VERSION_HISTORY_REMOTE"
+    fi
+  fi
+}
+
+# 兼容旧格式（一行裸版本）：只取第一列，忽略 2026-11-28 起新增的指纹列
+read_openclaw_version_file() {
+  local file="$1"
+  if [ -s "$file" ]; then
+    normalize_openclaw_version "$(tail -n 1 "$file" 2>/dev/null | cut -f1 || true)"
+  fi
+}
+
+# 按「新 → 旧」列出文件里所有可解析版本（每行一条，已去重）
+list_known_versions() {
+  local file="$1"
+  [ -s "$file" ] || return 0
+  tac "$file" 2>/dev/null | while IFS=$'\t' read -r v _rest; do
+    normalize_openclaw_version "$v"
+  done
+}
+
+fetch_dropbox_version_history() {
+  local out="$1"
+  command -v rclone >/dev/null 2>&1 || return 1
+  rclone cat "$OPENCLAW_VERSION_HISTORY_REMOTE" > "$out" 2>/dev/null || return 1
+  [ -s "$out" ]
 }
 
 resolve_fallback_openclaw_version() {
-  local version=""
+  local version="" hist
+  hist="$(mktemp)"
 
-  version="$(read_openclaw_version_file "$KNOWN_GOOD_VERSION_FILE")"
-  if [ -n "$version" ]; then
-    echo "FALLBACK_VERSION_SOURCE=known_good_file" >> "$RUN_OPENCLAW_META"
-    echo "$version"
-    return 0
+  # ① 首选：Dropbox 备份的历史版本（最新一条且不等于当前失败版本）
+  if fetch_dropbox_version_history "$hist"; then
+    while IFS= read -r version; do
+      if [ -n "$version" ] && [ "$version" != "$CURRENT_OPENCLAW_SEMVER" ]; then
+        echo "FALLBACK_VERSION_SOURCE=dropbox_history" >> "$RUN_OPENCLAW_META"
+        rm -f "$hist"
+        echo "$version"
+        return 0
+      fi
+    done < <(list_known_versions "$hist")
   fi
 
+  # ② 次选：本地版本历史（同样跳过当前失败版本）
+  while IFS= read -r version; do
+    if [ -n "$version" ] && [ "$version" != "$CURRENT_OPENCLAW_SEMVER" ]; then
+      echo "FALLBACK_VERSION_SOURCE=known_good_history" >> "$RUN_OPENCLAW_META"
+      rm -f "$hist"
+      echo "$version"
+      return 0
+    fi
+  done < <(list_known_versions "$KNOWN_GOOD_VERSION_FILE")
+  rm -f "$hist"
+
+  # ③ 兜底：配置里记录的 lastTouchedVersion（跳过当前失败版本）
   if [ -s "$HOME/.openclaw/openclaw.json" ]; then
     version="$(jq -r '.meta.lastTouchedVersion // empty' "$HOME/.openclaw/openclaw.json" 2>/dev/null | head -n 1 || true)"
     version="$(normalize_openclaw_version "$version")"
-    if [ -n "$version" ]; then
+    if [ -n "$version" ] && [ "$version" != "$CURRENT_OPENCLAW_SEMVER" ]; then
       echo "FALLBACK_VERSION_SOURCE=meta_lastTouchedVersion" >> "$RUN_OPENCLAW_META"
       echo "$version"
       return 0
@@ -446,6 +511,10 @@ else
     if [ -d "$GW_DROPIN_DIR" ]; then
       GW_DROPIN_BACKUP="${GW_DROPIN_DIR}.pre-install.$$.$(date +%s%N)"
       mv "$GW_DROPIN_DIR" "$GW_DROPIN_BACKUP" 2>/dev/null || true
+      # 与初始路径（apply_gw_dropin 前）保持一致：drop-in 已从磁盘移除，
+      # 不 daemon-reload 的话 systemd 仍持有旧定义，gateway install --force 会报
+      # SERVICE_DEFINITION_UNKNOWN(cannot be safely inspected) 而整轮失败。
+      systemctl --user daemon-reload 2>/dev/null || true
     fi
     mkdir -p "$HOME/.bun/bin"
     if ! openclaw gateway install --force; then
