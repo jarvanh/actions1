@@ -385,6 +385,11 @@ _check_openlist_backend_connectivity() {
 
   # 轮内短路: 该后端**根**本轮已实测失效 ⇒ 不再重复探测（省下大量注定失败的开销）
   local _broot; _broot=$(_backend_root_of "$dest_path")
+  # 后端根已被「写探针判死」标记 ⇒ 同后端所有路径本轮都不再重复探测（让意图与文案一致）
+  if declare -F _path_unwritable_hit >/dev/null 2>&1 && _path_unwritable_hit "$_broot"; then
+    echo "⏭ $dest_path 所属后端 $_broot 本轮写探针已判死，跳过重复预检（后端级熔断）" | tee ${log_file:+-a "$log_file"}
+    return 1
+  fi
   if [ "${_BACKEND_CONN_FAIL_ROUND[$_broot]:-0}" = "1" ]; then
     # TTL 复核: 不能永久短路 —— 后端可能中途恢复，而 F22 的「写探针周期性重探」
     # 依赖连通性预检先放行才能到达。故按 TTL 定期真探一次，兼顾省时与自愈。
@@ -634,6 +639,16 @@ _backend_write_probe() {
     reason="写入返回成功但复核不可见（PUT 假成功）"
   fi
   echo "🚫 后端 $root ${reason}，判定本轮不可用 → 熔断该后端全部同步对（把时间让给健康后端）" | tee ${log_file:+-a "$log_file"}
+  # 让「熔断该后端全部同步对」这句文案真正成立（2026-11-28 修）:
+  #   此前只 return 1，仅跳过**当前路径**；同后端的下一个子目录仍会再做一次写探针。
+  #   实测 run 4579xxxxxx: 22:46:44 刚打印「熔断该后端全部同步对」，22:46:46 就对
+  #   同一后端的另一个子目录再做了一次注定 500 的写探针。
+  #   这里把**后端根 + 本次路径**都记为不可写，使 _path_unwritable_hit 能拦住同后端后续路径。
+  #   仅本轮有效（_PATH_UNWRITABLE_ROUND 是轮内表），后端恢复后下一轮照常重试。
+  if declare -F _path_unwritable_mark >/dev/null 2>&1; then
+    _path_unwritable_mark "$root"
+    [ -n "${dest:-}" ] && [ "$dest" != "$root" ] && _path_unwritable_mark "$dest"
+  fi
   return 1
 }
 
