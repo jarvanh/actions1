@@ -120,9 +120,9 @@ fi
 cd "$FC_WORK" || exit 2
 
 _fc_log "=== openlist 修复能力定点验证（fix-check） ==="
-_fc_log "  模式=${FIXCHECK_MODE} 任务=${FIXCHECK_TASK} 上限=${FIXCHECK_MAX} 子路径=${FIXCHECK_SUBDIR:-（任务根）}"
-_fc_log "  重置历史黑名单=${FIXCHECK_RESET_BLACKLIST} 真值复核重启=${FIXCHECK_TRUTH_RESTART}"
-_fc_log "  工作目录=${FC_WORK}"
+_fc_log "  模式：${FIXCHECK_MODE} 任务：${FIXCHECK_TASK} 上限：${FIXCHECK_MAX} 子路径：${FIXCHECK_SUBDIR:-（任务根）}"
+_fc_log "  重置历史黑名单：${FIXCHECK_RESET_BLACKLIST} 真值复核重启：${FIXCHECK_TRUTH_RESTART}"
+_fc_log "  工作目录：${FC_WORK}"
 # ⚠️ 容器名必须是 openlist: 真值复核走的 `_sync_restart_for_verify`（openlist_driver.sh:782）
 # 硬编码 `sudo docker restart openlist`，容器叫别的名字会重启到空气上（复核永远"失败"）
 if [ "${FIXCHECK_CONTAINER:-openlist}" != "openlist" ]; then
