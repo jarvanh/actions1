@@ -763,16 +763,15 @@ def _read_trial_log_after_init(provider_names, timeout=TRIAL_CONCLUSION_TIMEOUT)
             text = MIHOMO_LOG.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             text = ''
-        # 精确到「本批每个 provider 名都出现过」，而不是数 Start 行总数：
-        # 日志是追加写的，旧轮/兼容 provider 的 Start 行会一起被数进去，
-        # 数够了就提前判完成 → 后半截 provider 还没结论就被当好的。
-        seen = set()
-        for line in text.splitlines():
-            idx_name = line.find(TRIAL_START_MARKER)
-            if idx_name < 0:
-                continue
-            seen.add(line[idx_name + len(TRIAL_START_MARKER):].strip())
-        if all(n in seen for n in provider_names):
+        # 判据保持「本批 Start 行数够不够」：装载前会 write_text('') 截断日志，
+        # 上一批的 Start 行不会残留（见 _trial_probe 的清空注释）；万一 mihomo 缓冲
+        # 写回旧行，本批行数对不上会走「不可信 → 原样放行」，不会误删节点。
+        # 2026-11-28 复核：曾尝试改成按 provider 名精确匹配，
+        # 但真实日志行形如 msg="Start initial provider <名>"（带引号）且调用方传 key，
+        # 精确匹配会永远等不到 → 整批超时放行，test_trial_load 直接失败，故保持原判据。
+        if sum(1 for line in text.splitlines()
+               if line.startswith(TRIAL_START_MARKER) is False
+               and TRIAL_START_MARKER in line) >= want:
             return text, True
         if time.monotonic() >= deadline:
             return text, False
