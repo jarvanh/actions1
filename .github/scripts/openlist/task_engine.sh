@@ -1286,7 +1286,7 @@ run_all_tasks() {
       if [ "${SYNC_SKIPPED:-0}" = "1" ] || [ "${SYNC_FAILED:-0}" = "0" ]; then
         # 后端本轮跑通 ⇒ 清零其「弱证据连续轮次」（防陈年 streak 把一次新抖动顶到阈值）
         if declare -F _backend_dead_weak_reset >/dev/null 2>&1 && [ -n "${_hb_dst:-}" ]; then
-          local _succ_root="\$(_task_backend_root_of "\$_hb_dst" 2>/dev/null || true)"
+          local _succ_root="$(_task_backend_root_of "$_hb_dst" 2>/dev/null || true)"
           [ -n "$_succ_root" ] && _backend_dead_weak_reset "$_succ_root" >/dev/null 2>&1 || true
         fi
         # 完成/跳过 → 游标后移，连续尝试数清零
