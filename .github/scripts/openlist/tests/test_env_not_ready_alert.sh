@@ -45,6 +45,9 @@ run_step() {  # $1=OL_ENV_READY $2=有凭据(1/0)
     SENT_FILE=/tmp/guard_sent_$$; : > "$SENT_FILE"
     # 覆盖 source 后的助手（真源文件为空，函数由这里提供）
     tg_add_title() { :; }; tg_add_kv() { :; }; tg_add_note() { :; }; tg_add_footer() { :; }
+    # workflow 调的是 send_tg（tg_notify.sh:515），不是 send_telegram_message —— 此前 mock 错函数名，
+    # 导致 B 用例恒失败（告警其实正常发出，是测试没抓到）。两个都 mock，兼容后续改动。
+    send_tg() { printf 'TIER=%s MSG=%s\n' "${2:-}" "$1" >> "$SENT_FILE"; }
     send_telegram_message() { printf 'TIER=%s MSG=%s\n' "${3:-}" "$1" >> "$SENT_FILE"; }
     eval "$S" >/dev/null 2>&1
     cat "$SENT_FILE" 2>/dev/null
