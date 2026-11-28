@@ -22,9 +22,27 @@ TMP_DIR="/tmp/tg-upload"
 mkdir -p "$TMP_DIR"
 
 # 拉取已上传名单到本地（不要修改远程文件，工作结束后再写回）
-rclone cat "$SOURCE_REMOTE/uploaded_videos.json" 2>/dev/null > "$TMP_DIR/uploaded_videos.raw" || true
+# 必须区分「远端没有这个文件」与「rclone 这次失败」：此前一律 `|| true`，
+# 一次网络/鉴权抖动就把整库判成未上传，下一轮把全部视频重推一遍（费用 + 刷屏）。
+_pull_ledger() {  # $1=远端文件名 $2=本地路径
+  local remote_name="$1" local_path="$2" rc=0
+  rclone cat "$SOURCE_REMOTE/$remote_name" > "$local_path" 2>"$TMP_DIR/pull.err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # rclone 对「对象不存在」的返回码是 3；其余（1/2/4/5…）是真实失败
+    if [ "$rc" -eq 3 ]; then
+      : > "$local_path"
+      echo "ℹ️ 远端暂无 $remote_name（首轮或从未写入），按空名单处理"
+      return 0
+    fi
+    echo "❌ 拉取 $remote_name 失败（rclone rc=$rc）：$(tail -n 2 "$TMP_DIR/pull.err" 2>/dev/null | tr '\n' ' ')" >&2
+    echo "   为避免把「拉不到」当成「都没传」而全量重推，本轮中止；修好网络/鉴权后重跑即可。" >&2
+    return 1
+  fi
+  return 0
+}
+_pull_ledger uploaded_videos.json "$TMP_DIR/uploaded_videos.raw" || exit 1
 # 拉取损坏文件名单（源文件本身损坏、无法解析的，持久标记避免每天重复下载/失败）
-rclone cat "$SOURCE_REMOTE/failed_videos.json" 2>/dev/null > "$TMP_DIR/failed_videos.raw" || true
+_pull_ledger failed_videos.json "$TMP_DIR/failed_videos.raw" || exit 1
 
 # 所有核心逻辑交给 Python：列出、比较、下载、上传、记录
 # 只需要一个持久化文件 uploaded_videos.json（versioned JSON 对象，可扩展元数据），不再需要中间文件
