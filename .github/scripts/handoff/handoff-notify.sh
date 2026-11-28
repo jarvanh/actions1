@@ -28,7 +28,7 @@ case "$stage" in
     # run id 做成可点链接（与收尾区「运行日志」同款 <a href>）
     _run_url() {
       printf '%s/%s/actions/runs/%s' \
-        "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-jarvanh/actions}" "$1"
+        "${GITHUB_SERVER_URL:-https://github.com}" "${GITHUB_REPOSITORY:-jarvanh/actions1}" "$1"
     }
     [ -n "${KV[old_run]:-}" ] && tg_add_link msg "旧轮" "$(_run_url "${KV[old_run]}")" "run ${KV[old_run]}"
     [ -n "${KV[new_run]:-}" ] && tg_add_link msg "继任" "$(_run_url "${KV[new_run]}")" "run ${KV[new_run]}"

@@ -2,7 +2,7 @@
 # 2026-11-26: OmniRoute token-estimator hot patch, vendored from patch_work/patch-chunks.py.
 """Patch OmniRoute token-estimator chunks (usageEstimation.ts) in-place.
 
-Usage: patch-chunks.py <infile> <outfile>
+Usage: patch_omniroute_estimator.py <infile> <outfile>
 Fails loudly (exit 1) if the expected minified shape is absent, so an
 upstream refactor can never be silently corrupted.
 """

@@ -7,7 +7,7 @@ name: socks-exit-pool
 #   客户端每次拉订阅拿到的都是当下能用的。产物写独立私有 Gist 文件 socks-exit.yaml，
 #   与 subs-check 每 5 分钟同步的 all.yaml 分开，避免两边互相覆盖。
 #
-# 为什么是 10 分钟：源节点按小时漂，10 分钟足够跟上；再密没有收益，且 Actions 定时本身有延迟。
+# 为什么是 15 分钟：源节点按小时漂，15 分钟足够跟上；再密没有收益，且 Actions 定时本身有延迟。
 
 on:
   schedule:
