@@ -29,7 +29,7 @@ PY
 )
 [ -n "$S" ] && ok "A0 能抽取到告警 step 脚本" || { bad "A0 抽不到脚本"; echo "PASS=$PASS FAIL=$FAIL"; exit 1; }
 
-# mock: tg 助手 + send_telegram_message 记录调用
+# mock: tg 助手 + send_tg 记录调用（告警 step 走真源 send_tg，不再依赖 openlist/telegram.sh 的包装）
 run_step() {  # $1=OL_ENV_READY $2=有凭据(1/0)
   local env_ready="$1" has_cred="$2"
   ( set +e
@@ -45,10 +45,7 @@ run_step() {  # $1=OL_ENV_READY $2=有凭据(1/0)
     SENT_FILE=/tmp/guard_sent_$$; : > "$SENT_FILE"
     # 覆盖 source 后的助手（真源文件为空，函数由这里提供）
     tg_add_title() { :; }; tg_add_kv() { :; }; tg_add_note() { :; }; tg_add_footer() { :; }
-    # workflow 调的是 send_tg（tg_notify.sh:515），不是 send_telegram_message —— 此前 mock 错函数名，
-    # 导致 B 用例恒失败（告警其实正常发出，是测试没抓到）。两个都 mock，兼容后续改动。
     send_tg() { printf 'TIER=%s MSG=%s\n' "${2:-}" "$1" >> "$SENT_FILE"; }
-    send_telegram_message() { printf 'TIER=%s MSG=%s\n' "${3:-}" "$1" >> "$SENT_FILE"; }
     eval "$S" >/dev/null 2>&1
     cat "$SENT_FILE" 2>/dev/null
     rm -rf "$GITHUB_WORKSPACE" "$SENT_FILE"

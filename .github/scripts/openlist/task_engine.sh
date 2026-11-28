@@ -304,7 +304,7 @@ _run_registry_pairs_parallel() {
   [ "$_par" -lt 2 ] && _par=2
   local _pp_dir="/tmp/ol_pairs_$(date +%s)_${BASHPID:-$$}"
   mkdir -p "$_pp_dir"
-  declare -A _pp_pid=() _pp_be=() _pp_dst=() _busy_be=() _started=() _quota_logged=() _pp_pd=()
+  declare -A _pp_pid=() _pp_be=() _pp_dst=() _busy_be=() _started=() _quota_logged=() _pp_pd=() _dead_logged=()
   # 这几个是"调用方局部": _pairs_parallel_reap_one 靠 bash 动态作用域改它们，
   # 因此既不能声明在 reap 内部（改了看不见），也不能不声明（会污染全局）
   local _pp_n="$n" _done_n=0 _failed_n=0 _trunc_n=0 _killed_n=0 _skipped_n=0 total_transferred=0
@@ -335,6 +335,24 @@ _run_registry_pairs_parallel() {
         fi
         _started[$idx]=1
         _done_n=$((_done_n + 1))
+        {
+          printf 'status=skipped\n'
+          printf 'transferred=0\n'
+          printf 'backend=%s\n' "$_be"
+        } > "${_pp_dir}/${idx}.done" 2>/dev/null || true
+        continue
+      fi
+      # F6 跨轮熔断（2026-11-28 接线）：并行是生产默认路径，但此前 _BACKEND_DEAD_ROUND
+      # 只在串行循环里判，默认路径从不生效 —— 已判死的后端每轮仍被派发全部同步对。
+      # 与配额跳过同形处理：记 skipped、推进计数、不占并发槽。
+      if [ -n "${_BACKEND_DEAD_ROUND[$_be]:-}" ]; then
+        if [ -z "${_dead_logged[$_be]:-}" ]; then
+          echo "⏭ 并行分发: 后端 ${_be} 在熔断期内被判死（剩余 $(( ( ${_BACKEND_DEAD_ROUND[$_be]} + OPENLIST_BACKEND_DEAD_TTL - $(date +%s) ) / 60 )) 分钟），跳过其同步对"
+          _dead_logged[$_be]=1
+        fi
+        _started[$idx]=1
+        _done_n=$((_done_n + 1))
+        _skipped_n=$((_skipped_n + 1))
         {
           printf 'status=skipped\n'
           printf 'transferred=0\n'

@@ -218,8 +218,10 @@ _persist_probe_file() {
       if [ -n "$sz" ]; then _p_result="S:$sz"; else _p_result="M"; fi
       break
     fi
-    # "directory not found" 是 rclone 的**确定性**答复 ⇒ 落点目录根本不存在（=M）
-    if grep -qiE 'directory not found|not found|couldn.t find|does not exist' "$_errf" 2>/dev/null; then
+    # 只有 rclone 的**目录级确定性**答复才算 M。此前匹配裸 'not found' 太宽：
+    #   配置/token/对象名相关错误只要含该词，就会被当成「文件确定不存在」，
+    #   进而拉黑方法并从 marker 删条目（同文件 _persist_probe_file 头注释定义的 U 被吃掉）。
+    if grep -qiE 'directory not found|no such directory|couldn.t find directory' "$_errf" 2>/dev/null; then
       _p_result="M"; break
     fi
     [ "$i" -lt "$tries" ] && sleep "$_sleep"
@@ -237,8 +239,10 @@ _persist_list_dir() {
   for ((i = 1; i <= tries; i++)); do
     out=$(rclone lsf "$dir" --files-only 2>"$_errf")
     rc=$?
-    if [ "$rc" -eq 0 ]; then printf '%s' "$out"; return 0; fi
-    if grep -qiE 'directory not found|not found|couldn.t find|does not exist' "$_errf" 2>/dev/null; then
+    if [ "$rc" -eq 0 ]; then printf '%s' "$out"; rm -f "$_errf" 2>/dev/null || true; return 0; fi
+    # 同 _persist_probe_file：只认目录级确定性答复，其余一律按观测失败（rc=2）处理
+    if grep -qiE 'directory not found|no such directory|couldn.t find directory' "$_errf" 2>/dev/null; then
+      rm -f "$_errf" 2>/dev/null || true
       return 3
     fi
     [ "$i" -lt "$tries" ] && sleep "${OPENLIST_PERSIST_PROBE_RETRY_SLEEP:-5}"
@@ -602,7 +606,18 @@ _sync_fixed_files_exclusion() {
           fi
         fi
       fi
-    done < <(jq -rs 'add | unique_by(.original // "") | .[] | [(.original // ""), (.alternative // ""), (.method // "")] | @tsv' \
+    # 优先级显式化（2026-11-28）：unique_by 保留「首次出现」，输入顺序是
+    #   marker → 本轮累计 → 父级守卫 ⇒ 本轮新修复反而被上轮 marker 顶掉；
+    #   假成功重试换了 alternative 后仍按旧路径排除，新产物失去保护。
+    # 打来源优先级（本轮 3 > marker 2 > 父级 1），同 original 只取最高优先级那一条。
+    done < <(jq -rs '
+      def tag($p): map(. + {__prio: $p});
+      ((.[1] | tag(3)) + (.[0] | tag(2)) + (.[2] | tag(1)))
+      | sort_by([(.original // ""), -.__prio])
+      | group_by(.original // "")
+      | map(.[0] | del(.__prio))
+      | .[]
+      | [(.original // ""), (.alternative // ""), (.method // "")] | @tsv' \
       <(echo "${MARKER_FIXED_FILES:-[]}") <(echo "${GLOBAL_FIXED_FILES_JSON:-[]}") \
       <(echo "${SYNC_PARENT_GUARD_JSON:-[]}") 2>/dev/null)
     if [ -s "$fixed_exclude_file" ]; then
@@ -1488,21 +1503,22 @@ _sync_fix_missing_files() {
               _NAMELEN_OVER_255=$((_NAMELEN_OVER_255 + 1))
             fi
             if [ "${_NAMELEN_RAW_MAX:-0}" -gt 0 ] && [ "$_nl_enc_len" -gt "$_NAMELEN_RAW_MAX" ] 2>/dev/null; then
-              _nl_flag="${_nl_flag} 🔴 >后端已接受最长(${_NAMELEN_RAW_MAX}B)"
+              _nl_flag="${_nl_flag} 🔴 >历史成功最长(${_NAMELEN_RAW_MAX}B)"
               _NAMELEN_OVER_RAWMAX=$((_NAMELEN_OVER_RAWMAX + 1))
-              # 密文名已超过后端实际接受过的最长名 → 带原名的修复方法注定
-              # 被拒（后端内容性拒收，重试多少次都一样），直接拉黑，省掉
+              # 密文名已超过历史成功写入过的最长名 → 带原名的修复方法大概率
+              # 被拒（经验性判据，不是后端硬上限），直接拉黑，省掉
               # 一次整文件白下载 + 白跑的 PUT。拉黑走既有黑名单通道，
               # try_fix_failed_file 会从对症的短哈希名方法开始。
-              # 判据用"后端已接受最长"而非固定 255B: 后者是理论上限，
-              # 多数后端在远低于它时就拒收，只有实测口径才不误伤。
+              # 判据用"历史成功写入过的最长密文名"而非固定 255B: 后者是理论上限，
+              # 多数后端在远低于它时就拒收；但样本偏差会让 RAW_MAX 偏小，
+              # 所以这是经验性提速，不是"注定失败"的确定性结论。
               # zip_split_original 同样带原名（zip 基底名 = 原文件名 + .zip，
               # 只长不短），与 copyto_original 同属注定失败；
               # copyto_shorthash / zip_split_shorthash 用短哈希名，密文名远低于上限
               _blacklist_add "$failed_line" copyto_original
               _blacklist_add "$failed_line" zip_split_original
               _FIX_NAMELEN_CONTENT=1
-              echo "  ⏭ 名长注定失败 → 跳过 $(_fix_method_short copyto_original) / $(_fix_method_short zip_split_original)，直接试短哈希名方法" | tee -a "$LOG_FILENAME"
+              echo "  ⏭ 名长超历史成功最长，经验性跳过 $(_fix_method_short copyto_original) / $(_fix_method_short zip_split_original)，直接试短哈希名方法" | tee -a "$LOG_FILENAME"
             fi
             echo "  📏 名长: 原名 ${_nl_orig_len}B → 密文名 ${_nl_enc_len}B${_nl_flag}" | tee -a "$LOG_FILENAME"
           fi
@@ -1920,7 +1936,8 @@ _sync_accumulate_fixed_results() {
     # -n: 程序只用 --argjson 变量；无 -n 时 jq 读 stdin，会吞掉调用方
     # （auto-split 子目录 while read 循环）的剩余列表，后续子任务被静默跳过
     GLOBAL_FIXED_FILES_JSON=$(jq -scn --argjson acc "$GLOBAL_FIXED_FILES_JSON" --argjson cur "$LAST_SYNC_FIXED_FILES_JSON" \
-      '($acc + $cur) | unique_by(.original)' 2>/dev/null || echo "$GLOBAL_FIXED_FILES_JSON")
+      # 同 original 保留本轮新条目（cur 在后），别让旧路径顶掉新 alternative
+      '($acc + $cur) | group_by(.original) | map(.[-1])' 2>/dev/null || echo "$GLOBAL_FIXED_FILES_JSON")
   fi
 
   # 累计方法假成功黑名单到全局变量（B: 失败记忆，供 save_sync_marker 写入 marker
