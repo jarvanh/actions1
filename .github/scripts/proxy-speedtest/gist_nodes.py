@@ -1372,7 +1372,10 @@ def main():
                  per_call_timeout=ss_timeout, subs=len(subnames), files=len(files))
 
     if 'proxies:' not in yaml_text:
-        fail(f'Sub-Store 产出的不是 mihomo YAML，前 300 字：{yaml_text[:300]}')
+        # 不打印正文切片：YAML 里就是节点 server/uuid/password。
+        # 只给结构诊断：字节数、行数、是否含 proxies 段，都不含凭据。
+        fail(f'Sub-Store 产出的不是 mihomo YAML（bytes={len(yaml_text.encode("utf-8"))}, '
+             f'lines={yaml_text.count(chr(10)) + 1}, has_proxies_key={"proxies:" in yaml_text}）')
     # ⚠️ 必须在解析**之前**洗一次，而且洗的是后面要发布的那份文本（不是临时副本）：
     # 脏字符来自抓取到的节点名，Sub-Store 不校验、照抄进产出；留着它 mihomo 也解析不了
     # 同一份 provider（对 provider 是全有或全无）。详见 strip_nonprintable。
@@ -1496,7 +1499,9 @@ def main():
         gist_id = (res.get('id') or '').strip()
         if not sub_url:
             fail('Gist 已写入但没有 raw_url，下游拿不到订阅源')
-        log_progress('gist_nodes_published', gist_id=gist_id, nodes=len(proxies),
+        # gist id / raw url 是订阅访问凭据：只给「是否发布成功」与规模，
+        # 不进 Actions 日志（public 仓库的日志对所有登录用户可见）。
+        log_progress('gist_nodes_published', published=bool(gist_id), nodes=len(proxies),
                      created=bool(res.get('created')), bytes=len(yaml_text.encode('utf-8')))
 
     write_github_output({
@@ -1506,8 +1511,6 @@ def main():
         'deduped_count': deduped_count,
         'alive_count': len(proxies) if alive_report else '',
         'gists_scanned': stats['gists_scanned'],
-        'gist_html_url': gist_html_url,
-        'gist_id': gist_id,
     })
     write_step_summary([
         '### gist 节点抓取（Sub-Store 去重）',
@@ -1527,7 +1530,7 @@ def main():
         + (f'（限量 {max_nodes}）' if max_nodes else ''),
         _alive_filter_summary_line(alive_report, deduped_count),
         _trial_load_summary_line(trial_report, len(proxies)),
-        f'- 订阅 Gist：{gist_html_url or "(dry-run 未发布)"}',
+        '- 订阅 Gist：' + ('已发布（链接与 ID 属凭据，不落公开日志）' if gist_html_url else '(dry-run 未发布)'),
     ])
     print(f'OK: {len(proxies)} 个节点（解析 {parsed_count}）'
           + (f'（去重 {deduped_count} → 测活 {len(proxies)}）' if alive_report else '')
