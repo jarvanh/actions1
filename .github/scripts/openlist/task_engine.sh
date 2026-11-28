@@ -229,6 +229,15 @@ _pairs_parallel_reap_one() {
         local _be="${_pp_be[$_idx]:-}" _st _tr
         _st=$(sed -n 's/^status=//p' "$_f" | head -1)
         _tr=$(sed -n 's/^transferred=//p' "$_f" | head -1)
+        # 判死标志（2026-11-28 加）: 见 worker 端注释。并行路径此前完全不写
+        #   跨轮熔断台账，导致 backend_dead*.json 永不生成。这里补上写端。
+        local _dead_f _dead_root
+        _dead_f=$(sed -n 's/^dead=//p' "$_f" | head -1)
+        if [ "${_dead_f:-0}" = "1" ] && [ -n "${_be:-}" ] \
+           && declare -F _backend_dead_mark >/dev/null 2>&1; then
+          _dead_root=$(_task_backend_root_of "${_pp_dst[$_idx]:-}" 2>/dev/null || true)
+          [ -n "$_dead_root" ] && _backend_dead_mark "$_dead_root" || true
+        fi
         [[ "$_tr" =~ ^[0-9]+$ ]] || _tr=0
         rm -f "$_f"
         unset "_pp_pid[$_idx]" "_pp_be[$_idx]" "_pp_dst[$_idx]"
@@ -461,6 +470,12 @@ _run_registry_pairs_parallel() {
           printf 'status=%s\n' "$_st"
           printf 'transferred=%s\n' "${SYNC_TRANSFERRED_BYTES:-0}"
           printf 'backend=%s\n' "$_pick_be"
+          # 判死标志随结果回传（2026-11-28 加）: 并行是生产默认路径，但
+          #   _backend_dead_mark 此前只在串行循环里调 ⇒ 并行下弱证据 streak
+          #   永不累加 ⇒ backend_dead.json / backend_dead_weak.json 永不生成
+          #   ⇒ 33f0bd1 修好的「并行读台账」永远读不到东西（读端修了、写端没修）。
+          printf 'dead=%s\n' "${SYNC_BACKEND_DEAD:-0}"
+          printf 'dead_strong=%s\n' "${SYNC_BACKEND_DEAD_STRONG:-0}"
         } > "${_pp_dir}/${idx}.done" 2>/dev/null || true
         exit 0
       ) &
