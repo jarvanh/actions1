@@ -644,6 +644,42 @@ _backend_dead_load() {
 #        污染跨轮状态、让该后端 6 个同步对整体被跳过。
 # 弱证据仍在本轮熔断（本轮让路给健康后端，符合原设计），但**不写 backend_dead.json**。
 # `OPENLIST_BACKEND_DEAD_PERSIST=all` 可强制持久化（排查用）。
+_backend_dead_weak_path() {
+  echo "${SYNC_STATE_DIR}/backend_dead_weak.json"
+}
+
+# 弱证据连续轮次累加: 返回累加后的 streak
+# 为什么需要（2026-11-28 实测）: wopan175/wopan176Crypt 数据面报 HTTP 500 已持续 24h+，
+#   而 500 在分类里属 backend（弱证据）⇒ 每轮都只「本轮让路」、从不跨轮熔断 ⇒
+#   16 个对里 14 个每轮照撞，预算几乎全耗在死掉的后端上。
+#   单次 500 确实可能瞬时，但**同一后端连续 3 轮都 500** 已不是瞬时 —— 这正是
+#   OPENLIST_BACKEND_DEAD_THRESHOLD(默认 3) 的语义。累加到阈值才升级为强证据持久化，
+#   兼顾「不因一次抖动误杀」与「不无限期空转」。成功一次即清零（见 _backend_dead_weak_reset）。
+_backend_dead_weak_bump() {
+  local root="$1" now json prev=0
+  [ -n "$root" ] || { echo 0; return 0; }
+  now=$(date +%s)
+  json=$(rclone cat "$(_backend_dead_weak_path)" 2>/dev/null) || json=""
+  [ -n "$json" ] || json='{}'
+  prev=$(printf '%s' "$json" | jq -r --arg k "$root" '.[$k].streak // 0' 2>/dev/null) || prev=0
+  [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+  local cur=$((prev + 1))
+  local upd
+  upd=$(printf '%s' "$json" | jq -c --arg k "$root" --argjson n "$cur" --arg t "$now" '.[$k] = {streak: $n, last_at: ($t|tonumber)}' 2>/dev/null) || upd=""
+  [ -n "$upd" ] && _marker_write "$upd" "$(_backend_dead_weak_path)" >/dev/null 2>&1 || true
+  echo "$cur"
+}
+
+# 后端本轮成功 ⇒ 清零其弱证据连续计数
+_backend_dead_weak_reset() {
+  local root="$1" json upd
+  [ -n "$root" ] || return 0
+  json=$(rclone cat "$(_backend_dead_weak_path)" 2>/dev/null) || return 0
+  [ -n "$json" ] || return 0
+  upd=$(printf '%s' "$json" | jq -c --arg k "$root" 'del(.[$k])' 2>/dev/null) || return 0
+  [ -n "$upd" ] && _marker_write "$upd" "$(_backend_dead_weak_path)" >/dev/null 2>&1 || true
+}
+
 _backend_dead_mark() {
   local root="$1"
   [ -n "$root" ] || return 0
@@ -652,8 +688,14 @@ _backend_dead_mark() {
   _BACKEND_DEAD_ROUND["$root"]="$now"
   if [ "${SYNC_BACKEND_DEAD_STRONG:-0}" != "1" ] \
      && [ "${OPENLIST_BACKEND_DEAD_PERSIST:-strong}" != "all" ]; then
-    echo "ℹ️ 跨轮熔断: 后端 ${root} 本轮判死，但证据为弱信号（非写探针/全拒复核）→ 只在本轮熔断让路，不写入 backend_dead.json（防误判污染后续轮次）"
-    return 0
+    # 弱证据: 先累加连续轮次，达到阈值才升级为持久化（见 _backend_dead_weak_bump 头注）
+    local _thr="${OPENLIST_BACKEND_DEAD_THRESHOLD:-3}"
+    local _streak; _streak=$(_backend_dead_weak_bump "$root")
+    if ! [[ "$_streak" =~ ^[0-9]+$ ]] || [ "$_streak" -lt "$_thr" ]; then
+      echo "ℹ️ 跨轮熔断: 后端 ${root} 本轮判死，弱证据连续 ${_streak}/${_thr} 轮 → 只在本轮熔断让路，未达阈值不写入 backend_dead.json"
+      return 0
+    fi
+    echo "⚠️ 跨轮熔断: 后端 ${root} 弱证据已连续 ${_streak} 轮（≥阈值 ${_thr}）→ 升级为跨轮熔断，写入 backend_dead.json（TTL ${OPENLIST_BACKEND_DEAD_TTL}s）"
   fi
   local _k _tsv="" json
   for _k in "${!_BACKEND_DEAD_ROUND[@]}"; do
@@ -1224,6 +1266,11 @@ run_all_tasks() {
       # 2026-09-15 为查 run 34926236845 的游标前移耗了很久
       echo "同步对轮转判据: idx=${idx} SKIPPED=${SYNC_SKIPPED:-0} FAILED=${SYNC_FAILED:-0} PARTIAL=${SYNC_PARTIAL:-0} BACKEND_DEAD=${SYNC_BACKEND_DEAD:-0} BATCH_FAILED=${SYNC_FAILED_BATCH:-0} BATCH_FAILED_PAIR=${SYNC_FAILED_BATCH_PAIR:-0} attempts=${_rot_attempts}"
       if [ "${SYNC_SKIPPED:-0}" = "1" ] || [ "${SYNC_FAILED:-0}" = "0" ]; then
+        # 后端本轮跑通 ⇒ 清零其「弱证据连续轮次」（防陈年 streak 把一次新抖动顶到阈值）
+        if declare -F _backend_dead_weak_reset >/dev/null 2>&1 && [ -n "${_hb_dst:-}" ]; then
+          local _succ_root="\$(_task_backend_root_of "\$_hb_dst" 2>/dev/null || true)"
+          [ -n "$_succ_root" ] && _backend_dead_weak_reset "$_succ_root" >/dev/null 2>&1 || true
+        fi
         # 完成/跳过 → 游标后移，连续尝试数清零
         _rotation_save "$(( (idx + 1) % n ))" 0
         _rot_attempts=0

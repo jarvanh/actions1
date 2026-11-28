@@ -161,7 +161,7 @@ FAKE_FAIL_MAP["p0"]=1
 # 不设 FAKE_STRONG_MAP ⇒ 弱证据
 run_all_tasks > "$WORK/weak.log" 2>&1
 [ ! -s "$WORK/backend_dead.json" ] && ok "7a 弱证据 → 不写 backend_dead.json" || bad "7a: 仍落盘"
-grep -q "证据为弱信号" "$WORK/weak.log" && ok "7b 日志说明只在本轮熔断" || bad "7b: 无说明"
+grep -qE "弱证据连续 [0-9]+/[0-9]+ 轮|证据为弱信号" "$WORK/weak.log" && ok "7b 日志说明只在本轮熔断" || bad "7b: 无说明"
 [ "${#EXEC_LOG[@]}" -eq 2 ] && [ "${EXEC_LOG[1]}" = "p1" ] \
   && ok "7c 本轮仍让路: p2（同后端）当场被跳过" || bad "7c: [${EXEC_LOG[*]}]"
 
