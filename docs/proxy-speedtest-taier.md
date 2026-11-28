@@ -26,7 +26,7 @@
 `alive` 预筛，逐节点测活才是准入关口，见
 [gitee 文档 · 为什么节点收集不等健康检查](proxy-speedtest-gitee.md#为什么节点收集不等健康检查)）：
 
-1. 下载 `MiaM1ku/taierspeedtest` 最新 Release 二进制（固定文件名 `~/proxy-speedtest/taierspeedtest`，供进程规则匹配）；
+1. 下载 `TAIER_REPO`（默认 `MiaM1ku/taierspeedtest`；workflow 注入 `jarvanh/taierspeedtest`）**最新** Release 二进制（固定文件名 `~/proxy-speedtest/taierspeedtest`，供进程规则匹配）；
 2. mihomo 以**标准反压代理**启动（2026-10-07 弃 TUN 定案）：mixed-port（HTTP+SOCKS5
    同端口）+ 规则 `['MATCH,AUTO']`；引擎 v1.0.4-jh.1 数据面全走 http.Client，经
    `TAIER_SOCKS5` 隧道 + `HTTP(S)_PROXY` 走 AUTO 组；经 API 切换 AUTO 组到该节点；
@@ -116,8 +116,8 @@ if CONFIG['TAIER_INCLUDE_REGEX']:
 
 `TAIER_USE_TUN=1` 保留逃生门（旧 TUN+进程分流行为），仅排障用。
 
-引擎缓存对账：`taierspeedtest.meta` 记录 `repo|tag`，与 `TAIER_REPO` 的 latest 不一致
-自动重下（防旧缓存静默跑旧引擎）。
+引擎缓存对账：`taierspeedtest.meta` 记录 `repo|tag`，与 `TAIER_REPO` 的 **latest** 不一致就自动重下
+（防旧缓存静默跑旧引擎）。2026-11-28 起不再固定 tag；`TAIER_VERSION=<tag>` 仅作排障逃生阀。
 
 ## bypass 校验（必须有）
 

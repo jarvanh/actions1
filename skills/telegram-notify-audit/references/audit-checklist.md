@@ -103,7 +103,7 @@ grep -l "command not found" /tmp/x_*.log   # 必须为空（硬要求）
   - `test_truth.sh`（依赖 docker / 真实 OpenList 服务）
   - `test_marker_skip_guards.sh` 1b（macOS BSD `date` 无 `-d`）
 - `command not found` 扫描**必须为空**——套件 PASS 不等于通过。
-- 新写测试不要再共用 `tests/extracted.sh`（串行跑会互相覆写，产生假 cnf）。
+- 新写测试不要再共用同一份 extracted.sh 式共享桩（串行跑会互相覆写，产生假 cnf）；每个测试自建最小桩。
 - 修完 cnf 后必须 `grep -l "command not found" /tmp/x_*.log` 复验为空。
 
 ### flake 名单（单独复跑确认后再下结论）

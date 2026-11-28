@@ -31,24 +31,27 @@ rg -n 'Notify: iCloud 下载结果|def build_telegram_lines|^flush_task_preview'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 统一规范（规范 · 档位判定）：⛔ 取消 / ❌ 失败属 alert，必须多注这两行
+          TELEGRAM_BOT_TOKEN_ALERT: ${{ secrets.TELEGRAM_BOT_TOKEN_ALERT }}
+          TELEGRAM_CHAT_ID_ALERT: ${{ secrets.TELEGRAM_CHAT_ID_ALERT }}
           TG_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           source "${GITHUB_WORKSPACE}/.github/scripts/telegram/tg_notify.sh"
           case "${{ job.status }}" in
             # 状态语义由标题 emoji 承担即可，kv 值里再带一个就成了重复（规范 · 结果通知）
-            success)   _emoji="✅"; _status="完成" ;;
-            cancelled) _emoji="⛔"; _status="已取消" ;;
-            *)         _emoji="❌"; _status="失败" ;;
+            success)   _emoji="✅"; _status="完成"; _tier="" ;;
+            cancelled) _emoji="⛔"; _status="已取消"; _tier="alert" ;;
+            *)         _emoji="❌"; _status="失败"; _tier="alert" ;;
           esac
           msg=""
           tg_add_title msg "$_emoji iCloud 照片下载"
           tg_add_kv msg "图库" "个人 + 共享 · 增量 · 自动清理"
           tg_add_kv msg "状态" "$_status"
           tg_add_footer msg
-          send_tg "$msg" || echo "::warning::iCloud 通知发送失败（不影响任务）"
+          send_tg "$msg" "$_tier" || echo "::warning::iCloud 通知发送失败（不影响任务）"
 ```
 
-**学什么**：`if: always()` 独立 step；分态由标题 emoji 承担、kv 不重复；`TG_RUN_URL` 必须注入（收尾区运行日志链接的唯一来源）。
+**学什么**：`if: always()` 独立 step；分态由标题 emoji 承担、kv 不重复；失败/取消走 alert 档时必须多注 `_ALERT` 两行；`TG_RUN_URL` 必须注入（收尾区运行日志链接的唯一来源）。
 
 多分支版本看 `github_backup_all.yml` 的通知 step：四态（⛔中断 / ⚠️异常 / ✅成功 / ❌失败）共用一条 `tg_add_footer + send_tg` 出口，⛔ 分支提前 `exit 0` 避免二次追加；凭据缺失静默 `exit 0`。
 
@@ -116,10 +119,10 @@ $msg = "🖥️ Windows RDP 已就绪`n$TG_SEP`n" +
 $msg += "`n`nℹ️ 连接方式：Microsoft Remote Desktop / 任何 RDP 客户端，地址填上面这一行"
 $footer = Get-TgFooter
 if ($footer) { $msg += "`n`n$footer" }
-Send-TgMessage $msg "alert"
+Send-TgMessage $msg
 ```
 
-**学什么**：dot-source 后必须 `Get-Command` 自检；分节 emoji 不与标题 emoji 重复；首个分节紧跟分隔线**不补空行**；`Get-TgFooter` 可能返回空（无 `TG_RUN_URL` 时降级），必须判空再拼；树形前缀包 `<code>` 等宽、告警显式传 `"alert"` 档。
+**学什么**：dot-source 后必须 `Get-Command` 自检；分节 emoji 不与标题 emoji 重复；首个分节紧跟分隔线**不补空行**；`Get-TgFooter` 可能返回空（无 `TG_RUN_URL` 时降级），必须判空再拼；树形前缀包 `<code>` 等宽；入口/凭据类通知走普通档（`Send-TgMessage $msg`），只有告警才显式传 `"alert"`。
 
 多分节 + 条件分组 + 外部 API 失败逐项降级看 `tailscale-windows.yml` 的 Notify step（说明段必须排在 kv 之后）。
 

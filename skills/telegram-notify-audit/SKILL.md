@@ -11,7 +11,7 @@ agent_created: true
 `docs/telegram-notify.md` 是全库通知**版式**的唯一真源；**域级出口与档位规则**在
 `docs/telegram-notify-registry.md`（台账），**逐条发送点用
 `scripts/list_notify.sh` 现场枚举**（逐条清单手工维护必然漂移）。核对基线
-**单独维护在** `references/audit-checklist.md`（逐轮累积的「已统一 N 项」），不写进
+**单独维护在** `references/audit-checklist.md`（只放可复用的判据与基线，不记录「哪一轮核对过什么」——与 AGENTS.md 一致），不写进
 规范文档——数字断言放在规范里必然腐化。本 skill 把核对流程固化下来：读真源 → 机械扫描 → 四域并行
 通读 → **逐条复核** → 渲染预览 → 回归验证 → 回写基线；**用户贴了具体通知时，先本地
 复现那条通知再动手**。
@@ -120,7 +120,7 @@ bash scripts/list_notify.sh --check
 
 ### 第 6 步：回写基线
 
-把本轮结论写进 `references/audit-checklist.md`：本轮方法、1–N 项是否仍成立、
+把**可复用**的判据变化写进 `references/audit-checklist.md`：新增/失效的判据、
 修正了哪些文档自身错误、新增/待修条目。该文件是下一轮的起点。
 
 规范文档 `docs/telegram-notify.md` 本身**不再记录核对轮次**——只写版式，不写

@@ -103,7 +103,7 @@ if [ -n "${DETAIL:-}" ]; then
   # 分节后跟 <pre> 不带 " · N"（计数只用于条目列表）
   tg_add_section msg "🧾 原始输出"
   # 尾部 1200 字节：超长会让 <pre> 跨 4000 分片、标签断开即破版
-  tg_add_pre msg "$(printf '%s' "$DETAIL" | tail -c 1200)"
+  tg_add_pre msg "$(tg_tail_safe "$DETAIL" 1200)"
 fi
 # 说明段（可选）：段内不能带 HTML 标签
 # tg_add_note msg "如确认无误，可忽略本条"

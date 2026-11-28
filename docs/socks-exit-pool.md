@@ -31,7 +31,7 @@
 | 决策 | 依据 |
 |---|---|
 | 出口测活含 YT 判区，取不到 GL 直接丢弃 | 定区是这条管道唯一目的，GL 取不到 = 没用 |
-| 出口按 host:port 去重，只留最快一条 | 同一出口重复组合没有意义 |
+| 出口按**含认证信息的完整代理地址**去重（同 server:port 不同账号算不同出口），只留最快一条 | 同一出口重复组合没有意义 |
 | 组合节点 `udp: false` | `_worker.js` 的 socks5Connect 只做 TCP 转发，标 true 会诱使客户端先试 QUIC、超时才回退 TCP |
 | 非 ws 基座不参与组合 | path 出口只存在于 ws 传输（all.yaml 里 100% 是 ws，实际全部参与） |
 | 产物写独立 Gist 文件 socks-exit.yaml | subs-check 每 5 分钟同步 all.yaml，同文件会互相覆盖 |

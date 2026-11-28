@@ -292,7 +292,7 @@ ZCODE_GATEWAY_KEY
 - [ ] 新仓库代码已 `push --mirror`（分支/标签/历史完整）
 - [ ] Secrets 已写入并核对 `index.tsv`
 - [ ] `UNCAPTURED.txt` 已处理（无遗漏）
-- [ ] Variables 已恢复（`OPENCLAW_HANDOFF=1`、`CFIP_GIST_ID`）
+- [ ] Variables 已恢复（全仓共 21 个；多数有 workflow 默认值，只有自定义过的必须恢复。必查：`OPENCLAW_HANDOFF`、`OPENCLAW_AI_EARLY`、`CFIP_GIST_ID`、`OPENLIST_RESTORE_VERIFY_MAX_AGE_HOURS`、`PROXY_SPEEDTEST_ENGINE`、`TS_RUN_MINUTES`、`EMBY_*` 10 项、`WU_EDGE_ITEMS`、`WW_KEEP_MIN`、`WW_SIZES_MAX`）
 - [ ] Dropbox `self-hosted/` 归档已就位
 - [ ] `.cloudflared` 证书、`rclone.conf`、workbuddy 凭据已就位
 - [ ] `openclaw.yml` 首轮运行成功、`/health` 200

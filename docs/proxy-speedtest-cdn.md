@@ -22,8 +22,8 @@
 把节点收成 0 个，见 [gitee 文档 · 为什么节点收集不等健康检查](proxy-speedtest-gitee.md#为什么节点收集不等健康检查)：
 
 1. **延迟** `latency_probe`（实现在 `speedtest_common.py`，与 gitee 的 gitee.com 延迟探测共用）：
-   经代理对 `baidu.com` / `taobao.com` 做 HTTP 完整请求计时，多次采样取中位数
-   （反映"打开网页"的真实握手+响应体验）；
+   经代理对 `baidu.com` / `taobao.com` 做 **HTTP 首字节（TTFB）**计时（`r.read(1)` 即停表），多次采样取中位数
+   （反映"打开网页"的首包往返体验；不含正文下载，正文速度见下面的下载项）；
 2. **下载** `download_speedtest`：经 mixed-port（`127.0.0.1:17892`）**单流、定窗** curl
    Range 拉取国内测速点。每个测速点拉满 `PROXY_SPEEDTEST_DOWNLOAD_WINDOW` 秒（默认 8；
    `SIZE_MIB`=10MiB 只是 Range 上界），到点由 curl 自己截断，用**真实传输字节 ÷ 传输段

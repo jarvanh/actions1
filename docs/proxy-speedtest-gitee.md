@@ -218,7 +218,7 @@ HTTP 502 等；失败散布在整轮中段而非尾部聚集，更像逐连接�
 |---|---|---|
 | `PROXY_SPEEDTEST_MODE` | both | both = 上行+下行+延迟三项；push-only = 只测上行 |
 | `PROXY_SPEEDTEST_SIZE_MIB` | 10 | 测速文件大小 |
-| `PROXY_SPEEDTEST_PUSH_TIMEOUT` / `CLONE_TIMEOUT` | 30 / 90 | 单次 push / clone 超时（下载超时 2026-10-07 上调，计时段已是真实网络传输） |
+| `PROXY_SPEEDTEST_PUSH_TIMEOUT` / `CLONE_TIMEOUT` | 脚本默认 30 / 90，**workflow 注入 60 / 90（实际生效 60 / 90）** | 单次 push / clone 超时（下载超时 2026-10-07 上调，计时段已是真实网络传输） |
 | `PROXY_SPEEDTEST_LATENCY_SAMPLES` / `_TIMEOUT` | 4 / 8 | gitee.com 延迟采样次数 / 单次超时 |
 | `PROXY_SPEEDTEST_UPLOAD_VIA_PROXY` | 1 | 上行经代理（`0` = 直连 Gitee 测 runner 直连出口，**不是**家庭宽带）。与 cdn 同名同默认 |
 | `PROXY_SPEEDTEST_DIRECT_BASELINE_TIMEOUT` / `_MAX_ATTEMPTS` | 60 / 5 | runner 直连基线 |

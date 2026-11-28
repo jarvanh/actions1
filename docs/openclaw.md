@@ -48,6 +48,19 @@
 - **可观测性**：Phase 0 埋点在每轮收尾日志输出 `[phase0]` 段（增量字节/文件数/直连评估），
   用于校准 rsync 增量交接的实际收益。
 
+### 启动失败时的版本回退（2026-11-28 起）
+
+首启健康检查失败后不再「把记录里的版本重装一遍」——那次之所以白跑，是因为记录里存的恰好就是**当前失败版本**。现在：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| ① | Dropbox 历史 | `dropbox:self-hosted/openclaw-known-good-versions.txt`，取最新且**不等于当前失败版本**的一条 |
+| ② | 本地历史 | `~/.openclaw/openclaw-known-good-version`（同样跳过当前版本） |
+| ③ | 配置兜底 | `~/.openclaw/openclaw.json` 的 `meta.lastTouchedVersion` |
+
+known-good 记录格式随之改成 `version<TAB>pidns=<ns><TAB>UTC 时间`（一行一次成功启动），本地保留最近 5 条（`OPENCLAW_VERSION_HISTORY_MAX`）并同步到 Dropbox；读取时只取第一列，旧的一行裸版本文件照常兼容。
+
+回退安装前会先把 drop-in 目录移走并 `systemctl --user daemon-reload` —— 少了这一步，systemd 仍持有旧定义，`openclaw gateway install --force` 会报 `SERVICE_DEFINITION_UNKNOWN`，整轮直接失败。
 ### 手动交接与三个开关（2026-11-11）
 
 生产上要「按需」测交接、或按需回退传统路径时用，不必等死线、也不必回滚代码。
@@ -485,7 +498,7 @@ bash skills/telegram-notify-audit/scripts/list_notify.sh openclaw
 
 | 后端 | 形态 | 宿主端口 | 数据目录 / 卷 | 归档 |
 |---|---|---|---|---|
-| **OmniRoute（主用）** | 单容器 `diegosouzapw/omniroute:3.8.51`，compose 部署（容器名 `omniroute`）；`extra_hosts: host.docker.internal:host-gateway` 回连本机上游（workbuddy 8318 / zcode2api 8319 / qingyan 8320 / trae 7864） | 20128 | 部署目录 `/home/runner/omniroute`（compose + `.env`）+ 命名卷 `omniroute_omniroute-data`（`/app/data`：`storage.sqlite` 渠道/入站 key/combo + `server.env` 加密根钥） | `dropbox:self-hosted/OmniRoute.tar.gz` |
+| **OmniRoute（主用）** | 单容器 `diegosouzapw/omniroute:latest`（不固定 tag，始终最新；当前镜像 3.8.54+），compose 部署（容器名 `omniroute`）；`extra_hosts: host.docker.internal:host-gateway` 回连本机上游（workbuddy 8318 / zcode2api 8319 / qingyan 8320 / trae 7864） | 20128 | 部署目录 `/home/runner/omniroute`（compose + `.env`）+ 命名卷 `omniroute_omniroute-data`（`/app/data`：`storage.sqlite` 渠道/入站 key/combo + `server.env` 加密根钥） | `dropbox:self-hosted/OmniRoute.tar.gz` |
 | **CliRelay（回退 1）** | docker compose 全栈（项目名 `clirelay`）：`cli-proxy-api` 主容器 + postgres + redis + init + updater；compose 文件来自归档，bootstrap 时从上游 raw 下载（`kittors/CliRelay/main/docker-compose.yml`，镜像 `ghcr.io/kittors/clirelay:latest`） | 20128（容器内 8317） | `/tmp/local_CliRelay`（auths + config.yaml + .env + compose + sql/） | `dropbox:self-hosted/CliRelay.tar.gz` |
 | **CLIProxyAPI（回退 2）** | 单容器 `eceasy/cli-proxy-api:latest` | 20128（容器内 8317） | `/tmp/local_CLIPProxyAPI`（config.yaml + auth-dir + stats.json） | `dropbox:self-hosted/CLIProxyAPI.tar.gz`（附带 clirelay auths 双保险） |
 
@@ -532,8 +545,8 @@ pooled dispatcher ... host.docker.internal:8318` ×11，而 autoclaw 自身 3~4s
 | `STREAM_READINESS_TIMEOUT_MS` | 80s | **600s** | step-5-preview 深度思考首字 p90 虽仅 21s，但实测 max 207s、同体量有 111s 成功先例；150s 会误杀长尾慢请求 |
 | `STREAM_READINESS_MAX_TIMEOUT_MS` | 180s | **900s** | 大/重请求自适应上限，与 AGENT_GOAL 900s 对齐 |
 | `OMNIROUTE_AGENT_GOAL_READINESS_MAX_TIMEOUT_MS` | 600s | **900s** | `/goal` agent 长跑 |
-| `FETCH_TIMEOUT_MS` | 600s | **900s** | 上游总超时（长上下文+换号重试） |
-| `STREAM_IDLE_TIMEOUT_MS` | 600s | **900s** | 流式静默上限 |
+| `FETCH_TIMEOUT_MS` | 600s | **1800s** | 上游总超时（长上下文+换号重试）；实际值见 `run-ai-gateway.sh:710` |
+| `STREAM_IDLE_TIMEOUT_MS` | 600s | **1800s** | 流式静默上限；实际值见 `run-ai-gateway.sh:711` |
 | `OMNIROUTE_CIRCUIT_BREAKER_API_KEY_THRESHOLD` | 12 | **30** | 连续失败阈值 |
 | `OMNIROUTE_CIRCUIT_BREAKER_API_KEY_RESET_MS` | 30s | **60s** | 半开试探要跑完长请求 |
 | `OMNIROUTE_PROVIDER_BREAKER_API_KEY_FAILURE_THRESHOLD` | 15 | **60** | 30min 窗口内失败才冷却 provider |

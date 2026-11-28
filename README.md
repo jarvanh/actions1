@@ -1,7 +1,7 @@
 # actions
 
 自用 GitHub Actions 工作流集合：网盘同步备份、媒体服务器运维、订阅签到、数据备份等，
-均通过 `workflow_dispatch` 手动触发。
+手动（`workflow_dispatch`）与定时/自续（`schedule` + 接力）并存：34 个工作流里 25 个带 `schedule`。
 
 ## 仓库结构
 
@@ -307,7 +307,7 @@ been exceeded`（run 43267803971，gd:backup 自 20:08:01 起连续 403），配
 
 **重试与阀门**：`OPENLIST_8005_RETRY_ATTEMPTS` · `OPENLIST_423_RETRY_ATTEMPTS` ·
 `OPENLIST_409_RETRY_ATTEMPTS`（2026-09-17 加，与 423 同款：409/mkParentDir 失败重跑整次 sync）·
-`OPENLIST_PERSIST_RETRY_ROUNDS` · `OPENLIST_MISSING_FIX_MAX`(200) ·
+`OPENLIST_PERSIST_RETRY_ROUNDS` · `OPENLIST_MISSING_FIX_MAX`（脚本兜底 200；workflow 实际注入 400，修复优先模式用 `fix_test_max`，默认 400）·
 `OPENLIST_MAX_SPLIT_ATTEMPTS` · `ROTATION_MAX_CONSECUTIVE_ATTEMPTS`(8)
 
 **409 语义开关**（2026-09-17 加）: `_FIX_MKDIR_409_SEMANTICS`（默认 1=开；0=回退旧行为）。
@@ -412,13 +412,26 @@ workflow 的 `run_mode` 单选互斥：
 | 模式 | 行为 |
 |---|---|
 | `同步` | 预览（可 `skip_preview` 跳过）→ 全量同步 |
-| `调试 · 修复管线测试` | 只跑指定任务的修复管线 |
+| `调试 · 修复管线测试` | 只跑指定任务的修复管线（`fix_test_max` 限制单任务修复上限） |
+| `🔧 修复优先 · 全量积压清理（跳过传输）` | 只跑修复管线、不做传输，用于消化积压缺口（`fix_test_max` 限制单任务上限） |
 | `⚠️ 还原 · 修复文件还原为原路径` | `restore_fixed_files`（改名类走 `rclone copyto` 复制回原路径并**保留备份副本**——2026-09-26 起弃用 moveto，副本是短哈希体系下唯一内容载体；也不能用 copy/move：它们会把 dst 当目录、建出以目标文件名命名的目录） |
 | `⚠️ 灾难恢复 · 目标端→源端` | `restore_source_from_target`（非破坏性） |
 | `⚠️ 灾难恢复 · 目标端→源端（删除源端多余文件）` | `rebuild_source_from_target`（**破坏性**） |
 
 带 ⚠️ 的三项会改写目标端或回传/删改源端，运行前核对 `restore_task` 任务名。
 
+### 真还原强制门禁（`verify_run_id`）
+
+三种会改写数据或删改源端的模式（`⚠️ 还原` / `⚠️ 灾难恢复` / `⚠️ 灾难恢复（删除源端多余文件）`）**不是**跑过预演就能执行，必须在 `verify_run_id` 里填一次成功预演的 run id。workflow 侧（`openlist.yml` 的 `restore_gate`）逐项校验，任一不过直接 error 退出、不做任何远端写入：
+
+| 校验项 | 要求 |
+|---|---|
+| 是否填写 | 未填 → `还原/恢复被拒绝: 未填 verify_run_id` |
+| run 归属 | 该 run 的 path 必须属于 `openlist-restore-tryrun` |
+| 结论 | 必须 `success`（预演自己失败过的不算） |
+| 时效 | 创建时间不超过 `OPENLIST_RESTORE_VERIFY_MAX_AGE_HOURS`（默认 24 小时） |
+
+取得方式：跑一次 `openlist-restore-tryrun.yml`，从运行页 URL 取 `runs/<数字>` 里的数字填进 `verify_run_id`。时效过期就重跑一次预演——这条是为了防止「拿上周的预演结果今天动数据」。
 ### 一键还原 try run（只读预演）
 
 真跑「⚠️ 还原」之前先看一眼会怎么走，走 **`openlist-restore-tryrun.yml`**（独立 workflow，
@@ -521,7 +534,7 @@ OpenList 对**新建**目录/文件的列表有缓存延迟（实测首次可见
   唯一内容载体，删了会让下次预演把"已还原"误报成"备份缺失"。
   同理，同步轮的「已对齐收尾」也**默认不删**替代形态（`OPENLIST_CARRY_DELETE_ALIGNED=0`）。
 - **出账不可逆** ⇒ 副本侧与源端侧判据都须双判据。
-- **真还原必须先过门禁**（见上节）。
+- **真还原必须先过门禁**（`verify_run_id`，见「真还原强制门禁」一节）。
 
 ### 5. 改完立即提交：未提交的改动会被远端并行推送冲掉
 
@@ -910,7 +923,7 @@ cd .github/scripts/openlist
 for t in tests/*.sh; do bash "$t"; done
 ```
 
-69 个测试脚本（当前 `tests/*.sh` 数量），覆盖轮转、批次巩固、修复管线优化、修复日志区段头提取、写探针判死信号键口径
+73 个测试脚本（当前 `tests/*.sh` 数量），覆盖轮转、批次巩固、修复管线优化、修复日志区段头提取、写探针判死信号键口径
 与周期性重探（F22：到期/未到期/关闭/脏值）、405 快速失败（F10：阈值边界/409 不误计）、
 8005 重试前的写探针短路、
 目录可写性预检（含假成功目录）与短哈希目录兜底、预览 diff、跳过窗口的预览

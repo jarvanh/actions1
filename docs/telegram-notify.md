@@ -727,8 +727,7 @@ wb_notify() {                    # 函数体只用助手，不再 source
   - pwsh：无分片。
 - 发送失败必须在 stderr / 日志输出原因；python 侧 `send_telegram` 返回字典（失败带
   `reason`），调用方必须记日志。
-- **已引入发送层的通知点不得 curl 直发**。唯一例外：需要 message_id 的进度面板、
-  媒体上传（`sendDocument` / `sendVideo`）。
+- **已引入发送层的通知点不得 curl 直发**。例外仅限两类：需要 message_id 的进度面板、以及媒体上传（`sendDocument` / `sendVideo`）。
 - **档位路由**：`send_tg` / `send_tg_chunked` 收可选 `tier`。
   - `alert` = 重要通知 → @SaberFuckBot；无回落，凭据缺失即失败留痕。
   - 不传 = 普通通知 → @FuckSaberBot。
