@@ -150,10 +150,22 @@ declare -gA _TRYR_DST_READABLE=()
 _tryr_dst_readable() {
   local dest="$1"
   [ -n "${_TRYR_DST_READABLE[$dest]:-}" ] && return "${_TRYR_DST_READABLE[$dest]}"
+  # 后端级短路（2026-11-28 加）: 同一后端根一旦判不可读，其下所有路径直接复用该结论。
+  #   原实现只按**完整 dest 路径**缓存 ⇒ 容器不可达时每个不同子目录各等一次 --timeout 2m。
+  #   实测 45799981490: 跑到 [76] 条就撞 120min 上限，日志成片「不可读（容器未拉起或远端不可达）」。
+  local _root="$dest"
+  if [[ "$dest" == openlist:* ]]; then
+    _root="openlist:$(printf '%s' "${dest#openlist:}" | cut -d/ -f1)"
+  fi
+  if [ -n "${_TRYR_DST_READABLE[$_root]:-}" ] && [ "${_TRYR_DST_READABLE[$_root]}" != "0" ]; then
+    _TRYR_DST_READABLE["$dest"]="${_TRYR_DST_READABLE[$_root]}"
+    return "${_TRYR_DST_READABLE[$_root]}"
+  fi
   local rc=0
   _tryr_rclone_read lsf "$dest" --dirs-only --retries 1 --low-level-retries 2 \
     --timeout 2m >/dev/null 2>&1 || rc=$?
-  _TRYR_DST_READABLE[$dest]="$rc"
+  _TRYR_DST_READABLE["$dest"]="$rc"
+  [ "$rc" -ne 0 ] && [ "$_root" != "$dest" ] && _TRYR_DST_READABLE["$_root"]="$rc"
   return "$rc"
 }
 
