@@ -2696,7 +2696,19 @@ _batch_consolidate() {
     # 且此时的证据比之前更强（真写失败，而不只是列表缺失）。
     # 探针结果按「后端 × 路径」整轮缓存，本分支只在 100% 缺失时触发，额外开销极小。
     local _f5_probe_ok=0
-    if declare -F _backend_write_probe >/dev/null 2>&1; then
+    # 后端根已被判死 ⇒ 跳过 F5 反证探针（同轮内该后端所有路径都已判不可用）。
+    # 与 _check_openlist_backend_connectivity 入口守卫同源，避免同一后端被重复探测。
+    local _f5_skip_probe=0
+    if declare -F _path_unwritable_hit >/dev/null 2>&1; then
+      local _f5_broot="$(_task_backend_root_of "$dest_path" 2>/dev/null || true)"
+      if [ -n "$_f5_broot" ] && _path_unwritable_hit "$_f5_broot"; then
+        _f5_skip_probe=1
+        echo "⏭ F5 反证: 后端 ${_f5_broot} 本轮已判不可写，跳过重复探针" | tee -a "$batch_log"
+      fi
+    fi
+    if [ "$_f5_skip_probe" -eq 1 ]; then
+      _f5_probe_ok=1   # 后端已判死，按可写放行不重复判死（外层熔断负责跳过）
+    elif declare -F _backend_write_probe >/dev/null 2>&1; then
       # 宽容模式: 探针"写成功但列表暂不可见"按非全拒放行。原因见该分支注释 ——
       # 在 F5 这个特定判据下，真拒收的唯一可靠表现是 copyto exit≠0；而列表
       # 不可见已被两轮生产实证为时滞（判死后 26s 同批文件全部落盘）。
