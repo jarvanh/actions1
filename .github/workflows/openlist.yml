@@ -1250,7 +1250,7 @@ jobs:
           tg_add_kv msg "常见成因" "apt 安装 404 / 容器未就绪 / 隧道异常 / 凭据缺失"
           tg_add_note msg "处理完前置失败后手动触发一轮即可恢复；若反复出现请检查 runner 镜像与上游仓库同步状态"
           tg_add_footer msg
-          send_telegram_message "$msg" HTML alert || echo "::warning::环境未就绪告警发送失败"
+          send_tg "$msg" alert || echo "::warning::环境未就绪告警发送失败"
 
       - name: 自续触发（下轮接力）
         # 同「会话保持」step: 开关判断从 `inputs.self_retrigger != false`
