@@ -335,12 +335,18 @@ def download_measurement(exit_code, http_code, size_bytes, time_total, time_star
     """
     if exit_code not in ok_exits:
         return None, f'curl exit {exit_code}'
-    if http_code and http_code >= 400:
+    # http_code=0 表示压根没拿到 HTTP 响应（错 scheme / 连接被重置），
+    # 原判据 if http_code and http_code >= 400 会放过它，算出天文数字 MiB/s。
+    # 2026-11-28：只接受 200<=code<400。
+    if http_code and not (200 <= http_code < 400):
         return None, f'HTTP {http_code}'
     if size_bytes <= 0:
         return None, 'empty download'
     if min_bytes and size_bytes < int(min_bytes):
         return None, f'too few bytes ({size_bytes} < {int(min_bytes)})'
+    if 0 < float(time_total or 0) < float(time_starttransfer or 0):
+        # 首字节时间大于总时长：curl 计时字段自相矛盾，样本不可用（2026-11-28）。
+        return None, f'ttfb {float(time_starttransfer):.3f}s > total {float(time_total):.3f}s'
     transfer = float(time_total or 0) - float(time_starttransfer or 0)
     if transfer <= 0:
         # 传输段算不出来（starttransfer 缺失/等于 total）→ 退回总时长，但至少不能为 0。
