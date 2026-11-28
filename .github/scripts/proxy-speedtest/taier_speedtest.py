@@ -88,19 +88,12 @@ from speedtest_gitee import (
 # 配置（全部可经环境变量覆盖）
 # ---------------------------------------------------------------------------
 TAIER_REPO = (os.environ.get('TAIER_REPO') or 'MiaM1ku/taierspeedtest').strip() or 'MiaM1ku/taierspeedtest'
-# 引擎版本 pin（2026-11-10）：读数口径是**引擎实现的一部分**（jh.13 双槽流水线、
-# jh.15 滑窗估值、jh.16 回归斜率）。跟着 `releases/latest` 走等于「上游某天发版 ⇒
-# 同一套订阅的新旧读数不可比，且没有任何告警」——旧注释写 jh.15、线上已是 jh.16
-# 就是漂移的现场。
-# 默认只对 **fork**（TAIER_REPO 含 jarvanh）钉 jh.16：上游 MiaM1ku 没有 jh.* tag，
-# 对它 pin 会直接 404。`TAIER_VERSION=''`（显式设空）= 退回 latest，作为逃生阀；
-# 不设该变量时按仓库决定默认值（不能用 `or` 兜底，否则「显式空」与「未设」分不开）。
-if 'TAIER_VERSION' in os.environ:
-    TAIER_VERSION = os.environ.get('TAIER_VERSION', '').strip()
-elif 'jarvanh' in TAIER_REPO.lower():
-    TAIER_VERSION = 'v1.0.4-jh.16'
-else:
-    TAIER_VERSION = ''
+# 引擎版本（2026-11-28 改）：默认始终跟随 releases/latest，不再固定 tag。
+# 依据：主人明确「不要 pin 版本，始终使用最新版」。旧实现把 fork 钉在 jh.16，
+# 上游修了 bug 也拿不到，且文档写 latest、代码写 pin，两边各说一套。
+# 仍保留一个显式逃生阀：设 TAIER_VERSION=<tag> 可临时退回指定版本（排障用）；
+# 不设或设空 = latest。
+TAIER_VERSION = (os.environ.get('TAIER_VERSION', '') or '').strip()
 TAIER_RELEASE_API = (
     f'https://api.github.com/repos/{TAIER_REPO}/releases/tags/{TAIER_VERSION}'
     if TAIER_VERSION else
@@ -409,14 +402,14 @@ def _github_json(url: str):
 
 
 def ensure_local_taier():
-    """下载 taierspeedtest 二进制（**钉版本**，固定文件名）。
+    """下载 taierspeedtest 二进制（始终取最新 release，固定文件名）。
 
     缓存判据 = meta 文件记录的 `repo|tag` 与 `TAIER_RELEASE_API` 解析出的 tag 一致。
     为什么必须做：HOME_RUNTIME 里的旧缓存可能是 MiaM1ku 原版引擎（无代理支持），
     TAIER_REPO 切到 fork 后若直接复用缓存，会静默跑旧引擎、读数照旧虚高——
     这比下载失败隐蔽得多，必须有版本对账。
 
-    2026-11-10 补：版本 pin 在 `TAIER_VERSION`（默认 v1.0.4-jh.16），不再跟 latest；
+    2026-11-28：默认不再 pin 版本（主人定「始终最新」），TAIER_VERSION 仅作排障逃生阀；
     下载后按 GitHub API 给出的 asset `digest`（sha256:…）校验，不一致即删文件报错
     （防截断/中间人；API 没给 digest 时记 `sha256_verified=false`，不阻断）。
     """
