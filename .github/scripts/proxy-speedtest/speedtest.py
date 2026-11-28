@@ -1204,6 +1204,24 @@ def to_gist_result_row(r):
     }
 
 
+def _failure_reason(result):
+    """取失败原因：顶层 error/reason 常为空，真实原因在 download/latency/upload 子对象里。
+
+    2026-11-28 修：此前只看顶层，导致「失败明细」几乎总显示 -，无法区分 DNS/超时/拒连。
+    """
+    for key in ('error', 'reason'):
+        val = result.get(key)
+        if val:
+            return str(val)
+    for stage in ('download', 'upload', 'latency'):
+        sub = result.get(stage) or {}
+        if isinstance(sub, dict):
+            for key in ('error', 'reason'):
+                val = sub.get(key)
+                if val:
+                    return str(val)
+    return ''
+
 def build_telegram_lines(results, *, meta, gist_res, bundle=None,
                          aborted_due_to_runtime=False, runtime_abort_reason='',
                          direct_ip='', bypass_hits=0):
@@ -1313,7 +1331,7 @@ def build_telegram_lines(results, *, meta, gist_res, bundle=None,
     if _failed:
         lines.append(f'❌ 失败 · {len(_failed)}')
         # 折叠上限取全库默认 8（规范 · 折叠行；此前本域用 5，与 tree_fold 默认值不一致）
-        _fe = [tg_entry_codes(r.get('name', ''), (r.get('error') or r.get('reason') or '-')[:80])
+        _fe = [tg_entry_codes(r.get('name', ''), (_failure_reason(r) or '-')[:80])
                for r in _failed[:8]]
         if len(_failed) > 8:
             _fe.append(f'还有 {len(_failed) - 8} 条…')

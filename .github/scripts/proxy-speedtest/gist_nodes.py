@@ -82,7 +82,7 @@ CF 段表在每轮**运行时实时拉取**（fetch_cf_cidrs 打官方 ips API�
   GIST_NODES_MAX_NODES     最终订阅最多保留多少节点（默认 0 = 不限）
   GIST_NODES_TIMEOUT       单次 HTTP 超时秒数（默认 30）
   GIST_NODES_RETRIES       单页搜索失败（含 429）时的重试次数（默认 4）
-  GIST_NODES_BACKOFF_BASE  重试退避基数秒数（默认 5，按 5/10/20/40 指数增长 + 抖动）
+  GIST_NODES_BACKOFF_BASE  重试退避基数秒数（默认 5，按 5/10/20 指数增长 + 抖动（受 GIST_NODES_RETRIES 上限约束））
   GIST_NODES_PAGE_DELAY    搜索页翻页之间的基础间隔秒数（默认 3，0 = 不间隔）
   GIST_NODES_PACING_CEILING 被限流时间隔自动拉长的上限（默认 60 秒；间隔从 PAGE_DELAY
                            起按被限流次数翻倍，成功后折半回落）
@@ -1020,8 +1020,10 @@ def fetch_carryover(env, timeout, max_bytes):
         log_progress('gist_nodes_carryover_skipped', reason='missing_gist_id_or_filename')
         return None
     try:
-        res = github_api_request(GIST_API.format(gist_id=gist_id), env.get('GH_TOKEN', ''),
-                                 timeout=timeout)
+        # 与 main 同口径取 token：只认 GH_TOKEN 会让只配 GITHUB_TOKEN 的部署匿名调用，
+        # 撞 60/h 限流后静默拿不到上一轮订阅（累积失效但看不出来）。
+        _tok = (env.get('GH_TOKEN') or env.get('GITHUB_TOKEN') or '').strip()
+        res = github_api_request(GIST_API.format(gist_id=gist_id), _tok, timeout=timeout)
     except Exception as e:
         log_progress('gist_nodes_carryover_skipped', reason='gist_probe_failed', error=str(e))
         return None
