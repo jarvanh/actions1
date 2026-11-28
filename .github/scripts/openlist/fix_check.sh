@@ -368,10 +368,27 @@ _fc_try_file() {  # <rel 相对任务根>
   # 不需要也不应该重传（重传 = 造幽灵文件）
   local mk_json
   mk_json=$(rclone cat "$FC_LEAF_MARKER" 2>/dev/null) || mk_json=""
+  local mk_alt=""
   if printf '%s' "$mk_json" | jq -e --arg o "$leaf_rel" \
        '[.fixed_files[]? | select(.original == $o)] | length > 0' >/dev/null 2>&1; then
-    _fc_verdict already_ok "" "$rel" "" "marker 已记账（文件以替代形态落盘）"
-    return 0
+    mk_alt=$(printf '%s' "$mk_json" | jq -r --arg o "$leaf_rel" \
+      '[.fixed_files[]? | select(.original == $o)][0].alternative // ""' 2>/dev/null)
+    # 记账 ≠ 落盘。必须真去目标端确认替代文件还在 —— 否则「marker 已记账」会把
+    #   早已消失的替代文件报成 already_ok（本工具因此在 2026-11-27 两次误导排障:
+    #   先误判「数据已落盘」，后误判「该目录缺 369 个文件」，两次都源于此分支不查文件）。
+    #   查得到才判 already_ok；查不到则按「假成功」处理，继续走下面的真实修复流程。
+    local mk_dir=""
+    if [ -n "$mk_alt" ]; then
+      mk_dir=$(dirname -- "$mk_alt"); [ "$mk_dir" = "." ] && mk_dir=""
+      if rclone lsf "${FC_LEAF_DST}${mk_dir:+/${mk_dir}}" --files-only --retries 1 \
+           --timeout "$(_fc_timeout_arg)" 2>/dev/null | grep -qxF "$(basename -- "$mk_alt")"; then
+        _fc_verdict already_ok "" "$rel" "" "marker 已记账且替代文件在目标端确认存在（${mk_alt}）"
+        return 0
+      fi
+      _fc_log "  ⚠ marker 记账的替代文件已不在目标端（${mk_alt}）→ 视为假成功，继续走真实修复"
+    else
+      _fc_log "  ⚠ marker 有记账但读不到 alternative 字段 → 不据此判 already_ok，继续走真实修复"
+    fi
   fi
 
   # 幂等: 目标端原路径已在（且非空）⇒ 不需要修

@@ -212,9 +212,10 @@ set_size "$SRC_BASE/$F1" 258000000
 set_size "$LEAF_DST/OnlyTeenBlowjobs - Cute Teen Is Not So Innocent-ph5ebc05eca6793.mp4" 0
 mk_marker "$LEAF_MARKER" "$(jq -cn --arg o "OnlyTeenBlowjobs - Cute Teen Is Not So Innocent-ph5ebc05eca6793.mp4" \
   '{fixed_files:[{original:$o,alternative:"abc12345.mp4"}]}')"
+printf 'abc12345.mp4\n' > "$MOCK/dst.lsf"
 export FIXCHECK_FILES="ph5ebc05eca6793"
 run_case
-[ "$(grep -c . "$MOCK/try_calls")" = "0" ] && ok "2f marker 已记账 ⇒ 不重复上传（防幽灵文件）" || bad "2f: try=$(tr '\n' ' ' < "$MOCK/try_calls")"
+[ "$(grep -c . "$MOCK/try_calls")" = "0" ] && ok "2f 记账且替代文件在 ⇒ 不重复上传" || bad "2f: try=$(tr '\n' ' ' < "$MOCK/try_calls")"
 [ "$RC" = "0" ] && ok "2g 退出码 0" || bad "2g: rc=$RC"
 
 # ============================================================
