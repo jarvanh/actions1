@@ -331,8 +331,16 @@ _send_sync_result_notification() {
           -F parse_mode="HTML" \
           -F caption="📁 $(escape_html "$task_name") · 错误日志" 2>/dev/null) || true
         if echo "$_doc_resp" | grep -q '"ok":true'; then break; fi
-        _doc_wait=$(echo "$_doc_resp" | grep -oE '"retry_after":[0-9]+' | head -1 | cut -d: -f2)
-        if [ -n "$_doc_wait" ]; then sleep "$_doc_wait"; else break; fi
+        # 容忍冒号两侧空格；等待值钳到 60s（与真源 tg_notify.sh 同口径）
+        _doc_wait=$(echo "$_doc_resp" | grep -oE '"retry_after"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
+        if [ -n "$_doc_wait" ]; then
+          [ "$_doc_wait" -gt 60 ] && _doc_wait=60
+          sleep "$_doc_wait"
+        else
+          # 400 解析失败不重发，但必须把原因暴露出来（此前直接 break，日志附件静默丢失）
+          echo "$_doc_resp" | grep -q "can.t parse entities" && echo "❌ Telegram 日志附件 HTML 解析失败（400），未发送: $(echo "$_doc_resp" | head -c 200)" >&2
+          break
+        fi
       done
       true
     fi

@@ -725,8 +725,10 @@ def send_telegram(env, text, tier=''):
             except urllib.error.HTTPError as e:
                 body = e.read().decode('utf-8', 'replace')
                 if e.code == 429:
-                    m = re.search(r'"retry_after":(\d+)', body)
-                    time.sleep(int(m.group(1)) if m else 5)
+                    # 容忍 JSON 里冒号两侧的空格（Telegram/代理实现不保证紧凑格式），
+                    # 并把等待钳到 60s 上限，与 tg_notify.sh 同口径
+                    m = re.search(r'"retry_after"\s*:\s*(\d+)', body)
+                    time.sleep(min(int(m.group(1)) if m else 5, 60))
                     continue
                 raise HTTPErrorWithBody(e, body)
         raise RuntimeError('telegram 429 retry exhausted')

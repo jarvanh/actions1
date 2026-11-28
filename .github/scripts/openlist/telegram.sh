@@ -70,8 +70,10 @@ _tg_send_and_get_id() {
         --data-urlencode text="$message" 2>/dev/null) || true
     fi
     echo "$response" | grep -q '"ok":true' && break
-    retry_after=$(echo "$response" | grep -oE '"retry_after":[0-9]+' | head -1 | cut -d: -f2)
+    # 容忍冒号两侧空格；等待值钳到 60s（与真源 tg_notify.sh 同口径）
+    retry_after=$(echo "$response" | grep -oE '"retry_after"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
     if [ -n "$retry_after" ]; then
+      [ "$retry_after" -gt 60 ] && retry_after=60
       echo "⚠️ Telegram 限流 (429)，等待 ${retry_after}s 后重试 (尝试 $attempt/5)..." >&2
       sleep "$retry_after"
       continue
