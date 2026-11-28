@@ -53,7 +53,7 @@ _purge_stale() {
   [ -z "${_dev}" ] && return 0
   _ids="$(printf '%s' "${_dev}" | jq -r '
     (.devices // [])[]?
-    | select(((.hostname // "") + " " + (.name // "")) | test("openclaw"))
+    | select(((.hostname // "") + " " + (.name // "")) | test("(^|[^a-z0-9-])openclaw(-|$|\\.)"))
     | select(.connectedToControl == false)
     | .id' 2>/dev/null || true)"
   [ -z "${_ids}" ] && return 0
