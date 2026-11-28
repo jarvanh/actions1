@@ -2,6 +2,18 @@
 # 脚本架构、模块划分、环境变量与命名约定见仓库根 README.md 的「OpenList 同步子系统」
 name: openlist
 
+# ===== 单例并发组（2026-11-28 补）=====
+# 为什么必须加: 自续触发的护栏3 注释已明确假定「concurrency 单例组内恒最多
+#   1 running + 1 pending」，但本 workflow 此前**没有** concurrency 配置 —— 假定不成立。
+#   实测 run 历史: 2026-11-28 03:00~05:53 两个 run 并发运行 2h53m（45814752219 与
+#   45813444031），另有 3 个 run 以 cancelled 结束。两个 run 抢同一个 OpenList
+#   容器、同一批后端、同一个 marker 目录 ⇒ 重复列举/重复传输/互相覆盖 marker，
+#   有效吞吐被稀释一半。容器共享锁/独占锁那套机制正是在为「不该存在的并发」补偿。
+# cancel-in-progress=false: 绝不取消正在跑的（会丢进度），只让新 run 排队接力。
+concurrency:
+  group: openlist-singleton
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
