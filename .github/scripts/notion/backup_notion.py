@@ -34,7 +34,18 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:139.0) "
     "Gecko/20100101 Firefox/139.0"
 )
+# 导出文件的下载链接位于 Notion 自有域名（file.notion.com 需要 file_token
+# Cookie 授权）。只对这些域名携带 Cookie，其余外部预签名 URL 一律清空。
+NOTION_COOKIE_SUFFIXES = ("notion.so", "notion.com")
 LOG = logging.getLogger("notion-backup")
+
+
+def is_notion_host(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in NOTION_COOKIE_SUFFIXES
+    )
 
 
 def unwrap_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -92,10 +103,11 @@ class NotionExportClient:
         self.max_wait = max_wait
         self.poll_interval = max(poll_interval, 5)
         self.download_timeout = download_timeout
+        self.cookie_header = f"token_v2={token_v2}; file_token={file_token}"
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "Cookie": f"token_v2={token_v2}; file_token={file_token}",
+                "Cookie": self.cookie_header,
                 "Content-Type": "application/json",
                 "User-Agent": USER_AGENT,
                 "Origin": "https://www.notion.so",
@@ -215,13 +227,13 @@ class NotionExportClient:
         raise TimeoutError(f"Export timed out for {root.title}")
 
     def download(self, url: str, destination: Path) -> None:
-        """下载预签名导出链接：exportURL 可能指向外部域名，
-        显式清空 Cookie，避免本会话的 Notion 凭据随请求外泄。"""
+        """下载导出链接：仅对 Notion 自有域名携带 Cookie（file.notion.com
+        缺少 file_token 会返回 403），外部域名显式清空以避免凭据外泄。"""
         with self.session.get(
             url,
             stream=True,
             timeout=self.download_timeout,
-            headers={'Cookie': ''},
+            headers={"Cookie": self.cookie_header if is_notion_host(url) else ""},
         ) as response:
             response.raise_for_status()
             with destination.open("wb") as handle:
