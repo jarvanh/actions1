@@ -8,7 +8,7 @@
 #     （sync_trend_budget）、无 docker（truth）、沙箱拦子进程（progress_no_orphans）。
 #     ubuntu runner 上这些都不存在，基线因此更硬（本域套件全绿）。
 # 结构: 按「域」分组，每域一个 job；新增域照抄同构 job 即可（域内一律串行）。
-# 现状: 三个 job —— openlist、proxy-speedtest 与 notify（通知版式/机械校验）。
+# 现状: 三个 job —— static（bash -n / shellcheck / py_compile）、openlist、notify（通知版式/机械校验）。
 #       新增域时：在 inputs.domain 的说明里列上它、加一个同构 job（`if` 判 domain）。
 # 触发: 只 workflow_dispatch —— 仓库既有约定是「无任何 workflow 监听 push/pull_request」
 #       （main 有并行推送，加了会产生大量冗余运行）。需要验证时手动 dispatch。
@@ -34,7 +34,7 @@ jobs:
     # 全库静态检查（与业务域解耦）：bash -n + shellcheck(error) + py_compile + workflow YAML。
     # 为什么单列一个 job：`openlist` job 的 shell 检查只覆盖 .github/scripts，且没有 shellcheck；
     # 而 shellcheck 的 SC2068/SC2218 这类「引用错/定义顺序」问题 bash -n 抓不到。
-    # 基线（2026-11-26）：164 个 .sh 全绿；新增 error 级发现即失败，逼着当场修而不是攒着。
+    # 基线（2026-11-26）：169 个 .sh 全绿；新增 error 级发现即失败，逼着当场修而不是攒着。
     if: ${{ github.event.inputs.domain == '' || github.event.inputs.domain == 'static' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -58,7 +58,7 @@ jobs:
           echo "bash -n 通过 $n 个脚本"
           [ "$fail" -eq 0 ] || exit 1
       - name: shellcheck（severity=error）
-        # 只卡 error 级：warning/info 在 164 个脚本上噪声太大，先保住「会真出错」的门槛。
+        # 只卡 error 级：warning/info 在 169 个脚本上噪声太大，先保住「会真出错」的门槛。
         # 若新增 error 属误报（如 $(...) 里调用 source 进来的助手），就地加
         # `# shellcheck disable=SCxxxx` 并写明为什么，不要整体降级检查强度。
         run: |
