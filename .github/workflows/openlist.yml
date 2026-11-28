@@ -1083,8 +1083,13 @@ jobs:
           #   —— 超时时 lsf 被 kill，wc 照样输出**部分**行数且无任何提示。实测该行报
           #   「851 个文件」而两侧全量实为 852，读日志的人会误判镜像丢了几百个 marker
           #   （marker 是还原链路的唯一索引，这种误判代价很高）。改为先判 rc=124。
-          _ss_cnt=$(timeout 120 rclone lsf dropbox:sync_state_mirror 2>/dev/null | wc -l | tr -d ' ')
-          if [ "${PIPESTATUS[0]:-0}" = "124" ]; then
+          # 不能用 "$(timeout ... | wc -l)" 后看 PIPESTATUS：命令替换里那是赋值语句的 0，
+          # 124 分支永远不命中（实测 ps0=[0]），截断计数被当精确值打印。
+          timeout 120 rclone lsf dropbox:sync_state_mirror > /tmp/ss_mirror_list.txt 2>/dev/null || _ss_rc=$?
+          _ss_rc=${_ss_rc:-0}
+          _ss_cnt=$(wc -l < /tmp/ss_mirror_list.txt 2>/dev/null | tr -d ' ')
+          rm -f /tmp/ss_mirror_list.txt
+          if [ "$_ss_rc" = "124" ]; then
             echo "sync_state 镜像完成: ≥${_ss_cnt} 个文件（列举超时 120s 被截断，非全量计数；镜像本身由上面的 sync 决定）"
           else
             echo "sync_state 镜像完成: ${_ss_cnt} 个文件"

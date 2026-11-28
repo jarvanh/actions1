@@ -10,9 +10,9 @@
 # 影响面: 被清条目保护的产物失去 filter 保护 ⇒ 下轮被 sync 删 ⇒ 源文件重回缺失按
 #   新格式重修（用户已知情拍板）。只动 marker JSON，不碰媒体数据。
 # 用法: cleanup_legacy_marker_entries.sh [--dry-run|--apply] <本地 marker 目录>
-#   --dry-run（默认）: 只统计 + 逐 marker 留证清单，不改任何文件
+#   --dry-run（默认）: 只统计，不建目录、不写留证、不改任何文件
 #   --apply: 原地清理写回（调用方负责先把原目录备份到远端）
-# 输出: 汇总到 stdout；逐 marker 留证写 <dir>/_legacy_evidence/<marker名>.legacy.json
+# 输出: 汇总到 stdout；--apply 时逐 marker 留证写 <dir>/_legacy_evidence/<marker名>.legacy.json
 set -euo pipefail
 
 MODE="--dry-run"
@@ -30,8 +30,13 @@ done
 KIND_RE='^(split_zip|hash_dir|short_hash_rename|base64url_dir|copy)$'
 LEGACY_JQ="((.restore.kind // \"\") | test(\"$KIND_RE\") | not)"
 
+# 留证目录只在 --apply 时创建。dry-run 的契约是「不改任何文件」，
+# 此前无条件 mkdir -p 会凭空建目录，且调用方会把整个 marker 目录（含留证）
+# 回传云端，dry-run 也会留下痕迹。
 EVDIR="$DIR/_legacy_evidence"
-mkdir -p "$EVDIR"
+if [ "$MODE" = "--apply" ]; then
+  mkdir -p "$EVDIR"
+fi
 
 total_files=0; files_with_legacy=0; total_entries=0; total_legacy=0; total_bl=0
 report="$(mktemp)"
@@ -57,10 +62,12 @@ for f in "$DIR"/*.json; do
   # apply 后这些产物将失去 filter 保护 —— 清单供核对与必要时人工接管
   # 注: jq 对象值表达式必须整体括号包裹，裸写 key: .x // "y" 是编译错误
   #   （sync_marker.sh 修复方式汇总段同款教训）
-  jq '{marker: (.last_success // "(无时间戳)"),
-       legacy: [.fixed_files[] | select('"$LEGACY_JQ"') |
-                {original, alternative, method, size_bytes}]}' "$f" \
-    > "$EVDIR/${name%.json}.legacy.json"
+  if [ "$MODE" = "--apply" ]; then
+    jq '{marker: (.last_success // "(无时间戳)"),
+         legacy: [.fixed_files[] | select('"$LEGACY_JQ"') |
+                  {original, alternative, method, size_bytes}]}' "$f" \
+      > "$EVDIR/${name%.json}.legacy.json"
+  fi
   printf '%s\t%s\t%s\n' "$name" "$n_total" "$n_legacy" >> "$report"
 done
 
